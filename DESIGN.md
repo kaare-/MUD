@@ -240,6 +240,19 @@ Rationale, mapped to the brief:
   the tool), while a companion positive displacement is applied to a
   ring of nearby tiles to conserve volume. See §2.4.
 
+**Which part of this recommendation is a lock-in, and which isn't.**
+Choosing SDF-first is an *interaction-level* commitment, not a
+*production-architecture* commitment. It determines what is cheap and
+what is expensive in tool code — merging, cutting, cookie cutter, and
+volume queries all become one-liners; polygon retopology and manual
+UV editing become impossible. That is the trade we are making, and it
+is the point of the choice. The specific data structure that stores
+the field, on the other hand, is a production decision we deliberately
+defer: Stage 0 uses a dense `Vec<f32>` grid that we already labelled
+throw-away in §9, precisely so we can throw it away in Stage 2 in
+favour of a sparse narrow-band tile store. In short: *the field is the
+commitment; the storage of the field is not*.
+
 ### 2.4 "Magic clay" as a well-defined algorithm
 
 For each tool engagement over a small time step:
@@ -294,6 +307,50 @@ response. I would explicitly *not* build this in the prototype. Elastic
 skin is exactly the "physical realism" the brief rejects. If we later
 discover users want dough-like squish, we can add a shape-matching
 constraint layer over the SDF, but only if a user need forces it.
+
+### 2.7 Profiles: one asset type, many tools
+
+A late-in-the-process observation, but a load-bearing one: several of
+the tools in the brief share the same underlying object — a **profile**,
+which is just a 2D signed distance function (analytic, procedurally
+generated, or sampled from a bitmap). Once we have profiles as a
+first-class asset, five separate tools collapse into one system:
+
+| Tool | Operation |
+|------|-----------|
+| Cookie cutter | Extrude the profile along a vector, subtract from the workpiece. |
+| Stamp | Extrude, subtract at a shallow depth. |
+| Emboss / deboss | Extrude, add / subtract at a shallow depth. |
+| Roller | Revolve the profile around an axis, sweep the resulting SDF along a path. |
+| Scraper | The profile *is* the blade's 2D cross-section; sweep along the tool's motion. |
+
+Implementation is uniform: every profile is a function
+`f(x, y) → distance` (plus a bounding box). The 3D SDF used by the
+brush engine is one of `extrude(profile, depth)`, `revolve(profile,
+axis)`, or `sweep(profile, path)`. All three are small SDF operators.
+
+Consequences worth noting:
+
+- **One code path, five tools.** The brush engine sees an SDF; it
+  doesn't need to know which family the tool came from.
+- **Profiles are the natural shareable asset.** A `.mudprofile` file
+  is small, self-contained, and reusable across tools. This is what
+  makes "custom cookie cutter" and "custom scraper blade" and "custom
+  roller pattern" all buildable from a single asset library rather
+  than three separate systems.
+- **The two-tier tool philosophy has a concrete answer.** Immediate
+  mode = pick from the built-in profile library. Advanced mode = edit
+  or write a new profile (via a small 2D sketch editor or a procedural
+  DSL). Sharing custom profiles is the natural way the advanced tier
+  reaches back into the immediate tier.
+- **Roadmap impact.** Profiles as an asset land at Stage 3 alongside
+  advanced-mode tool parameters. A shared-library / marketplace concept
+  is Stage 5+.
+
+We did not have this abstraction before. Adopting it now costs nothing
+(the analytic tool SDFs described in §2.3 are effectively profiles
+already; we just weren't naming them) and buys a clear organising
+principle for the tool ecosystem.
 
 ---
 
@@ -455,17 +512,32 @@ Scope:
 - One tool: spherical finger brush, push and pull (modifier toggle).
 - One camera: orbit/pan/zoom, mouse only.
 - Dual contouring rendering with a matcap.
-- Turntable: hold `R` to rotate right, `L` for left, at a fixed
-  angular velocity. No inertia.
+- Turntable: hold `Q` for CCW, `E` for CW, at a fixed angular velocity.
+  No inertia.
 - No undo yet. Save/load a raw grid to disk.
 - No workbench yet.
 
-Test: hand a laptop to someone who has never sculpted digitally. Ask them
-to make a mug shape. Do they succeed in five minutes without instruction?
+**Primary falsifiable question:** *Does holding a stationary finger
+against a rotating workpiece feel like a real modelling primitive?*
 
-If yes → the core loop is real. Proceed.
-If no → the problem is in the tool feel, not in the missing features.
-Iterate on the finger brush before doing anything else.
+The turntable + stationary tool is one of the two or three most
+speculative ideas in the brief. If that specific interaction doesn't
+work, it's a bigger course correction than "the brush needs tuning" —
+so make it the thing we look at first. Concretely: sit down, hold `Q`,
+press the finger against the ball at a fixed screen position, and see
+if the resulting groove reads as *deliberate work* rather than as *a
+mess*. If it doesn't, redesign the interaction before adding anything
+else.
+
+**Secondary question:** *Does a 3D-native player, with no tutorial,
+start pushing material around within 30 seconds and end up with
+something they're pleased with in five minutes?* This is the general
+product-market-fit test. It matters, but if the primary question fails,
+this one is moot.
+
+If both are yes → the core loop is real. Proceed.
+If either is no → the problem is in the interaction, not in the missing
+features. Iterate on that interaction before doing anything else.
 
 ### Stage 1 — "Does magic clay behave like clay?"
 
@@ -537,6 +609,13 @@ Only if earlier stages worked. Candidates:
 - Colour/decoration mode (own document, own decisions).
 - Procedural / scripted cutters and tools (advanced tier of the
   two-tier philosophy).
+- **Shareable tool assets.** A `.mudprofile` file format (see §2.7)
+  and a way to import, export, and share profile libraries. Every
+  custom cookie cutter, roller pattern, stamp, or scraper blade
+  becomes a small self-contained file that users can trade. This is
+  where the advanced tier of the two-tier tool philosophy reaches
+  back into the immediate tier — someone's advanced-mode profile is
+  someone else's one-click preset.
 - Collaborative sculpting.
 - VR mode.
 - Tablet/iPad port.
@@ -611,6 +690,16 @@ into every subsequent decision.
   shortcuts do conventional things.
 - **Snap-to-symmetric-primitive** for the starting shape. Start every
   new file with a centered ball on the workbench, not an empty scene.
+- **Workshop vocabulary, everywhere the user sees a string.** Menu
+  items, tool names, tooltips, error messages, and undo labels use
+  workshop language, not CAD or graphics-programming language. So:
+  *cookie cutter*, not "boolean difference." *Weld*, not "boolean
+  union." *Clay*, not "dynamic topology." *Press* / *pull* / *scrape*,
+  not "push vertices along normal." If a feature can't be described
+  in workshop language, that's evidence we don't understand what the
+  feature is *for* yet — a signal to redesign, not to reach for
+  jargon. Implementation-level terms are welcome in code, docs, and
+  this design file; they should not reach the user.
 
 ---
 
@@ -782,12 +871,22 @@ Implications that ripple through every subsequent design decision:
   Matcap shaders that flatter uneven surfaces are essential, not
   optional. A slightly wrong shape that reads as sculpted is a better
   result than an accurate shape that reads as low-poly.
-- **The Stage 0 falsifiable question sharpens** from *"can a stranger
-  sculpt a mug in five minutes?"* to *"does a 3D-native player, with no
-  tutorial, start pushing material around within 30 seconds and end up
-  with something they are pleased with in five minutes?"*
+- **The Stage 0 falsifiable question sharpens.** The primary version is
+  now about a specific novel interaction — *does holding a stationary
+  finger against a rotating workpiece feel like a real modelling
+  primitive?* — with the general product-fit question (*does a
+  3D-native player, with no tutorial, start pushing material around
+  within 30 seconds?*) as the secondary check. See §4 Stage 0 for the
+  full statement.
 
 The user is **not** looking for pottery-wheel fidelity. They are looking
 for a sandbox toy that produces satisfying objects. If the app feels
 closer to Dreams or Claybook than to ZBrush, we are on target.
+
+**The reference is a lump of clay, not Blender.** This sentence is
+worth putting somewhere the whole team sees it. Every decision about
+menus, tools, terminology, defaults, and starter primitives should be
+tested against it. When we catch ourselves reaching for a CAD or DCC
+convention "because that's what modelling software does," it is
+almost certainly a sign we've drifted from the brief.
 
