@@ -1,48 +1,112 @@
-//! Sculpt input handler.
+//! Sculpt input dispatch.
 //!
-//! Left-drag on the workpiece: press (carve). Shift + left-drag: pull
-//! (add). The tool position is picked by sphere-tracing the SDF from
-//! the camera through the cursor.
+//! Two tools live here in Stage 2: the spherical finger from Stage 0/1
+//! and the cookie cutter introduced by Stage 2. Left-drag engages the
+//! finger continuously; left-click one-shots the cookie cutter.
+//!
+//! Symmetry is a small overlay that applies each stamp again at its
+//! mirror image across the piece-local X = 0 plane. Toggle with `S`.
 
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use glam::Vec3 as GVec3;
 
-use sculpt_core::{apply_sphere_brush_with_callback, BrushMode, SphereBrush};
+use sculpt_core::{
+    apply_cookie_cutter_with_callback, apply_sphere_brush_with_callback, BrushMode, CookieCutter,
+    Profile, SphereBrush,
+};
 
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
-/// The one Stage-0/1 tool — a spherical finger.
+/// Which tool the user is currently holding.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum ToolKind {
+    Finger,
+    Cutter(CutterFamily),
+}
+
+/// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
+/// maps to a `Profile` via `profile(size)`.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub enum CutterFamily {
+    Circle,
+    Square,
+    Hexagon,
+    Star5,
+}
+
+impl CutterFamily {
+    pub fn profile(self, size: f32) -> Profile {
+        match self {
+            CutterFamily::Circle => Profile::Circle { radius: size },
+            CutterFamily::Square => Profile::Square { half_side: size },
+            CutterFamily::Hexagon => Profile::Hexagon { radius: size },
+            CutterFamily::Star5 => Profile::Star5 {
+                outer: size,
+                inner_ratio: 0.4,
+            },
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            CutterFamily::Circle => "circle",
+            CutterFamily::Square => "square",
+            CutterFamily::Hexagon => "hexagon",
+            CutterFamily::Star5 => "star",
+        }
+    }
+}
+
+/// The active tool plus its size and mode flags.
 ///
-/// - `radius` is the brush footprint in mm.
-/// - `advance_per_step` is how far the brush is offset along the
-///   surface normal each frame it is engaged. A larger value carves
-///   faster; a small value gives a gentle, precise touch. This is
-///   the closest Stage 1 gets to a pressure analog.
-/// - `displace` enables the magic-clay volume-displacement bulge for
-///   Press mode. Toggled with `M`.
+/// `size` is a shared knob (mm). For the finger it's the brush
+/// radius; for a cutter it's the profile's characteristic size.
+/// `[` and `]` adjust it regardless of which tool is active.
 #[derive(Resource)]
 pub struct SculptTool {
-    pub radius: f32,
+    pub kind: ToolKind,
+    pub size: f32,
+    /// Finger-only: how far the brush centre advances along the surface
+    /// normal each frame while held. Closest thing Stage 1 has to
+    /// pressure sensitivity.
     pub advance_per_step: f32,
+    /// Finger-only: whether to apply the magic-clay bulge on Press.
     pub displace: bool,
 }
 
 impl Default for SculptTool {
     fn default() -> Self {
         Self {
-            radius: 12.0,
+            kind: ToolKind::Finger,
+            size: 12.0,
             advance_per_step: 0.6,
             displace: true,
         }
     }
 }
 
+/// Live mirror plane. Piece-local X = 0. When enabled, every stamp is
+/// applied twice — once at the primary contact point, once at its
+/// reflection across the plane.
+#[derive(Resource, Copy, Clone)]
+pub struct SculptSymmetry {
+    pub enabled: bool,
+}
+
+impl Default for SculptSymmetry {
+    fn default() -> Self {
+        // On by default, per DESIGN §9 decision 5 (symmetry defaults
+        // on for the starter primitive).
+        Self { enabled: true }
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.init_resource::<SculptTool>();
-    app.add_systems(Update, sculpt_input);
-    app.add_systems(Update, adjust_tool_size);
+    app.init_resource::<SculptSymmetry>();
+    app.add_systems(Update, (sculpt_input, adjust_tool));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -53,14 +117,13 @@ fn sculpt_input(
     q_camera: Query<(&Camera, &GlobalTransform)>,
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
+    symmetry: Res<SculptSymmetry>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
 ) {
-    // Stroke lifecycle: pressing LMB starts a recorder; releasing it
-    // ends the stroke and pushes to the undo stack. This runs even
-    // when the ray misses the surface (empty click) — the recorder
-    // will simply have no entries and get discarded.
+    // Stroke lifecycle. Same recorder shape for both tools; the
+    // cutter just contributes fewer stamps (typically one).
     if buttons.just_pressed(MouseButton::Left) {
         stroke.recorder = Some(StrokeRecorder::default());
     }
@@ -72,9 +135,17 @@ fn sculpt_input(
         }
     }
 
-    if !buttons.pressed(MouseButton::Left) {
+    // The finger engages every frame LMB is held. The cutter is a
+    // one-shot: fire on the frame LMB is first pressed, then stop
+    // so a slow drag doesn't chain cutter stamps by accident.
+    let should_engage = match tool.kind {
+        ToolKind::Finger => buttons.pressed(MouseButton::Left),
+        ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
+    };
+    if !should_engage {
         return;
     }
+
     let Ok(window) = q_window.get_single() else {
         return;
     };
@@ -88,13 +159,13 @@ fn sculpt_input(
         return;
     };
 
-    // World ray from the camera through the cursor.
     let ray_world = match camera.viewport_to_world(cam_tf, cursor) {
         Ok(r) => r,
         Err(_) => return,
     };
 
-    // Transform ray into piece-local space (turntable rotation undone).
+    // Transform the ray into piece-local space so tool paths are
+    // recorded independent of the turntable rotation.
     let piece_inv = piece_tf.affine().inverse();
     let origin_local = piece_inv.transform_point3(ray_world.origin);
     let dir_local = piece_inv
@@ -108,20 +179,8 @@ fn sculpt_input(
         None => return,
     };
 
-    let mode = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
-        BrushMode::Pull
-    } else {
-        BrushMode::Press
-    };
-
-    // Direction the tool is pushing *into* the surface. Use the local
-    // surface normal (SDF gradient) rather than the raw ray direction,
-    // so oblique cursor angles still produce natural side-squeeze
-    // behaviour rather than a bulge biased toward the viewer.
-    //
-    // Gradient points *outward* from the workpiece (positive-outside
-    // convention), so negate it to get "into the surface". Fall back
-    // to the ray direction if the gradient is degenerate.
+    // "Into surface" direction — SDF gradient points outward, so
+    // negate. Fall back to the ray direction on a degenerate gradient.
     let grad = workpiece.grid.gradient_at(hit);
     let into_surface = if grad.length_squared() > 1e-4 {
         -grad.normalize()
@@ -129,79 +188,160 @@ fn sculpt_input(
         dir_g
     };
 
-    // Offset the brush centre each frame so a held button carves
-    // progressively:
-    // - Press: push slightly further into the surface each frame.
-    // - Pull: push slightly back toward the viewer.
-    let advance = tool.advance_per_step;
-    let center = match mode {
-        BrushMode::Press => hit + into_surface * advance,
-        BrushMode::Pull => hit - into_surface * advance,
-    };
+    // Apply once at the primary contact, then again mirrored if
+    // symmetry is on. The mirror flips both the position and the
+    // press direction across piece-local X = 0.
+    apply_at(
+        &mut workpiece,
+        stroke.recorder.as_mut(),
+        tool.kind,
+        &tool,
+        keys.as_ref(),
+        hit,
+        into_surface,
+    );
+    if symmetry.enabled {
+        let mirrored_hit = GVec3::new(-hit.x, hit.y, hit.z);
+        let mirrored_dir = GVec3::new(-into_surface.x, into_surface.y, into_surface.z);
+        apply_at(
+            &mut workpiece,
+            stroke.recorder.as_mut(),
+            tool.kind,
+            &tool,
+            keys.as_ref(),
+            mirrored_hit,
+            mirrored_dir,
+        );
+    }
+}
 
-    let brush = SphereBrush {
-        center,
-        radius: tool.radius,
-        mode,
-        direction: into_surface,
-        // Magic clay is on for Press by default. Pull ignores the flag.
-        displace: tool.displace,
-        // The workbench is at Y=0 in piece-local coordinates while the
-        // piece sits on the workbench with identity turntable rotation.
-        // Once the turntable is nontrivial, the piece-local Y axis
-        // rotates with the piece, so the workbench needs its own
-        // world→piece-local transform. For Stage 1 we clip against the
-        // world-space plane by transforming it into piece-local — but
-        // in the current setup that's the same as `y = 0` in
-        // piece-local, and only *pure* Y-axis turntable rotations are
-        // supported, which preserve this. Rework in Stage 2 alongside
-        // the "configurable turntable axis" work.
-        workbench_y: Some(0.0),
-    };
-
-    // Read the grid dimensions before the mutable borrow.
+fn apply_at(
+    workpiece: &mut SculptWorkpiece,
+    mut recorder: Option<&mut StrokeRecorder>,
+    kind: ToolKind,
+    tool: &SculptTool,
+    keys: &ButtonInput<KeyCode>,
+    hit: GVec3,
+    into_surface: GVec3,
+) {
     let grid_res = workpiece.grid.res();
 
-    // Feed the recorder before each voxel is mutated, so pre-stroke
-    // values are captured exactly once per voxel. When no stroke is
-    // active (which shouldn't happen inside this branch, but guard
-    // anyway), we skip the callback overhead entirely.
-    let region = if let Some(rec) = stroke.recorder.as_mut() {
-        let r = apply_sphere_brush_with_callback(
-            &mut workpiece.grid,
-            &brush,
-            |x, y, z, pre| rec.record_pre_value(x, y, z, pre),
-        );
-        if let Some(region) = r {
-            rec.record_dirty_region(region, grid_res);
+    let region = match kind {
+        ToolKind::Finger => {
+            let mode = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+                BrushMode::Pull
+            } else {
+                BrushMode::Press
+            };
+            // Offset each frame so a held button carves progressively:
+            // Press pushes deeper into the surface, Pull backs out.
+            let advance = tool.advance_per_step;
+            let center = match mode {
+                BrushMode::Press => hit + into_surface * advance,
+                BrushMode::Pull => hit - into_surface * advance,
+            };
+            let brush = SphereBrush {
+                center,
+                radius: tool.size,
+                mode,
+                direction: into_surface,
+                displace: tool.displace,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+            }
         }
-        r
-    } else {
-        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+        ToolKind::Cutter(family) => {
+            // Cutter cuts along the surface normal, symmetric around
+            // the click point. A half-length of half the grid extent
+            // is enough to punch through any Stage-2 workpiece.
+            let half_length = workpiece.grid.extent().max_element() * 0.5;
+            let cutter = CookieCutter {
+                profile: family.profile(tool.size),
+                origin: hit,
+                axis: into_surface,
+                half_length,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_cookie_cutter_with_callback(&mut workpiece.grid, &cutter, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_cookie_cutter_with_callback(&mut workpiece.grid, &cutter, |_, _, _, _| {})
+            }
+        }
     };
 
     if let Some(region) = region {
-        let touched = region.touched_chunks(grid_res);
-        for c in touched {
+        if let Some(rec) = recorder.as_mut() {
+            rec.record_dirty_region(region, grid_res);
+        }
+        for c in region.touched_chunks(grid_res) {
             workpiece.dirty.insert((c.x, c.y, c.z));
         }
     }
 }
 
-/// `[` shrinks the brush, `]` grows it. `M` toggles magic-clay
-/// displacement so you can feel the difference against pure CSG.
-fn adjust_tool_size(keys: Res<ButtonInput<KeyCode>>, mut tool: ResMut<SculptTool>) {
+/// Tool selection, size, magic-clay toggle, symmetry toggle.
+fn adjust_tool(
+    keys: Res<ButtonInput<KeyCode>>,
+    mut tool: ResMut<SculptTool>,
+    mut symmetry: ResMut<SculptSymmetry>,
+) {
+    // Number keys pick the tool. Layout mirrors the game-native
+    // hotbar convention (`1` is your default, higher keys are
+    // successively more specialised).
+    if keys.just_pressed(KeyCode::Digit1) {
+        tool.kind = ToolKind::Finger;
+        bevy::log::info!("tool: finger");
+    }
+    if keys.just_pressed(KeyCode::Digit2) {
+        tool.kind = ToolKind::Cutter(CutterFamily::Circle);
+        bevy::log::info!("tool: cutter/{}", CutterFamily::Circle.label());
+    }
+    if keys.just_pressed(KeyCode::Digit3) {
+        tool.kind = ToolKind::Cutter(CutterFamily::Square);
+        bevy::log::info!("tool: cutter/{}", CutterFamily::Square.label());
+    }
+    if keys.just_pressed(KeyCode::Digit4) {
+        tool.kind = ToolKind::Cutter(CutterFamily::Hexagon);
+        bevy::log::info!("tool: cutter/{}", CutterFamily::Hexagon.label());
+    }
+    if keys.just_pressed(KeyCode::Digit5) {
+        tool.kind = ToolKind::Cutter(CutterFamily::Star5);
+        bevy::log::info!("tool: cutter/{}", CutterFamily::Star5.label());
+    }
+
+    // Size is a shared knob.
     if keys.just_pressed(KeyCode::BracketLeft) {
-        tool.radius = (tool.radius * 0.85).max(2.0);
+        tool.size = (tool.size * 0.85).max(2.0);
     }
     if keys.just_pressed(KeyCode::BracketRight) {
-        tool.radius = (tool.radius * 1.176).min(60.0);
+        tool.size = (tool.size * 1.176).min(60.0);
     }
+
+    // Magic-clay toggle (finger only, but harmless to leave available
+    // regardless of the active tool).
     if keys.just_pressed(KeyCode::KeyM) {
         tool.displace = !tool.displace;
         bevy::log::info!(
             "magic-clay displacement: {}",
             if tool.displace { "on" } else { "off" }
+        );
+    }
+
+    // Symmetry toggle.
+    if keys.just_pressed(KeyCode::KeyS) {
+        symmetry.enabled = !symmetry.enabled;
+        bevy::log::info!(
+            "symmetry: {}",
+            if symmetry.enabled { "on" } else { "off" }
         );
     }
 }

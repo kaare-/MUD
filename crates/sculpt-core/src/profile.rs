@@ -63,6 +63,26 @@ impl Profile {
             Profile::Star5 { .. } => "star",
         }
     }
+
+    /// Return a profile of the same family with the given characteristic
+    /// size. `size` is interpreted per family so a shared "current
+    /// cutter size" slider in the UI behaves predictably:
+    ///
+    /// - Circle: `radius = size`
+    /// - Square: `half_side = size` (full side is `2*size`)
+    /// - Hexagon: `inradius = size` (flats at `y = ±size`)
+    /// - Star5: `outer = size`; the inner-ratio is preserved.
+    pub fn resized(&self, size: f32) -> Profile {
+        match self {
+            Profile::Circle { .. } => Profile::Circle { radius: size },
+            Profile::Square { .. } => Profile::Square { half_side: size },
+            Profile::Hexagon { .. } => Profile::Hexagon { radius: size },
+            Profile::Star5 { inner_ratio, .. } => Profile::Star5 {
+                outer: size,
+                inner_ratio: *inner_ratio,
+            },
+        }
+    }
 }
 
 /// Signed distance to an axis-aligned box centred at origin with
@@ -90,7 +110,7 @@ fn hexagon_sdf(p: Vec2, r: f32) -> f32 {
 /// inner corner radius as a fraction of `r`.
 fn star5_sdf(mut p: Vec2, r: f32, rf: f32) -> f32 {
     // Two rotation axes for the 5-fold sector reduction.
-    let k1 = Vec2::new(0.809_016_99, -0.587_785_25);
+    let k1 = Vec2::new(0.809_017, -0.587_785_3);
     let k2 = Vec2::new(-k1.x, k1.y);
     p.x = p.x.abs();
     p -= 2.0 * k1 * k1.dot(p).max(0.0);
