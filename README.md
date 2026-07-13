@@ -47,7 +47,8 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 |---|---|
 | Left-drag | Engage the active tool |
 | Shift + Left-drag | Finger only: pull (add material) |
-| `[` / `]` | Shrink / grow the active tool |
+| `[` / `]` or `-` / `=` | Shrink / grow the active tool (keyboard) |
+| Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
 | `M` | Toggle magic-clay displacement (finger only) |
 | `S` | Toggle mirror symmetry (piece-local X = 0) |
 | `Ctrl+Z` | Undo last stroke |

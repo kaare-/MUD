@@ -44,6 +44,7 @@ fn compute_transform(cam: &OrbitCamera) -> Transform {
 
 fn orbit_camera_control(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     mut motion: EventReader<MouseMotion>,
     mut wheel: EventReader<MouseWheel>,
     mut q: Query<(&mut OrbitCamera, &mut Transform)>,
@@ -52,9 +53,14 @@ fn orbit_camera_control(
     for ev in motion.read() {
         mouse_delta += ev.delta;
     }
+    // Yield the scroll wheel to the sculpt module when Shift is held —
+    // that's the size-adjustment gesture. Plain scroll still zooms.
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let mut scroll = 0.0f32;
     for ev in wheel.read() {
-        scroll += ev.y;
+        if !shift {
+            scroll += ev.y;
+        }
     }
 
     let Ok((mut cam, mut tf)) = q.get_single_mut() else {

@@ -7,6 +7,7 @@
 //! Symmetry is a small overlay that applies each stamp again at its
 //! mirror image across the piece-local X = 0 plane. Toggle with `S`.
 
+use bevy::input::mouse::MouseWheel;
 use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use glam::Vec3 as GVec3;
@@ -288,15 +289,35 @@ fn apply_at(
     }
 }
 
+/// Minimum and maximum tool size in mm. Below the min the sculpt
+/// footprint is smaller than a voxel; above the max it dwarfs the
+/// starter primitive.
+const SIZE_MIN: f32 = 2.0;
+const SIZE_MAX: f32 = 60.0;
+/// Per-keystroke size step. `SIZE_STEP_UP` = `1 / SIZE_STEP_DOWN` so
+/// pressing "smaller then bigger" returns you to the same size.
+const SIZE_STEP_DOWN: f32 = 0.85;
+const SIZE_STEP_UP: f32 = 1.0 / 0.85;
+/// Shift-scroll size sensitivity (per wheel tick).
+const SIZE_SCROLL_SENSITIVITY: f32 = 0.06;
+
 /// Tool selection, size, magic-clay toggle, symmetry toggle.
+///
+/// Size can be adjusted three equivalent ways so no keyboard layout
+/// leaves you stranded:
+///
+/// - `[` / `]` — the classic brush-size convention.
+/// - `-` / `=` — same, on physical keys that live outside the
+///   alphabet range on most non-US layouts.
+/// - `Shift + scroll` — universal; works on Mac trackpads too.
+///
+/// Every change logs the new size so you get instant feedback.
 fn adjust_tool(
     keys: Res<ButtonInput<KeyCode>>,
+    mut wheel: EventReader<MouseWheel>,
     mut tool: ResMut<SculptTool>,
     mut symmetry: ResMut<SculptSymmetry>,
 ) {
-    // Number keys pick the tool. Layout mirrors the game-native
-    // hotbar convention (`1` is your default, higher keys are
-    // successively more specialised).
     if keys.just_pressed(KeyCode::Digit1) {
         tool.kind = ToolKind::Finger;
         bevy::log::info!("tool: finger");
@@ -318,16 +339,36 @@ fn adjust_tool(
         bevy::log::info!("tool: cutter/{}", CutterFamily::Star5.label());
     }
 
-    // Size is a shared knob.
-    if keys.just_pressed(KeyCode::BracketLeft) {
-        tool.size = (tool.size * 0.85).max(2.0);
+    // Size: three equivalent ways to adjust it. Track the old value
+    // so we only log when it actually changes.
+    let old_size = tool.size;
+
+    // Keyboard: [ / ] and - / =.
+    if keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::Minus) {
+        tool.size = (tool.size * SIZE_STEP_DOWN).max(SIZE_MIN);
     }
-    if keys.just_pressed(KeyCode::BracketRight) {
-        tool.size = (tool.size * 1.176).min(60.0);
+    if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::Equal) {
+        tool.size = (tool.size * SIZE_STEP_UP).min(SIZE_MAX);
     }
 
-    // Magic-clay toggle (finger only, but harmless to leave available
-    // regardless of the active tool).
+    // Shift + scroll wheel. When Shift is held the camera plugin
+    // yields, so this doesn't double up with zoom.
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    let mut scroll_delta = 0.0f32;
+    for ev in wheel.read() {
+        if shift {
+            scroll_delta += ev.y;
+        }
+    }
+    if scroll_delta != 0.0 {
+        tool.size = (tool.size * (1.0 + scroll_delta * SIZE_SCROLL_SENSITIVITY))
+            .clamp(SIZE_MIN, SIZE_MAX);
+    }
+
+    if (tool.size - old_size).abs() > 0.05 {
+        bevy::log::info!("tool size: {:.1} mm", tool.size);
+    }
+
     if keys.just_pressed(KeyCode::KeyM) {
         tool.displace = !tool.displace;
         bevy::log::info!(
@@ -336,7 +377,6 @@ fn adjust_tool(
         );
     }
 
-    // Symmetry toggle.
     if keys.just_pressed(KeyCode::KeyS) {
         symmetry.enabled = !symmetry.enabled;
         bevy::log::info!(

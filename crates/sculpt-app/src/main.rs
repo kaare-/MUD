@@ -20,7 +20,8 @@
 //!   3 ................ tool: cookie cutter (square)
 //!   4 ................ tool: cookie cutter (hexagon)
 //!   5 ................ tool: cookie cutter (star)
-//!   [ / ] ............ shrink / grow the active tool
+//!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
+//!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay displacement (finger)
 //!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
