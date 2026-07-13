@@ -36,7 +36,7 @@ fn main() {
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
-                        title: "MUD — sculpt (Stage 0)".into(),
+                        title: "MUD — sculpt".into(),
                         resolution: WindowResolution::new(1280.0, 800.0),
                         ..default()
                     }),
