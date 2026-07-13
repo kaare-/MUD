@@ -51,7 +51,11 @@ fn main() {
                 // Bevy's default LogPlugin is fine; keep terminal noise low.
                 .set(bevy::log::LogPlugin {
                     level: bevy::log::Level::INFO,
-                    filter: "wgpu=warn,naga=warn".into(),
+                    // wgpu_hal::gles emits noisy "ERROR" messages at
+                    // startup that are actually informational (dimension
+                    // heuristics on the GL ES backend). Silence just
+                    // that target; genuine wgpu warnings still surface.
+                    filter: "wgpu=warn,naga=warn,wgpu_hal::gles=off".into(),
                     ..default()
                 }),
         )
