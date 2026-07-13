@@ -187,6 +187,18 @@ impl Grid {
         c0 * (1.0 - fz) + c1 * fz
     }
 
+    /// Central-differences gradient at an arbitrary piece-local point,
+    /// computed from four `sample()` calls per axis. The result is not
+    /// normalised; callers who want a surface normal should normalise
+    /// it themselves.
+    pub fn gradient_at(&self, p: Vec3) -> Vec3 {
+        let h = self.voxel_size;
+        let dx = self.sample(p + Vec3::new(h, 0.0, 0.0)) - self.sample(p - Vec3::new(h, 0.0, 0.0));
+        let dy = self.sample(p + Vec3::new(0.0, h, 0.0)) - self.sample(p - Vec3::new(0.0, h, 0.0));
+        let dz = self.sample(p + Vec3::new(0.0, 0.0, h)) - self.sample(p - Vec3::new(0.0, 0.0, h));
+        Vec3::new(dx, dy, dz) * (0.5 / h)
+    }
+
     /// Sphere-tracing ray march. `origin` and `dir` are in piece-local
     /// space; `dir` should be unit length. Returns the hit point or `None`
     /// if the ray does not intersect the surface within `max_dist`.
