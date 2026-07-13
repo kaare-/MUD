@@ -67,13 +67,21 @@ pub fn apply_sphere_brush_with_callback<F>(
 where
     F: FnMut(u32, u32, u32, f32),
 {
-    // Bulge geometry constants. Tuned to make repeated presses look
-    // recognisably "clay-like" for brush radii in the 8-30 mm range:
+    // Bulge geometry constants. Tuned so repeated presses / pulls
+    // read as clay rather than eraser / add-material, for brush radii
+    // in the 8-30 mm range:
     // - `BULGE_THICKNESS_FACTOR`: ring width relative to brush radius.
+    //   Wider ring = more of the surrounding surface participates.
     // - `BULGE_INTENSITY_FACTOR`: max SDF change per stamp at peak
-    //   weight, relative to brush radius.
-    const BULGE_THICKNESS_FACTOR: f32 = 0.45;
-    const BULGE_INTENSITY_FACTOR: f32 = 0.18;
+    //   weight, relative to brush radius. Higher = more visible pile-
+    //   up per frame.
+    //
+    // Iteration history:
+    // - Stage 1 initial: 0.45 / 0.18 read as too subtle in a real
+    //   user session ("feels more like eraser and add-material than
+    //   clay"). Bumped up here.
+    const BULGE_THICKNESS_FACTOR: f32 = 0.60;
+    const BULGE_INTENSITY_FACTOR: f32 = 0.32;
 
     let bulge_thickness = if brush.displace {
         brush.radius * BULGE_THICKNESS_FACTOR
@@ -133,35 +141,39 @@ where
                     BrushMode::Pull => old.min(d_brush),
                 };
 
-                // Volume-displacement bulge. Only fires for Press with
-                // `displace = true`, only in the annular ring just
-                // outside the brush footprint, and only where the
-                // pre-stamp field was near the surface. The bulge is
-                // biased perpendicular / opposite to the press
-                // direction so material squeezes out around the
-                // indentation, not into it.
-                if brush.displace
-                    && matches!(brush.mode, BrushMode::Press)
-                    && d_brush > 0.0
-                    && d_brush < bulge_thickness
-                {
+                // Volume-displacement bulge. Fires with `displace = true`
+                // for both Press and Pull, in the annular ring just
+                // outside the brush footprint, only where the pre-stamp
+                // field was near the surface. Direction weight biases
+                // perpendicular / opposite to the tool direction so
+                // material squeezes out (Press) or is recruited from
+                // the surrounding surface (Pull), instead of appearing
+                // straight ahead or behind.
+                //
+                // Sign convention:
+                // - Press: material squeezed OUT of the brush footprint
+                //   piles up in the ring. SDF becomes more negative
+                //   (surface pushed outward) → `new -= bulge`.
+                // - Pull:  material recruited INTO the pulled bulge is
+                //   drawn from the surrounding surface. SDF becomes
+                //   more positive (surrounding surface retreats
+                //   inward) → `new += bulge`. This is what turns Pull
+                //   from "spawn material from air" into "smear".
+                if brush.displace && d_brush > 0.0 && d_brush < bulge_thickness {
                     let surface_weight = (1.0 - (old.abs() / surface_band).min(1.0)).max(0.0);
                     if surface_weight > 0.0 {
-                        // Ring kernel: peaks at the inner edge, zero at
-                        // the outer edge, smooth quadratic falloff.
                         let ring_t = d_brush / bulge_thickness;
                         let ring_weight = (1.0 - ring_t) * (1.0 - ring_t);
 
-                        // Direction weight: 0 in the press direction,
-                        // 1 opposite, 0.5 perpendicular. Formula:
-                        // (1 - cos θ) / 2 where θ is the angle from
-                        // `direction` to (p - c).
                         let bulge_dir = (p - c) * (1.0 / (d_brush + r).max(1e-6));
                         let cos_theta = bulge_dir.dot(dir);
                         let dir_weight = ((1.0 - cos_theta) * 0.5).clamp(0.0, 1.0);
 
                         let bulge = bulge_intensity * ring_weight * surface_weight * dir_weight;
-                        new -= bulge;
+                        match brush.mode {
+                            BrushMode::Press => new -= bulge,
+                            BrushMode::Pull => new += bulge,
+                        }
                     }
                 }
 
@@ -283,6 +295,38 @@ mod tests {
         assert!(
             after < before - 0.5,
             "displacement should bulge the surface toward the probe: before={before}, after={after}",
+        );
+    }
+
+    #[test]
+    fn pull_with_displacement_recruits_from_surrounding_surface() {
+        // Big workpiece so the brush is comfortably at the surface.
+        let g_res = glam::UVec3::new(64, 64, 64);
+        let mut g = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 20.0);
+
+        // Probe in the bulge ring, near the workpiece surface,
+        // perpendicular to the tool direction. Currently just inside
+        // the workpiece — with Pull-recruitment displacement, the
+        // surrounding surface should retreat (SDF grows toward 0 or
+        // positive).
+        let probe = Vec3::new(52.0, 38.0, 32.0);
+        let before = g.sample(probe);
+
+        let brush = SphereBrush {
+            center: Vec3::new(52.0, 32.0, 32.0),
+            radius: 5.0,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(-1.0, 0.0, 0.0),
+            displace: true,
+            workbench_y: None,
+        };
+        for _ in 0..40 {
+            let _ = apply_sphere_brush(&mut g, &brush);
+        }
+        let after = g.sample(probe);
+        assert!(
+            after > before + 0.3,
+            "pull recruitment should retreat the surrounding surface (SDF should grow): before={before}, after={after}",
         );
     }
 

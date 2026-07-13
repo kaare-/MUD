@@ -13,10 +13,17 @@
 //!   Middle-drag ...... pan camera
 //!   Scroll ........... zoom
 //!   Q / E ............ turntable left / right (hold)
-//!   Left-drag ........ press (carve, with magic-clay displacement)
-//!   Shift+Left-drag .. pull (add material)
-//!   [ / ] ............ shrink / grow brush radius
-//!   M ................ toggle magic-clay displacement (A/B vs. CSG)
+//!   Left-drag ........ engage the active tool
+//!   Shift+Left ....... finger only: pull (add material)
+//!   1 ................ tool: finger (default)
+//!   2 ................ tool: cookie cutter (circle)
+//!   3 ................ tool: cookie cutter (square)
+//!   4 ................ tool: cookie cutter (hexagon)
+//!   5 ................ tool: cookie cutter (star)
+//!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
+//!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
+//!   M ................ toggle magic-clay displacement (finger)
+//!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Esc .............. quit
@@ -45,6 +52,11 @@ fn main() {
                 // Bevy's default LogPlugin is fine; keep terminal noise low.
                 .set(bevy::log::LogPlugin {
                     level: bevy::log::Level::INFO,
+                    // wgpu_hal::gles emits noisy "ERROR" messages at
+                    // startup that are actually informational (dimension
+                    // heuristics on the GL ES backend). Silence just
+                    // that target; genuine wgpu warnings still surface.
+                    filter: "wgpu=warn,naga=warn,wgpu_hal::gles=off".into(),
                     ..default()
                 }),
         )

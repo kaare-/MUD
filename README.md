@@ -32,19 +32,39 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 
 ## Controls
 
+**Camera and turntable**
+
 | Input | Action |
 |---|---|
 | Right-drag | Orbit camera |
 | Middle-drag | Pan camera |
 | Scroll | Zoom |
-| Left-drag | Press (carve with magic-clay displacement) |
-| Shift + Left-drag | Pull (add material) |
 | Hold `Q` / `E` | Turntable left / right |
-| `[` / `]` | Shrink / grow brush radius |
-| `M` | Toggle magic-clay displacement (A/B against pure CSG) |
+
+**Sculpting**
+
+| Input | Action |
+|---|---|
+| Left-drag | Engage the active tool |
+| Shift + Left-drag | Finger only: pull (add material) |
+| `[` / `]` or `-` / `=` | Shrink / grow the active tool (keyboard) |
+| Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
+| `M` | Toggle magic-clay displacement (finger only) |
+| `S` | Toggle mirror symmetry (piece-local X = 0) |
 | `Ctrl+Z` | Undo last stroke |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
-| `Esc` | Quit |
+
+**Tool palette**
+
+| Key | Tool |
+|---|---|
+| `1` | Finger (default) |
+| `2` | Cookie cutter — circle |
+| `3` | Cookie cutter — square |
+| `4` | Cookie cutter — hexagon |
+| `5` | Cookie cutter — star |
+
+`Esc` to quit.
 
 ## Layout
 
