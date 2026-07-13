@@ -32,6 +32,7 @@ use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
 mod camera;
+mod preview;
 mod sculpt;
 mod turntable;
 mod undo;
@@ -71,6 +72,7 @@ fn main() {
             workpiece::plugin,
             undo::plugin,
             sculpt::plugin,
+            preview::plugin,
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)

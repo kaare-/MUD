@@ -64,6 +64,58 @@ impl Profile {
         }
     }
 
+    /// Ordered boundary vertices of the profile in its local frame,
+    /// counter-clockwise viewed from +Z. Used by the app to build
+    /// preview meshes without going through the SDF mesher.
+    ///
+    /// `arc_resolution` controls how many segments the circle uses;
+    /// polygons ignore it and return their exact corners. The polygon
+    /// returned is closed by convention (last vertex ≠ first vertex);
+    /// callers wrap around by indexing modulo `len()`.
+    pub fn outline(&self, arc_resolution: u32) -> Vec<Vec2> {
+        match *self {
+            Profile::Circle { radius } => {
+                let n = arc_resolution.max(8);
+                (0..n)
+                    .map(|i| {
+                        let t = (i as f32 / n as f32) * std::f32::consts::TAU;
+                        Vec2::new(radius * t.cos(), radius * t.sin())
+                    })
+                    .collect()
+            }
+            Profile::Square { half_side } => vec![
+                Vec2::new(half_side, half_side),
+                Vec2::new(-half_side, half_side),
+                Vec2::new(-half_side, -half_side),
+                Vec2::new(half_side, -half_side),
+            ],
+            Profile::Hexagon { radius } => {
+                // Flat-topped: vertices lie at inradius * 2/sqrt(3)
+                // from centre, at every 60°.
+                let r = radius * 2.0 / 3.0_f32.sqrt();
+                (0..6)
+                    .map(|i| {
+                        let t = (i as f32 / 6.0) * std::f32::consts::TAU;
+                        Vec2::new(r * t.cos(), r * t.sin())
+                    })
+                    .collect()
+            }
+            Profile::Star5 { outer, inner_ratio } => {
+                let inner = outer * inner_ratio;
+                (0..10)
+                    .map(|i| {
+                        // 10 alternating vertices, offset so a tip
+                        // points along +Y for visual "up".
+                        let t = (i as f32 / 10.0) * std::f32::consts::TAU
+                            + std::f32::consts::FRAC_PI_2;
+                        let r = if i % 2 == 0 { outer } else { inner };
+                        Vec2::new(r * t.cos(), r * t.sin())
+                    })
+                    .collect()
+            }
+        }
+    }
+
     /// Return a profile of the same family with the given characteristic
     /// size. `size` is interpreted per family so a shared "current
     /// cutter size" slider in the UI behaves predictably:
@@ -219,6 +271,23 @@ mod tests {
         assert!(s.sdf(0.0, 0.0) < 0.0);
         // Way outside a tip: positive.
         assert!(s.sdf(10.0, 0.0) > 0.0);
+    }
+
+    #[test]
+    fn outlines_have_the_right_number_of_vertices() {
+        let c = Profile::Circle { radius: 5.0 }.outline(24);
+        assert_eq!(c.len(), 24);
+        assert_eq!(Profile::Square { half_side: 5.0 }.outline(24).len(), 4);
+        assert_eq!(Profile::Hexagon { radius: 5.0 }.outline(24).len(), 6);
+        assert_eq!(
+            Profile::Star5 {
+                outer: 5.0,
+                inner_ratio: 0.4
+            }
+            .outline(24)
+            .len(),
+            10
+        );
     }
 
     #[test]
