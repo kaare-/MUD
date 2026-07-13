@@ -20,6 +20,7 @@
 //!   3 ................ tool: cookie cutter (square)
 //!   4 ................ tool: cookie cutter (hexagon)
 //!   5 ................ tool: cookie cutter (star)
+//!   6 ................ tool: wire cutter (LMB-drag slices through)
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay displacement (finger)

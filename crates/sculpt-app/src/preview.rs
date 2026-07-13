@@ -179,11 +179,11 @@ fn update_preview(
         let normal_bevy = Vec3::new(normal.x, normal.y, normal.z);
         tf.translation = hit_bevy + normal_bevy * bias;
 
-        // For the finger the sphere is radially symmetric — no rotation
-        // needed. For a cutter we need the local Y axis (extrusion axis
-        // in the mesh) to align with the surface normal.
+        // Radially symmetric tools (finger + wire cutter marker) need
+        // no rotation. Cutter prisms align their local Y axis with
+        // the surface normal so the extrusion direction is visible.
         tf.rotation = match tool.kind {
-            ToolKind::Finger => Quat::IDENTITY,
+            ToolKind::Finger | ToolKind::WireCutter => Quat::IDENTITY,
             ToolKind::Cutter(_) => Quat::from_rotation_arc(Vec3::Y, normal_bevy),
         };
     }
@@ -213,6 +213,11 @@ fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
             let profile = family.profile(size);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)
         }
+        // Wire cutter's cut direction is determined by the drag, so a
+        // static hover mesh can't encode it. Show a small marker so
+        // the user still gets 'cursor is on the material' feedback;
+        // the actual cut plane appears on release.
+        ToolKind::WireCutter => Sphere::new(2.5).mesh().uv(16, 12),
     }
 }
 
