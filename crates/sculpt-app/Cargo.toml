@@ -1,0 +1,22 @@
+[package]
+name = "sculpt-app"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+description = "MUD app shell: window, input, camera, rendering. Bevy 0.15 on wgpu."
+
+[dependencies]
+sculpt-core = { path = "../sculpt-core" }
+glam = { workspace = true }
+bevy = { version = "0.15", default-features = false, features = [
+    "bevy_asset",
+    "bevy_core_pipeline",
+    "bevy_pbr",
+    "bevy_render",
+    "bevy_winit",
+    "bevy_window",
+    "tonemapping_luts",
+    "ktx2",
+    "zstd",
+    "x11",
+] }
