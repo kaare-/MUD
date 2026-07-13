@@ -13,9 +13,12 @@
 //!   Middle-drag ...... pan camera
 //!   Scroll ........... zoom
 //!   Q / E ............ turntable left / right (hold)
-//!   Left-drag ........ press (carve material away)
+//!   Left-drag ........ press (carve, with magic-clay displacement)
 //!   Shift+Left-drag .. pull (add material)
 //!   [ / ] ............ shrink / grow brush radius
+//!   M ................ toggle magic-clay displacement (A/B vs. CSG)
+//!   Ctrl+Z ........... undo last stroke
+//!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Esc .............. quit
 
 use bevy::prelude::*;
@@ -24,6 +27,7 @@ use bevy::window::WindowResolution;
 mod camera;
 mod sculpt;
 mod turntable;
+mod undo;
 mod workpiece;
 
 fn main() {
@@ -53,6 +57,7 @@ fn main() {
             camera::plugin,
             turntable::plugin,
             workpiece::plugin,
+            undo::plugin,
             sculpt::plugin,
         ))
         .add_systems(Startup, setup_scene)

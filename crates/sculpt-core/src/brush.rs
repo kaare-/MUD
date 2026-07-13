@@ -47,7 +47,26 @@ pub struct SphereBrush {
 
 /// Apply one stamp of a spherical brush to the grid. Returns the dirty
 /// voxel AABB so the caller can queue chunk re-meshing.
+///
+/// This is a thin wrapper around [`apply_sphere_brush_with_callback`]
+/// that discards the pre-mutation values. Callers who want to journal
+/// undo state should call the callback variant directly.
 pub fn apply_sphere_brush(grid: &mut Grid, brush: &SphereBrush) -> Option<DirtyRegion> {
+    apply_sphere_brush_with_callback(grid, brush, |_, _, _, _| {})
+}
+
+/// Same as [`apply_sphere_brush`] but with a callback fired for every
+/// voxel that is *about to change*. The callback receives the voxel
+/// index and the pre-mutation SDF value, in time to save it into an
+/// undo journal.
+pub fn apply_sphere_brush_with_callback<F>(
+    grid: &mut Grid,
+    brush: &SphereBrush,
+    mut on_pre_mutation: F,
+) -> Option<DirtyRegion>
+where
+    F: FnMut(u32, u32, u32, f32),
+{
     // Bulge geometry constants. Tuned to make repeated presses look
     // recognisably "clay-like" for brush radii in the 8-30 mm range:
     // - `BULGE_THICKNESS_FACTOR`: ring width relative to brush radius.
@@ -158,6 +177,7 @@ pub fn apply_sphere_brush(grid: &mut Grid, brush: &SphereBrush) -> Option<DirtyR
                 }
 
                 if new != old {
+                    on_pre_mutation(ix, iy, iz, old);
                     grid.set(ix, iy, iz, new);
                 }
             }

@@ -16,6 +16,8 @@ pub mod brush;
 pub mod grid;
 pub mod mesh;
 
-pub use brush::{apply_sphere_brush, BrushMode, SphereBrush};
+pub use brush::{
+    apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
+};
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};

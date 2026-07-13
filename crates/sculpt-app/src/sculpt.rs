@@ -8,8 +8,9 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use glam::Vec3 as GVec3;
 
-use sculpt_core::{apply_sphere_brush, BrushMode, SphereBrush};
+use sculpt_core::{apply_sphere_brush_with_callback, BrushMode, SphereBrush};
 
+use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
 /// The one Stage-0/1 tool — a spherical finger.
@@ -44,6 +45,7 @@ pub fn plugin(app: &mut App) {
     app.add_systems(Update, adjust_tool_size);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn sculpt_input(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
@@ -52,7 +54,24 @@ fn sculpt_input(
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     mut workpiece: ResMut<SculptWorkpiece>,
+    mut stroke: ResMut<SculptStroke>,
+    mut history: ResMut<UndoHistory>,
 ) {
+    // Stroke lifecycle: pressing LMB starts a recorder; releasing it
+    // ends the stroke and pushes to the undo stack. This runs even
+    // when the ray misses the surface (empty click) — the recorder
+    // will simply have no entries and get discarded.
+    if buttons.just_pressed(MouseButton::Left) {
+        stroke.recorder = Some(StrokeRecorder::default());
+    }
+    if buttons.just_released(MouseButton::Left) {
+        if let Some(rec) = stroke.recorder.take() {
+            if let Some(entry) = rec.finish(&workpiece.grid) {
+                history.push_stroke(entry);
+            }
+        }
+    }
+
     if !buttons.pressed(MouseButton::Left) {
         return;
     }
@@ -140,8 +159,29 @@ fn sculpt_input(
         workbench_y: Some(0.0),
     };
 
-    if let Some(region) = apply_sphere_brush(&mut workpiece.grid, &brush) {
-        let touched = region.touched_chunks(workpiece.grid.res());
+    // Read the grid dimensions before the mutable borrow.
+    let grid_res = workpiece.grid.res();
+
+    // Feed the recorder before each voxel is mutated, so pre-stroke
+    // values are captured exactly once per voxel. When no stroke is
+    // active (which shouldn't happen inside this branch, but guard
+    // anyway), we skip the callback overhead entirely.
+    let region = if let Some(rec) = stroke.recorder.as_mut() {
+        let r = apply_sphere_brush_with_callback(
+            &mut workpiece.grid,
+            &brush,
+            |x, y, z, pre| rec.record_pre_value(x, y, z, pre),
+        );
+        if let Some(region) = r {
+            rec.record_dirty_region(region, grid_res);
+        }
+        r
+    } else {
+        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+    };
+
+    if let Some(region) = region {
+        let touched = region.touched_chunks(grid_res);
         for c in touched {
             workpiece.dirty.insert((c.x, c.y, c.z));
         }
