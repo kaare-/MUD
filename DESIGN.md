@@ -699,9 +699,95 @@ inform this design.
 
 If we agree on the shape of this document, the smallest useful thing to
 build next is Stage 0 from §4: one grid, one brush, one camera, one
-turntable hotkey, no undo. That is a two-to-four-week prototype for one
-person, and it will settle 80% of the arguments about whether the
-philosophy holds up under a mouse.
+turntable hotkey, no undo. It will settle 80% of the arguments about
+whether the philosophy holds up under a mouse.
 
 Everything in Stages 1–4 depends on Stage 0 feeling good. If it doesn't,
 we iterate on the finger brush before we do anything else.
+
+---
+
+## 9. Adopted decisions
+
+Recorded here so we don't re-litigate. All defaults from §5 accepted:
+
+1. **Displacement vs. removal is per-tool, hard-coded.** Finger, thumb,
+   paddle, roller displace. Knife, wire, loop, scraper, cookie-cutter
+   remove. No user toggle.
+2. **Touching ≠ merged.** Weld is an explicit user action.
+3. **Turntable rotates the piece.** Camera and lighting stay put.
+4. **Undo is stroke-granular** by default; `Shift+Ctrl+Z` = per-op.
+5. **Symmetry defaults on** for the starter primitive; one-key toggle;
+   mirror plane in piece-local coordinates.
+6. **The workbench is always present.** No "empty scene" mode.
+7. **Units are millimetres**, physical, stored in the file format.
+8. **Three coordinate frames**: world / workbench / piece-local. Tools
+   operate in piece-local. Undo journal records in piece-local.
+9. **Meshes are outputs**, never sources of truth. Import converts to
+   SDF; there is no polygon-edit mode.
+10. **No modes hidden in modifier keys.** Every tool state is visible in
+    the cursor and toolbar.
+
+Plus the brief-level answers from §1.2:
+
+- **Target user**: see §10. Not a professional sculptor.
+- **Primary input**: mouse + keyboard. Pen tablet is a Stage 3
+  enhancement, not a target.
+- **Output at MVP**: STL export at Stage 4. OBJ / glTF are cheap
+  add-ons once STL works.
+- **Colour / decoration**: deferred to Stage 5+. Representation keeps
+  the door open (per-tile attributes) but no UI.
+- **Failure modes**: graceful degradation, never hard errors. Sub-voxel
+  detail locally increases effective resolution up to a cap, then
+  no-ops. Cut fragments below a mass threshold are auto-culled with a
+  small notification.
+- **Target platform**: desktop first (Linux/macOS/Windows). WebGPU keeps
+  a plausible browser path open without committing to it.
+
+**Stack, adopted:**
+
+- **Rust** for the core.
+- **Bevy** for windowing, input, camera, and rendering scaffolding.
+  Bevy is wgpu underneath, so we keep GPU flexibility and cross-platform
+  portability. If Bevy proves too opinionated we can drop to raw wgpu,
+  but the initial cost of the scaffolding is much smaller with Bevy.
+- **Dense `Vec<f32>` grid at 256³** for Stage 0. Deliberately throw-away.
+  Migrate to sparse narrow-band (VDB or custom) in Stage 2.
+
+---
+
+## 10. Target user
+
+The user is not a sculptor. The user is a **3D-game native, non-CAD,
+non-artist** — someone who is fluent with 3D games, has maybe worked
+with paper clay in school or dug a lump out of a garden hole, and has
+never opened Blender, ZBrush, or a CAD package.
+
+Implications that ripple through every subsequent design decision:
+
+- **Camera and controls must feel like a game**, not a DCC tool. Right-
+  drag to orbit, scroll to zoom, middle-drag to pan. WASD is not needed
+  — the object is fixed and the camera flies around it, not through it.
+- **Number-key hotbar for tools** (`1`–`9`), like a game inventory.
+  Not a pinned toolbar to hunt through.
+- **Drop-in onboarding.** No tutorial. The scene starts with a ball on
+  the workbench. Ambient hints ("try left-click and drag") appear only
+  if the user idles for a while.
+- **Game-native feedback matters more than it would for a professional
+  tool.** Subtle springy visual response when material squishes. Soft
+  "thunk" sound when a cookie cutter engages. A short particle flourish
+  when a cut completes. None of this is simulation — it is game juice,
+  and this user expects it.
+- **Convincing form quickly matters more than technical accuracy.**
+  Matcap shaders that flatter uneven surfaces are essential, not
+  optional. A slightly wrong shape that reads as sculpted is a better
+  result than an accurate shape that reads as low-poly.
+- **The Stage 0 falsifiable question sharpens** from *"can a stranger
+  sculpt a mug in five minutes?"* to *"does a 3D-native player, with no
+  tutorial, start pushing material around within 30 seconds and end up
+  with something they are pleased with in five minutes?"*
+
+The user is **not** looking for pottery-wheel fidelity. They are looking
+for a sandbox toy that produces satisfying objects. If the app feels
+closer to Dreams or Claybook than to ZBrush, we are on target.
+
