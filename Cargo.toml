@@ -1,0 +1,27 @@
+[workspace]
+members = ["crates/sculpt-core", "crates/sculpt-app"]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+version = "0.1.0"
+publish = false
+
+[workspace.dependencies]
+glam = "0.29"
+
+# Release profile tuned for interactive feel:
+# - opt-level 3 in every crate (we need the mesher fast)
+# - LTO in release; not in dev, so we can iterate
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+
+# Dependencies stay optimised even in dev builds so Bevy + our mesher
+# are not painfully slow while iterating.
+[profile.dev.package."*"]
+opt-level = 3
+
+[profile.dev]
+opt-level = 1

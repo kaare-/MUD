@@ -1,0 +1,10 @@
+[package]
+name = "sculpt-core"
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+description = "Geometry engine for MUD: SDF storage, brush operations, mesh extraction."
+
+[dependencies]
+glam = { workspace = true }
+fast-surface-nets = "0.2"
