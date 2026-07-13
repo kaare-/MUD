@@ -63,6 +63,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `3` | Cookie cutter — square |
 | `4` | Cookie cutter — hexagon |
 | `5` | Cookie cutter — star |
+| `6` | Wire cutter (LMB-drag slices along the drag line) |
 
 `Esc` to quit.
 

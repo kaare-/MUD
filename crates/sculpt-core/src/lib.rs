@@ -22,7 +22,8 @@ pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
 pub use cutter::{
-    apply_cookie_cutter, apply_cookie_cutter_with_callback, CookieCutter,
+    apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,
+    apply_wire_cutter_with_callback, CookieCutter, WireCutter,
 };
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};

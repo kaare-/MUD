@@ -13,8 +13,8 @@ use bevy::window::PrimaryWindow;
 use glam::Vec3 as GVec3;
 
 use sculpt_core::{
-    apply_cookie_cutter_with_callback, apply_sphere_brush_with_callback, BrushMode, CookieCutter,
-    Profile, SphereBrush,
+    apply_cookie_cutter_with_callback, apply_sphere_brush_with_callback,
+    apply_wire_cutter_with_callback, BrushMode, CookieCutter, Profile, SphereBrush, WireCutter,
 };
 
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
@@ -25,6 +25,10 @@ use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 pub enum ToolKind {
     Finger,
     Cutter(CutterFamily),
+    /// Wire cutter — a planar slab cut defined by two cursor
+    /// positions (LMB down = anchor A, LMB up = anchor B). Slices
+    /// all the way through anything it intersects.
+    WireCutter,
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
@@ -104,10 +108,25 @@ impl Default for SculptSymmetry {
     }
 }
 
+/// In-flight wire-cutter state: the piece-local hit point at
+/// LMB-down and the piece-local camera direction at that moment.
+/// The cut plane is computed on LMB-up.
+#[derive(Resource, Default)]
+pub struct WireCutState {
+    pub anchor_a: Option<GVec3>,
+    pub view_dir_local: Option<GVec3>,
+}
+
+/// Slab thickness (mm) the wire cutter carves. Corresponds to the
+/// "kerf" of a physical wire — thin, so the cut looks like a slice
+/// rather than a groove.
+const WIRE_CUTTER_THICKNESS: f32 = 1.5;
+
 pub fn plugin(app: &mut App) {
     app.init_resource::<SculptTool>();
     app.init_resource::<SculptSymmetry>();
-    app.add_systems(Update, (sculpt_input, adjust_tool));
+    app.init_resource::<WireCutState>();
+    app.add_systems(Update, (sculpt_input, wire_cutter_input, adjust_tool));
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,6 +142,12 @@ fn sculpt_input(
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
 ) {
+    // Wire cutter has its own lifecycle (drag anchors A→B on release);
+    // hand it off to `wire_cutter_input`.
+    if matches!(tool.kind, ToolKind::WireCutter) {
+        return;
+    }
+
     // Stroke lifecycle. Same recorder shape for both tools; the
     // cutter just contributes fewer stamps (typically one).
     if buttons.just_pressed(MouseButton::Left) {
@@ -142,6 +167,7 @@ fn sculpt_input(
     let should_engage = match tool.kind {
         ToolKind::Finger => buttons.pressed(MouseButton::Left),
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
+        ToolKind::WireCutter => return,
     };
     if !should_engage {
         return;
@@ -228,6 +254,7 @@ fn apply_at(
     let grid_res = workpiece.grid.res();
 
     let region = match kind {
+        ToolKind::WireCutter => return, // handled by wire_cutter_input
         ToolKind::Finger => {
             let mode = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
                 BrushMode::Pull
@@ -289,6 +316,182 @@ fn apply_at(
     }
 }
 
+/// Wire cutter — drag-to-slice input handler.
+///
+/// LMB down records `anchor_a` (the surface hit at the click), LMB up
+/// records `anchor_b` and computes the cut plane from those two
+/// points plus the piece-local camera view direction:
+///
+/// - `anchor  = midpoint(A, B)`, chosen so a small stroke still lands
+///   the plane where the user aimed rather than at one end.
+/// - `normal  = normalize(view_dir × (B − A))`, i.e. perpendicular to
+///   both the wire (B − A) and the pulling direction (view). If the
+///   drag is degenerate (A ≈ B or nearly along the view direction),
+///   we bail — no cut.
+///
+/// Symmetry is honoured: the mirrored cut has both `anchor` and
+/// `normal` reflected across the piece-local X = 0 plane.
+#[allow(clippy::too_many_arguments)]
+fn wire_cutter_input(
+    buttons: Res<ButtonInput<MouseButton>>,
+    q_window: Query<&Window, With<PrimaryWindow>>,
+    q_camera: Query<(&Camera, &GlobalTransform)>,
+    q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
+    tool: Res<SculptTool>,
+    symmetry: Res<SculptSymmetry>,
+    mut workpiece: ResMut<SculptWorkpiece>,
+    mut stroke: ResMut<SculptStroke>,
+    mut history: ResMut<UndoHistory>,
+    mut state: ResMut<WireCutState>,
+) {
+    if !matches!(tool.kind, ToolKind::WireCutter) {
+        // Clean up any stale state if the user switched tools mid-drag.
+        state.anchor_a = None;
+        state.view_dir_local = None;
+        return;
+    }
+
+    // Resolve the cursor ray in piece-local space. Returns (hit, dir_local)
+    // if the cursor is over the workpiece surface, else None.
+    let sample = || -> Option<(GVec3, GVec3)> {
+        let window = q_window.get_single().ok()?;
+        let cursor = window.cursor_position()?;
+        let (camera, cam_tf) = q_camera.get_single().ok()?;
+        let piece_tf = q_piece.get_single().ok()?;
+        let ray_world = camera.viewport_to_world(cam_tf, cursor).ok()?;
+        let piece_inv = piece_tf.affine().inverse();
+        let origin_local = piece_inv.transform_point3(ray_world.origin);
+        let dir_local = piece_inv
+            .transform_vector3(*ray_world.direction)
+            .normalize();
+        let hit = workpiece.grid.ray_march(
+            GVec3::new(origin_local.x, origin_local.y, origin_local.z),
+            GVec3::new(dir_local.x, dir_local.y, dir_local.z),
+            4000.0,
+        )?;
+        Some((
+            hit,
+            GVec3::new(dir_local.x, dir_local.y, dir_local.z),
+        ))
+    };
+
+    // LMB down: record anchor A and start a stroke recorder.
+    if buttons.just_pressed(MouseButton::Left) {
+        if let Some((hit, dir)) = sample() {
+            state.anchor_a = Some(hit);
+            state.view_dir_local = Some(dir);
+            stroke.recorder = Some(StrokeRecorder::default());
+        }
+    }
+
+    // LMB up: complete the cut.
+    if buttons.just_released(MouseButton::Left) {
+        // Take the recorded anchor and view direction, whether or not
+        // we get a valid B — clearing state must happen either way.
+        let anchor_a = state.anchor_a.take();
+        let view_dir = state.view_dir_local.take();
+        let recorder_opt = stroke.recorder.take();
+
+        if let (Some(a), Some(view), Some(rec)) = (anchor_a, view_dir, recorder_opt) {
+            // Try to get anchor B from the current cursor position.
+            // If the release wasn't over the workpiece, use whatever
+            // the ray hit — if that fails too, drop the stroke.
+            let b_opt = sample().map(|(hit, _)| hit);
+            let mut rec = rec;
+
+            if let Some(b) = b_opt {
+                let mut rec_opt: Option<&mut StrokeRecorder> = Some(&mut rec);
+                apply_wire_cut(
+                    &mut workpiece,
+                    &mut rec_opt,
+                    a,
+                    b,
+                    view,
+                    symmetry.enabled,
+                );
+            }
+
+            if let Some(entry) = rec.finish(&workpiece.grid) {
+                history.push_stroke(entry);
+            }
+        }
+    }
+}
+
+/// Apply a wire-cutter slab between anchors `a` and `b`, plus its
+/// mirror if `symmetric` is set. All inputs are in piece-local mm.
+fn apply_wire_cut(
+    workpiece: &mut SculptWorkpiece,
+    recorder: &mut Option<&mut StrokeRecorder>,
+    a: GVec3,
+    b: GVec3,
+    view_dir_local: GVec3,
+    symmetric: bool,
+) {
+    let wire = b - a;
+    // Degenerate strokes: A ≈ B (a tap, no drag) or wire ≈ view dir
+    // (the cross product would be near-zero). Silently drop rather
+    // than making a plane with garbage normal.
+    let wire_len_sq = wire.length_squared();
+    if wire_len_sq < 4.0 {
+        return;
+    }
+    let normal = view_dir_local.cross(wire);
+    let n_len_sq = normal.length_squared();
+    if n_len_sq < 1e-4 {
+        return;
+    }
+    let normal = normal / n_len_sq.sqrt();
+    let anchor = (a + b) * 0.5;
+
+    // Primary cut.
+    stamp_wire(workpiece, recorder, anchor, normal);
+
+    // Mirror cut. Reflect anchor and normal across piece-local X = 0.
+    if symmetric {
+        let mirrored_anchor = GVec3::new(-anchor.x, anchor.y, anchor.z);
+        let mirrored_normal = GVec3::new(-normal.x, normal.y, normal.z);
+        // Skip a duplicate cut when the primary anchor is on the mirror
+        // plane and the normal has no X component — the mirror would
+        // land on top of the primary.
+        let is_duplicate = anchor.x.abs() < 1e-3 && normal.x.abs() < 1e-3;
+        if !is_duplicate {
+            stamp_wire(workpiece, recorder, mirrored_anchor, mirrored_normal);
+        }
+    }
+}
+
+fn stamp_wire(
+    workpiece: &mut SculptWorkpiece,
+    recorder: &mut Option<&mut StrokeRecorder>,
+    anchor: GVec3,
+    normal: GVec3,
+) {
+    let grid_res = workpiece.grid.res();
+    let cutter = WireCutter {
+        anchor,
+        normal,
+        thickness: WIRE_CUTTER_THICKNESS,
+        workbench_y: Some(0.0),
+    };
+    let region = if let Some(rec) = recorder.as_deref_mut() {
+        let r = apply_wire_cutter_with_callback(&mut workpiece.grid, &cutter, |x, y, z, pre| {
+            rec.record_pre_value(x, y, z, pre)
+        });
+        if let Some(region) = r {
+            rec.record_dirty_region(region, grid_res);
+        }
+        r
+    } else {
+        apply_wire_cutter_with_callback(&mut workpiece.grid, &cutter, |_, _, _, _| {})
+    };
+    if let Some(region) = region {
+        for c in region.touched_chunks(grid_res) {
+            workpiece.dirty.insert((c.x, c.y, c.z));
+        }
+    }
+}
+
 /// Minimum and maximum tool size in mm. Below the min the sculpt
 /// footprint is smaller than a voxel; above the max it dwarfs the
 /// starter primitive.
@@ -337,6 +540,10 @@ fn adjust_tool(
     if keys.just_pressed(KeyCode::Digit5) {
         tool.kind = ToolKind::Cutter(CutterFamily::Star5);
         bevy::log::info!("tool: cutter/{}", CutterFamily::Star5.label());
+    }
+    if keys.just_pressed(KeyCode::Digit6) {
+        tool.kind = ToolKind::WireCutter;
+        bevy::log::info!("tool: wire cutter");
     }
 
     // Size: three equivalent ways to adjust it. Track the old value
