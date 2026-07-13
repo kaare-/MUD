@@ -13,11 +13,17 @@
 //! same physical units as `voxel_size` (millimetres, by convention).
 
 pub mod brush;
+pub mod cutter;
 pub mod grid;
 pub mod mesh;
+pub mod profile;
 
 pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
+pub use cutter::{
+    apply_cookie_cutter, apply_cookie_cutter_with_callback, CookieCutter,
+};
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};
+pub use profile::{extrude_profile, Profile};
