@@ -105,8 +105,12 @@ impl Grid {
         self.data[i] = v;
     }
 
-    /// Sample without a bounds check; the caller must ensure indices are
-    /// in range. Used in the tight brush loop.
+    /// Sample without a bounds check.
+    ///
+    /// # Safety
+    /// The caller must guarantee that `(ix, iy, iz)` is a valid voxel
+    /// index inside this grid (i.e. `ix < res.x` and equivalently for
+    /// `iy`, `iz`). Passing out-of-range indices is undefined behaviour.
     #[inline]
     pub unsafe fn get_unchecked(&self, ix: u32, iy: u32, iz: u32) -> f32 {
         *self
@@ -135,10 +139,81 @@ impl Grid {
 
     pub fn num_chunks(&self) -> UVec3 {
         UVec3::new(
-            (self.res.x + CHUNK_SIZE - 1) / CHUNK_SIZE,
-            (self.res.y + CHUNK_SIZE - 1) / CHUNK_SIZE,
-            (self.res.z + CHUNK_SIZE - 1) / CHUNK_SIZE,
+            self.res.x.div_ceil(CHUNK_SIZE),
+            self.res.y.div_ceil(CHUNK_SIZE),
+            self.res.z.div_ceil(CHUNK_SIZE),
         )
+    }
+
+    /// Trilinearly interpolated sample at an arbitrary piece-local point.
+    /// Points outside the grid AABB return a large positive value
+    /// ("empty air"), so ray-marching from outside the grid does not
+    /// spuriously report hits.
+    pub fn sample(&self, p: Vec3) -> f32 {
+        let inv_vs = 1.0 / self.voxel_size;
+        let pi = (p - self.origin) * inv_vs;
+        let x = pi.x;
+        let y = pi.y;
+        let z = pi.z;
+        let ix0 = x.floor() as i32;
+        let iy0 = y.floor() as i32;
+        let iz0 = z.floor() as i32;
+        let rx = self.res.x as i32;
+        let ry = self.res.y as i32;
+        let rz = self.res.z as i32;
+        if ix0 < 0 || iy0 < 0 || iz0 < 0 || ix0 >= rx - 1 || iy0 >= ry - 1 || iz0 >= rz - 1 {
+            return self.voxel_size * 32.0;
+        }
+        let fx = x - ix0 as f32;
+        let fy = y - iy0 as f32;
+        let fz = z - iz0 as f32;
+        let ix0 = ix0 as u32;
+        let iy0 = iy0 as u32;
+        let iz0 = iz0 as u32;
+        let c000 = self.get(ix0, iy0, iz0);
+        let c100 = self.get(ix0 + 1, iy0, iz0);
+        let c010 = self.get(ix0, iy0 + 1, iz0);
+        let c110 = self.get(ix0 + 1, iy0 + 1, iz0);
+        let c001 = self.get(ix0, iy0, iz0 + 1);
+        let c101 = self.get(ix0 + 1, iy0, iz0 + 1);
+        let c011 = self.get(ix0, iy0 + 1, iz0 + 1);
+        let c111 = self.get(ix0 + 1, iy0 + 1, iz0 + 1);
+        let c00 = c000 * (1.0 - fx) + c100 * fx;
+        let c10 = c010 * (1.0 - fx) + c110 * fx;
+        let c01 = c001 * (1.0 - fx) + c101 * fx;
+        let c11 = c011 * (1.0 - fx) + c111 * fx;
+        let c0 = c00 * (1.0 - fy) + c10 * fy;
+        let c1 = c01 * (1.0 - fy) + c11 * fy;
+        c0 * (1.0 - fz) + c1 * fz
+    }
+
+    /// Sphere-tracing ray march. `origin` and `dir` are in piece-local
+    /// space; `dir` should be unit length. Returns the hit point or `None`
+    /// if the ray does not intersect the surface within `max_dist`.
+    ///
+    /// The march assumes the ray starts outside the workpiece (φ > 0 at
+    /// origin), which is always true when the camera is outside the
+    /// piece. If it starts inside, the origin is returned as the hit.
+    pub fn ray_march(&self, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Vec3> {
+        let mut t = 0.0;
+        // Minimum step: half a voxel. Prevents Zeno-like stalls when the
+        // ray runs parallel to a surface and returns near-zero distances.
+        let min_step = self.voxel_size * 0.5;
+        // Hit epsilon: quarter of a voxel. Tighter than min_step so we
+        // actually latch onto the surface rather than skipping through.
+        let hit_eps = self.voxel_size * 0.25;
+        for _ in 0..256 {
+            let p = origin + dir * t;
+            let d = self.sample(p);
+            if d < hit_eps {
+                return Some(p);
+            }
+            t += d.max(min_step);
+            if t > max_dist {
+                return None;
+            }
+        }
+        None
     }
 }
 
@@ -209,8 +284,62 @@ impl DirtyRegion {
 
 fn num_chunks(res: UVec3) -> UVec3 {
     UVec3::new(
-        (res.x + CHUNK_SIZE - 1) / CHUNK_SIZE,
-        (res.y + CHUNK_SIZE - 1) / CHUNK_SIZE,
-        (res.z + CHUNK_SIZE - 1) / CHUNK_SIZE,
+        res.x.div_ceil(CHUNK_SIZE),
+        res.y.div_ceil(CHUNK_SIZE),
+        res.z.div_ceil(CHUNK_SIZE),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn approx_eq(a: f32, b: f32, tol: f32) -> bool {
+        (a - b).abs() < tol
+    }
+
+    #[test]
+    fn sphere_grid_is_zero_at_surface() {
+        let res = UVec3::new(32, 32, 32);
+        let g = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 8.0);
+        // A voxel on the +x axis exactly 8 mm from the centre should
+        // report distance ~= 0.
+        let p_surface = Vec3::new(24.0, 16.0, 16.0);
+        assert!(approx_eq(g.sample(p_surface), 0.0, 0.05));
+    }
+
+    #[test]
+    fn sphere_grid_is_negative_inside_positive_outside() {
+        let res = UVec3::new(32, 32, 32);
+        let g = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 8.0);
+        assert!(g.sample(Vec3::new(16.0, 16.0, 16.0)) < 0.0);
+        assert!(g.sample(Vec3::new(30.0, 16.0, 16.0)) > 0.0);
+    }
+
+    #[test]
+    fn ray_march_hits_sphere() {
+        let res = UVec3::new(64, 64, 64);
+        let g = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 10.0);
+        let hit = g
+            .ray_march(Vec3::new(-10.0, 32.0, 32.0), Vec3::X, 200.0)
+            .expect("ray should hit the sphere");
+        // Expected first hit: x ~= 22 (32 - 10). Tolerance is generous
+        // because trilinear sampling smooths the surface a little.
+        assert!(
+            (hit.x - 22.0).abs() < 1.5,
+            "unexpected hit x = {}",
+            hit.x
+        );
+        assert!(hit.y > 30.0 && hit.y < 34.0);
+        assert!(hit.z > 30.0 && hit.z < 34.0);
+    }
+
+    #[test]
+    fn ray_march_misses_when_no_intersection() {
+        let res = UVec3::new(64, 64, 64);
+        let g = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 5.0);
+        // Aim way off to one side.
+        let hit = g.ray_march(Vec3::new(-10.0, 60.0, 32.0), Vec3::X, 200.0);
+        assert!(hit.is_none());
+    }
 }
