@@ -180,16 +180,20 @@ fn emit_project_hotkeys(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_project_actions(
     mut events: EventReader<AppAction>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
+    mut selection: ResMut<crate::selection::Selection>,
 ) {
     for a in events.read() {
         match a {
             AppAction::NewWorkpiece => {
                 clear_worktable(&mut workpiece, &mut history, &mut stroke);
+                selection.picked_voxel = None;
+                selection.invalidate_labels();
             }
             AppAction::SaveProject => {
                 let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
@@ -197,11 +201,17 @@ fn handle_project_actions(
             }
             AppAction::SaveProjectAs(path) => save_to_path(&workpiece, path),
             AppAction::LoadNewestProject => match newest_mudclay_in_cwd() {
-                Some(p) => load_from_path(&p, &mut workpiece, &mut history, &mut stroke),
+                Some(p) => {
+                    load_from_path(&p, &mut workpiece, &mut history, &mut stroke);
+                    selection.picked_voxel = None;
+                    selection.invalidate_labels();
+                }
                 None => warn!("no mud-sculpt-*.mudclay files in the working directory"),
             },
             AppAction::OpenProject(path) => {
-                load_from_path(path, &mut workpiece, &mut history, &mut stroke)
+                load_from_path(path, &mut workpiece, &mut history, &mut stroke);
+                selection.picked_voxel = None;
+                selection.invalidate_labels();
             }
             _ => {}
         }

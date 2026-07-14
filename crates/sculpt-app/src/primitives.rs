@@ -88,6 +88,7 @@ fn handle_insert_action(
     mut workpiece: ResMut<SculptWorkpiece>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
+    mut selection: ResMut<crate::selection::Selection>,
 ) {
     for a in events.read() {
         if let AppAction::InsertPrimitive(shape, size_mm) = a {
@@ -98,6 +99,7 @@ fn handle_insert_action(
                 &mut history,
                 &mut stroke,
             );
+            selection.invalidate_labels();
         }
     }
 }

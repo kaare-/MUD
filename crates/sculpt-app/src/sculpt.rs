@@ -15,12 +15,13 @@ use glam::Vec3 as GVec3;
 use sculpt_core::{
     apply_cookie_cutter_with_callback, apply_paddle_with_callback,
     apply_smooth_brush_with_callback, apply_sphere_brush_with_callback,
-    apply_wire_cutter_with_callback, BrushMode, CookieCutter, Paddle, Profile, SmoothBrush,
-    SphereBrush, WireCutter,
+    apply_wire_cutter_with_callback, label_components, BrushMode, ComponentField, CookieCutter,
+    Paddle, Profile, SmoothBrush, SphereBrush, WireCutter,
 };
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::selection::Selection;
 use crate::turntable::TurntableState;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
@@ -40,6 +41,10 @@ pub enum ToolKind {
     Smooth,
     /// Paddle — a disk-shaped half-space press for making flats.
     Paddle,
+    /// Select: LMB picks the connected component under the cursor,
+    /// so the user can Delete it or scope other tools to it via
+    /// active-only mode.
+    Select,
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
@@ -199,6 +204,7 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
         ToolKind::WireCutter => "wire cutter",
         ToolKind::Smooth => "smooth",
         ToolKind::Paddle => "paddle",
+        ToolKind::Select => "select",
     }
 }
 
@@ -216,10 +222,11 @@ fn sculpt_input(
     mut workpiece: ResMut<SculptWorkpiece>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
+    mut selection: ResMut<Selection>,
 ) {
-    // Wire cutter has its own lifecycle (drag anchors A→B on release);
-    // hand it off to `wire_cutter_input`.
-    if matches!(tool.kind, ToolKind::WireCutter) {
+    // Wire cutter and Select have their own systems (drag anchors on
+    // release / pick-only click respectively) — bail here.
+    if matches!(tool.kind, ToolKind::WireCutter | ToolKind::Select) {
         return;
     }
 
@@ -230,6 +237,10 @@ fn sculpt_input(
         if let Some(rec) = stroke.recorder.take() {
             if let Some(entry) = rec.finish(&workpiece.grid) {
                 history.push_stroke(entry);
+                // Any completed stroke reshuffles component labels;
+                // drop the cache so the next selection query
+                // re-labels.
+                selection.invalidate_labels();
             }
         }
         stroke.last_clay_hit = None;
@@ -256,7 +267,9 @@ fn sculpt_input(
             buttons.pressed(MouseButton::Left)
         }
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
-        ToolKind::WireCutter => return,
+        // Wire cutter and Select both live in their own systems and
+        // must not fire the general-purpose sculpt pipeline.
+        ToolKind::WireCutter | ToolKind::Select => return,
     };
     if !should_engage {
         return;
@@ -327,6 +340,19 @@ fn sculpt_input(
 
     let is_clay = is_clay_early;
     let is_add = is_add_early;
+
+    // Active-only gate: if the user picked a component and toggled
+    // active-only on, skip stamps whose hit doesn't fall on that
+    // component. Refreshes labels lazily. Not a full per-voxel mask —
+    // a brush partially overlapping the boundary can still bleed —
+    // but "the cursor must be on the selected lump" is a clear rule
+    // the user can predict.
+    if selection.active_only
+        && selection.picked_voxel.is_some()
+        && !stamp_is_on_selected_component(&mut selection, &workpiece, hit)
+    {
+        return;
+    }
 
     let column = clay_column_weight(into_surface, dir_g);
 
@@ -404,6 +430,69 @@ fn sculpt_input(
 /// ring; below it, stamps stay face-on surface paint (plane-locked).
 pub const CLAY_COLUMN_UNLOCK: f32 = 0.35;
 
+/// True when the ray hit falls on the currently-selected component
+/// (or nothing is selected). Refreshes `Selection::labels` on demand.
+///
+/// The "hit voxel" is a half-step *inside* the surface along the
+/// gradient — the ray-march latch lands on the outside face where
+/// `φ ≈ 0` but voxel labels only exist for solid (`φ < 0`) cells.
+fn stamp_is_on_selected_component(
+    selection: &mut Selection,
+    workpiece: &SculptWorkpiece,
+    hit: GVec3,
+) -> bool {
+    let Some(picked) = selection.picked_voxel else {
+        return true;
+    };
+    let labels = ensure_selection_labels(selection, workpiece);
+    let (px, py, pz) = picked;
+    let res = labels.res();
+    if px >= res.x || py >= res.y || pz >= res.z {
+        return false;
+    }
+    let target = labels.id_at(px, py, pz);
+    if target == sculpt_core::EMPTY {
+        return false;
+    }
+    let vs = workpiece.grid.voxel_size();
+    let grad = workpiece.grid.gradient_at(hit);
+    let inside_probe = if grad.length_squared() > 1e-4 {
+        hit - grad.normalize() * vs * 0.5
+    } else {
+        hit
+    };
+    let origin = workpiece.grid.origin();
+    let local = (inside_probe - origin) * (1.0 / vs);
+    if local.x < 0.0
+        || local.y < 0.0
+        || local.z < 0.0
+        || local.x >= res.x as f32
+        || local.y >= res.y as f32
+        || local.z >= res.z as f32
+    {
+        return false;
+    }
+    let ix = local.x as u32;
+    let iy = local.y as u32;
+    let iz = local.z as u32;
+    labels.id_at(ix, iy, iz) == target
+}
+
+/// Lazily populate `Selection::labels` from the current grid and
+/// hand back a reference. Same trick as `selection::ensure_labels_fresh`
+/// but callable from the sculpt path (which already holds a
+/// mutable borrow on `Selection`).
+fn ensure_selection_labels<'a>(
+    selection: &'a mut Selection,
+    workpiece: &SculptWorkpiece,
+) -> &'a ComponentField {
+    if selection.labels().is_none() {
+        let labels = label_components(&workpiece.grid);
+        selection.set_labels(labels);
+    }
+    selection.labels().expect("just populated")
+}
+
 /// How strongly the contact wants a sideways horizontal column
 /// (`0` = face-on / crown, `1` = equatorial side facing the camera).
 pub fn clay_column_weight(into_surface: GVec3, view_dir: GVec3) -> f32 {
@@ -458,7 +547,9 @@ fn apply_at(
     let grid_res = workpiece.grid.res();
 
     let region = match kind {
-        ToolKind::WireCutter => return, // handled by wire_cutter_input
+        // These live in their own systems (wire_cutter_input,
+        // selection_input) and must never run through here.
+        ToolKind::WireCutter | ToolKind::Select => return,
         ToolKind::Clay => {
             let adding =
                 keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -898,6 +989,9 @@ fn adjust_tool(
     }
     if keys.just_pressed(KeyCode::Digit8) {
         send_tool(ToolKind::Paddle);
+    }
+    if keys.just_pressed(KeyCode::Digit9) {
+        send_tool(ToolKind::Select);
     }
 
     // Size: continuous adjustment, stays inline (no menu path needs

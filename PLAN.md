@@ -62,19 +62,15 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    Sphere / Cube / Cylinder / Torus with a size slider; unioned into
    the current grid, journaled as one undo stroke.
 
-5. `[ ]` **Selection tool: pick tiny bits.** *(spike first)*
-   - Two viable designs; pick before coding:
-     - **A. Component labels.** Flood-fill connected `φ < 0` regions
-       into an ID field. Selection = "the component under the
-       cursor". Active-only edits gate stamps by `id_at(voxel) ==
-       selected`. Delete = mark those voxels `+∞`.
-     - **B. Multi-piece.** Separate SDF grids in the scene. Cutters /
-       wire produce new pieces. Selection is a scene-graph concept.
-     - Option A is smaller and lands sooner; Option B is where
-       DESIGN.md §5.2 already points ("touching ≠ merged").
-   - Deliverables regardless: `Ctrl+A` toggle "active-only",
-     `Delete` removes the selected component, HUD shows current
-     selection.
+5. `[x]` **Selection tool: pick tiny bits.** Option A (single-grid
+   component labels) shipped. New `Select` tool (`9`); LMB picks the
+   connected piece under the cursor. `Delete` / `Backspace` removes
+   the selected piece as a single undo stroke. `A` toggles
+   **active-only** — sculpt stamps skip when the hit doesn't fall on
+   the selected piece. HUD shows `Sel #N: X vx · Y mm³` + Delete
+   button + Active-only toggle. Labels are recomputed lazily
+   (invalidated after any stroke / undo / redo / Insert / New /
+   Load). Option B (multi-piece scene) still deferred.
 
 6. `[ ]` **Rigid gravity (setting 1).** *(depends on 5)*
    - After a cut, drop each connected component as a rigid body

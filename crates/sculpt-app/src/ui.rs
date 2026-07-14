@@ -31,6 +31,8 @@ use crate::input_gate::UiCapturesInput;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
+use crate::selection::Selection;
+use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin);
@@ -45,10 +47,13 @@ pub fn plugin(app: &mut App) {
     );
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_ui(
     mut contexts: EguiContexts,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
+    selection: Res<Selection>,
+    workpiece: Res<SculptWorkpiece>,
     mut actions: EventWriter<AppAction>,
     mut app_exit: EventWriter<AppExit>,
 ) {
@@ -172,9 +177,51 @@ fn draw_ui(
                 }
             });
             ui.separator();
+            // Selection HUD: current pick, delete, active-only.
+            draw_selection_hud(ui, &selection, &workpiece, &mut actions);
+            ui.separator();
             ui.small("Ctrl+Z / Ctrl+Y — undo / redo");
         });
     });
+}
+
+/// Selection segment of the status strip. Shows the picked component
+/// (or "no selection"), a Delete button, and the Active-only toggle.
+fn draw_selection_hud(
+    ui: &mut egui::Ui,
+    selection: &Selection,
+    workpiece: &SculptWorkpiece,
+    actions: &mut EventWriter<AppAction>,
+) {
+    let vs = workpiece.grid.voxel_size();
+    let (text, has_selection) = match selection.labels().and_then(|labels| {
+        selection
+            .selected_id(labels)
+            .map(|id| (id, labels.voxel_count(id), labels.volume_mm3(id, vs)))
+    }) {
+        Some((id, count, mm3)) => (
+            format!("Sel #{id}: {count} vx · {mm3:.0} mm³"),
+            true,
+        ),
+        None => ("Selection: none".to_string(), false),
+    };
+    ui.label(text);
+    ui.add_enabled_ui(has_selection, |ui| {
+        if ui.button("Delete [Del]").clicked() {
+            actions.send(AppAction::DeleteSelection);
+        }
+    });
+    let active_text = if selection.active_only {
+        "Active only: on [A]"
+    } else {
+        "Active only: off [A]"
+    };
+    if ui
+        .selectable_label(selection.active_only, active_text)
+        .clicked()
+    {
+        actions.send(AppAction::ToggleActiveOnly);
+    }
 }
 
 /// Save-As and Open modal dialogs, when their state is populated.
@@ -496,7 +543,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 
 /// Palette order + number-key shortcut. Kept in sync with the
 /// keyboard mapping in `sculpt::adjust_tool`.
-fn tool_palette_order() -> [(u8, ToolKind); 8] {
+fn tool_palette_order() -> [(u8, ToolKind); 9] {
     [
         (1, ToolKind::Clay),
         (2, ToolKind::Cutter(CutterFamily::Circle)),
@@ -506,6 +553,7 @@ fn tool_palette_order() -> [(u8, ToolKind); 8] {
         (6, ToolKind::WireCutter),
         (7, ToolKind::Smooth),
         (8, ToolKind::Paddle),
+        (9, ToolKind::Select),
     ]
 }
 
@@ -522,6 +570,7 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::WireCutter => "Wire cutter",
         ToolKind::Smooth => "Smooth",
         ToolKind::Paddle => "Paddle",
+        ToolKind::Select => "Select",
     }
 }
 

@@ -61,6 +61,12 @@ pub enum AppAction {
     /// Pop up the Export-STL-As dialog. UI-only affordance; keyboard
     /// has Ctrl+Shift+E.
     ShowExportStlDialog,
+    /// Remove the currently-selected connected component from the
+    /// workpiece. No-op when nothing is selected.
+    DeleteSelection,
+    /// Flip active-only sculpt gating: when on, sculpting tools only
+    /// mutate voxels belonging to the selected component.
+    ToggleActiveOnly,
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).
     Quit,
 }

@@ -18,6 +18,9 @@
 //!   6 ................ tool: wire cutter (LMB-drag slices through)
 //!   7 ................ tool: smooth (hold LMB to polish high-frequency detail)
 //!   8 ................ tool: paddle (hold LMB to press a flat)
+//!   9 ................ tool: select (LMB picks a connected piece)
+//!   Delete / Backspace  remove the selected piece
+//!   A ................ toggle active-only sculpt gating
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay (Add/Remove)
@@ -45,6 +48,7 @@ mod preview;
 mod primitives;
 mod project;
 mod sculpt;
+mod selection;
 mod turntable;
 mod ui;
 mod undo;
@@ -90,6 +94,7 @@ fn main() {
             export::plugin,
             project::plugin,
             primitives::plugin,
+            selection::plugin,
             ui::plugin,
         ))
         .add_systems(Startup, setup_scene)
