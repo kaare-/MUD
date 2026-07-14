@@ -48,6 +48,61 @@ pub struct SculptWorkpiece {
     pub dirty: HashSet<(u32, u32, u32)>,
 }
 
+impl SculptWorkpiece {
+    /// Replace the workpiece's SDF grid, e.g. after loading a project
+    /// file. Fails if the new grid's dimensions don't match the
+    /// existing chunk layout, since re-tiling would require spawning
+    /// and despawning entities from a system that doesn't own
+    /// Commands. Callers should check the current `grid.res()` +
+    /// `voxel_size()` before offering the swap.
+    ///
+    /// Marks every chunk dirty so the mesher rebuilds the whole
+    /// workpiece over the next few frames (bounded by
+    /// [`MAX_CHUNKS_PER_FRAME`]).
+    pub fn swap_grid(&mut self, new_grid: Grid) -> Result<(), GridSwapError> {
+        if new_grid.res() != self.grid.res() {
+            return Err(GridSwapError::ResolutionMismatch {
+                current: self.grid.res(),
+                incoming: new_grid.res(),
+            });
+        }
+        if (new_grid.voxel_size() - self.grid.voxel_size()).abs() > 1e-4 {
+            return Err(GridSwapError::VoxelSizeMismatch {
+                current: self.grid.voxel_size(),
+                incoming: new_grid.voxel_size(),
+            });
+        }
+        self.grid = new_grid;
+        self.dirty.clear();
+        for &key in self.chunks.keys() {
+            self.dirty.insert(key);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub enum GridSwapError {
+    ResolutionMismatch { current: UVec3, incoming: UVec3 },
+    VoxelSizeMismatch { current: f32, incoming: f32 },
+}
+
+impl std::fmt::Display for GridSwapError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GridSwapError::ResolutionMismatch { current, incoming } => write!(
+                f,
+                "grid resolution mismatch: current {}x{}x{}, incoming {}x{}x{}",
+                current.x, current.y, current.z, incoming.x, incoming.y, incoming.z,
+            ),
+            GridSwapError::VoxelSizeMismatch { current, incoming } => write!(
+                f,
+                "voxel size mismatch: current {current} mm, incoming {incoming} mm",
+            ),
+        }
+    }
+}
+
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn_workpiece);
     app.add_systems(Update, remesh_dirty_chunks);

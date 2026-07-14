@@ -40,7 +40,7 @@ fn export_stl_on_hotkey(
         return;
     }
 
-    let path = timestamped_stl_path();
+    let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".stl"));
     info!("exporting STL to {}", path.display());
 
     let mesh = extract_full_mesh(&workpiece.grid);
@@ -71,19 +71,16 @@ fn export_stl_on_hotkey(
     );
 }
 
-/// Build a timestamped output path in the current working directory.
-/// Uses SystemTime + basic modular arithmetic to build a date string —
-/// avoids pulling in `chrono` for a single filename.
-fn timestamped_stl_path() -> PathBuf {
+/// Timestamped filename of the form `<prefix>YYYYMMDD-HHMMSS<ext>`.
+/// Used by both STL export and `.mudclay` save. Public so
+/// `project::save_on_hotkey` reuses the same convention.
+pub(crate) fn timestamped_filename(prefix: &str, ext: &str) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let (year, month, day, h, m, s) = seconds_to_ymdhms(now);
-    let name = format!(
-        "mud-sculpt-{year:04}{month:02}{day:02}-{h:02}{m:02}{s:02}.stl",
-    );
-    PathBuf::from(name)
+    format!("{prefix}{year:04}{month:02}{day:02}-{h:02}{m:02}{s:02}{ext}")
 }
 
 /// Convert a UNIX timestamp (seconds since 1970-01-01 UTC) into a

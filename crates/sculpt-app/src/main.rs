@@ -30,6 +30,8 @@
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
+//!   Ctrl+S ........... save the current piece as a native .mudclay project
+//!   Ctrl+O ........... load the newest .mudclay project from the working directory
 //!   Esc .............. quit
 
 use bevy::prelude::*;
@@ -38,6 +40,7 @@ use bevy::window::WindowResolution;
 mod camera;
 mod export;
 mod preview;
+mod project;
 mod sculpt;
 mod turntable;
 mod undo;
@@ -79,6 +82,7 @@ fn main() {
             sculpt::plugin,
             preview::plugin,
             export::plugin,
+            project::plugin,
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
