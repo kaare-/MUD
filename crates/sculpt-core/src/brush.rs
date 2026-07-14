@@ -162,8 +162,18 @@ where
                 if brush.displace && d_brush > 0.0 && d_brush < bulge_thickness {
                     let surface_weight = (1.0 - (old.abs() / surface_band).min(1.0)).max(0.0);
                     if surface_weight > 0.0 {
-                        let ring_t = d_brush / bulge_thickness;
-                        let ring_weight = (1.0 - ring_t) * (1.0 - ring_t);
+                        let ring_t = (d_brush / bulge_thickness).clamp(0.0, 1.0);
+                        // Press piles material against the tool face, so
+                        // weight peaks at the brush rim (`ring_t → 0`).
+                        // Pull must *not* peak there: recruiting at the
+                        // contact seam digs a trench around the freshly
+                        // unioned blob (visible as a moat / glitchy
+                        // silhouette). Instead peak mid-shoulder and
+                        // fall to zero at the rim and outer edge.
+                        let ring_weight = match brush.mode {
+                            BrushMode::Press => (1.0 - ring_t) * (1.0 - ring_t),
+                            BrushMode::Pull => 4.0 * ring_t * (1.0 - ring_t) * (1.0 - ring_t),
+                        };
 
                         let bulge_dir = (p - c) * (1.0 / (d_brush + r).max(1e-6));
                         let cos_theta = bulge_dir.dot(dir);
@@ -304,11 +314,10 @@ mod tests {
         let g_res = glam::UVec3::new(64, 64, 64);
         let mut g = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 20.0);
 
-        // Probe in the bulge ring, near the workpiece surface,
-        // perpendicular to the tool direction. Currently just inside
-        // the workpiece — with Pull-recruitment displacement, the
-        // surrounding surface should retreat (SDF grows toward 0 or
-        // positive).
+        // Mid-shoulder probe in the bulge ring (d_brush ≈ 1 mm with
+        // thickness 3 mm → ring_t ≈ 1/3), near the workpiece surface,
+        // perpendicular to the tool direction. Pull recruitment should
+        // retreat the surrounding surface here (SDF grows).
         let probe = Vec3::new(52.0, 38.0, 32.0);
         let before = g.sample(probe);
 
@@ -327,6 +336,59 @@ mod tests {
         assert!(
             after > before + 0.3,
             "pull recruitment should retreat the surrounding surface (SDF should grow): before={before}, after={after}",
+        );
+    }
+
+    #[test]
+    fn pull_with_displacement_does_not_trench_at_brush_rim() {
+        // Regression for the "moat" around Shift+LMB pulls: recruitment
+        // used to peak at ring_t→0 and carve a trench at the contact
+        // seam. The rim probe sits just outside the brush footprint on
+        // the workpiece surface; after many Pull stamps its SDF must
+        // not jump positive far past the no-displace baseline.
+        let g_res = glam::UVec3::new(64, 64, 64);
+        let centre = Vec3::new(32.0, 32.0, 32.0);
+        let brush_c = Vec3::new(52.0, 32.0, 32.0);
+        let radius = 5.0;
+        // Just outside the brush sphere, on the +Y side of the tip —
+        // the contact seam where the old ring weight peaked.
+        let rim = Vec3::new(52.0, 37.25, 32.0);
+
+        let mut g_plain =
+            Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+        let mut g_disp =
+            Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+
+        let plain = SphereBrush {
+            center: brush_c,
+            radius,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(-1.0, 0.0, 0.0),
+            displace: false,
+            workbench_y: None,
+        };
+        let with_disp = SphereBrush {
+            displace: true,
+            ..plain
+        };
+        for _ in 0..40 {
+            let _ = apply_sphere_brush(&mut g_plain, &plain);
+            let _ = apply_sphere_brush(&mut g_disp, &with_disp);
+        }
+
+        let plain_rim = g_plain.sample(rim);
+        let disp_rim = g_disp.sample(rim);
+        // Displacement may retreat the mid-ring a little, but the rim
+        // must not be dug into empty space relative to plain union.
+        assert!(
+            disp_rim < plain_rim + 0.75,
+            "pull displace must not dig a trench at the brush rim: plain={plain_rim}, displace={disp_rim}",
+        );
+        // And the rim should still read as solid / near-surface, not a
+        // carved groove (large positive SDF).
+        assert!(
+            disp_rim < 1.5,
+            "pull rim should stay near/inside the surface, got SDF={disp_rim}",
         );
     }
 

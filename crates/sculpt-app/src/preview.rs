@@ -35,6 +35,11 @@ pub struct ToolPreview;
 #[derive(Resource, Default)]
 struct PreviewMeshState {
     last: Option<(ToolKind, i32)>,
+    /// Whether the preview entity has been parented under the
+    /// workpiece root. Done once — re-issuing `set_parent` every
+    /// frame is unnecessary and made the ghost harder to reason about
+    /// when debugging transform issues.
+    parented: bool,
 }
 
 /// Vertical thickness of the cutter preview prism in mm, distributed
@@ -166,18 +171,30 @@ fn update_preview(
         -GVec3::new(dir_local.x, dir_local.y, dir_local.z)
     };
 
-    // (4) Position and orient the preview.
-    //
-    // The preview lives *under* the workpiece root so it inherits the
-    // turntable rotation automatically — reparent once at startup
-    // when we have piece_entity.
+    // (4) Parent under the workpiece root once so local hit coords
+    // and turntable rotation both apply correctly. Must happen *before*
+    // we write the piece-local translation.
+    if !state.parented {
+        commands.entity(preview_entity).set_parent(piece_entity);
+        state.parented = true;
+    }
+
+    // (5) Position and orient the preview (piece-local space).
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
-        // Slight bias off the surface so the preview doesn't z-fight
-        // with the workpiece mesh. 0.15 mm ≈ 1/10 voxel.
-        let bias = 0.15;
         let hit_bevy = Vec3::new(hit.x, hit.y, hit.z);
         let normal_bevy = Vec3::new(normal.x, normal.y, normal.z);
-        tf.translation = hit_bevy + normal_bevy * bias;
+
+        // Finger / Smooth: rest the ghost sphere *on* the surface
+        // (centre = hit + normal * radius) so it reads as a tip sitting
+        // on clay rather than a ball buried through the near face and
+        // visually glued to the original sphere volume.
+        // Cutter / paddle / wire marker keep a small lift to avoid
+        // z-fighting with the workpiece mesh (~1/10 voxel).
+        let offset = match tool.kind {
+            ToolKind::Finger | ToolKind::Smooth => tool.size + 0.15,
+            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => 0.15,
+        };
+        tf.translation = hit_bevy + normal_bevy * offset;
 
         // Radially symmetric tools (finger, smooth, wire-cutter
         // marker) need no rotation. Cutter prisms and the paddle
@@ -191,13 +208,6 @@ fn update_preview(
     }
     if let Ok(mut vis) = q_visibility.get_mut(preview_entity) {
         *vis = Visibility::Visible;
-    }
-
-    // (5) Reparent the preview under the workpiece root the first
-    // time we see the workpiece. This lets the turntable transform
-    // reach the preview for free.
-    if state.last.is_some() {
-        commands.entity(preview_entity).set_parent(piece_entity);
     }
 }
 
