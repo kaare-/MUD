@@ -81,6 +81,10 @@ fn draw_ui(
                     actions.send(AppAction::ExportStl);
                     ui.close_menu();
                 }
+                if menu_item(ui, "Export STL As\u{2026}", "Ctrl+Shift+E") {
+                    actions.send(AppAction::ShowExportStlDialog);
+                    ui.close_menu();
+                }
                 ui.separator();
                 if menu_item(ui, "Quit", "Esc") {
                     // Quit is a special case: the AppAction handler in
@@ -237,6 +241,57 @@ fn draw_dialogs(
         }
     }
 
+    // Export-STL-As dialog. Same shape as Save-As but the finaliser
+    // enforces the `.stl` extension.
+    if state.export_stl.is_some() {
+        let mut done: Option<Result<PathBuf, ()>> = None;
+        if let Some(dialog) = state.export_stl.as_mut() {
+            egui::Window::new("Export STL As")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Filename (blank = timestamped):");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut dialog.name)
+                            .desired_width(280.0)
+                            .hint_text("wolf-head-v3"),
+                    );
+                    let submit_via_enter =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if !resp.has_focus() {
+                        resp.request_focus();
+                    }
+                    ui.small(
+                        "Exports into the working directory. Extension\n\
+                         .stl is added automatically. Leaving the field\n\
+                         blank exports with a fresh timestamp.",
+                    );
+                    let clicked = ui.horizontal(|ui| {
+                        let save = ui.button("Export").clicked();
+                        let cancel = ui.button("Cancel").clicked();
+                        (save, cancel)
+                    });
+                    let (save, cancel) = clicked.inner;
+                    if save || submit_via_enter {
+                        done = Some(Ok(finalise_export_path(&dialog.name)));
+                    } else if cancel {
+                        done = Some(Err(()));
+                    }
+                });
+        }
+        match done {
+            Some(Ok(path)) => {
+                actions.send(AppAction::ExportStlAs(path));
+                state.export_stl = None;
+            }
+            Some(Err(())) => {
+                state.export_stl = None;
+            }
+            None => {}
+        }
+    }
+
     // Open dialog.
     if state.open.is_some() {
         let mut done: Option<Option<PathBuf>> = None;
@@ -310,14 +365,25 @@ fn draw_dialogs(
 ///   or `mudclayawolf-head.mudclay`, not to silently keep whatever
 ///   suffix the user typed and become non-loadable.
 fn finalise_save_path(input: &str) -> PathBuf {
+    finalise_typed_path(input, "mudclay")
+}
+
+/// Export-STL variant of `finalise_save_path` — same rules with the
+/// `.stl` extension.
+fn finalise_export_path(input: &str) -> PathBuf {
+    finalise_typed_path(input, "stl")
+}
+
+fn finalise_typed_path(input: &str, ext: &str) -> PathBuf {
     let trimmed = input.trim();
+    let dot_ext = format!(".{ext}");
     if trimmed.is_empty() {
-        return PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
+        return PathBuf::from(timestamped_filename("mud-sculpt-", &dot_ext));
     }
-    if trimmed.ends_with(".mudclay") {
+    if trimmed.ends_with(&dot_ext) {
         PathBuf::from(trimmed)
     } else {
-        PathBuf::from(format!("{trimmed}.mudclay"))
+        PathBuf::from(format!("{trimmed}{dot_ext}"))
     }
 }
 
@@ -422,6 +488,25 @@ mod tests {
     #[test]
     fn extension_is_kept_when_already_correct() {
         assert_eq!(finalise_save_path("wolf.mudclay"), PathBuf::from("wolf.mudclay"));
+    }
+
+    #[test]
+    fn export_path_appends_stl_extension() {
+        assert_eq!(
+            finalise_export_path("wolf-head"),
+            PathBuf::from("wolf-head.stl"),
+        );
+        assert_eq!(
+            finalise_export_path("wolf.stl"),
+            PathBuf::from("wolf.stl"),
+        );
+        let empty = finalise_export_path("");
+        assert!(empty
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("mud-sculpt-"));
+        assert!(empty.extension().unwrap() == "stl");
     }
 
     #[test]

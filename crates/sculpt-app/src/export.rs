@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
@@ -41,7 +41,8 @@ fn emit_export_hotkey(
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let super_key =
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    if (ctrl || super_key) && keys.just_pressed(KeyCode::KeyE) {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if (ctrl || super_key) && keys.just_pressed(KeyCode::KeyE) && !shift {
         actions.send(AppAction::ExportStl);
     }
 }
@@ -51,14 +52,21 @@ fn handle_export_action(
     workpiece: Res<SculptWorkpiece>,
 ) {
     for a in events.read() {
-        if matches!(a, AppAction::ExportStl) {
-            export_stl_now(&workpiece);
+        match a {
+            AppAction::ExportStl => {
+                let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".stl"));
+                export_stl_to(&workpiece, &path);
+            }
+            AppAction::ExportStlAs(path) => export_stl_to(&workpiece, path),
+            _ => {}
         }
     }
 }
 
-fn export_stl_now(workpiece: &SculptWorkpiece) {
-    let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".stl"));
+/// Extract the current SDF as a mesh and write a binary STL to `path`.
+/// Logs every failure rather than propagating — like `save_to_path`,
+/// we're called from a fire-and-forget event handler.
+pub fn export_stl_to(workpiece: &SculptWorkpiece, path: &Path) {
     info!("exporting STL to {}", path.display());
 
     let mesh = extract_full_mesh(&workpiece.grid);
@@ -69,7 +77,7 @@ fn export_stl_now(workpiece: &SculptWorkpiece) {
     let expected_bytes = stl_binary_size(&mesh);
     let tri_count = mesh.indices.len() / 3;
 
-    let file = match File::create(&path) {
+    let file = match File::create(path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to create {}: {e}", path.display());

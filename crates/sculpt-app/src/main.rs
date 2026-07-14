@@ -25,6 +25,7 @@
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
+//!   Ctrl+Shift+E ..... export STL with a chosen filename (dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
 //!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)
 //!   Ctrl+O ........... open a project via a picker dialog

@@ -54,13 +54,14 @@ pub fn plugin(app: &mut App) {
 pub struct FileDialogState {
     pub save_as: Option<SaveAsDialog>,
     pub open: Option<OpenDialog>,
+    pub export_stl: Option<ExportStlDialog>,
 }
 
 impl FileDialogState {
     /// True while any modal file dialog is on screen. World-input
     /// systems check this via the `UiCapturesInput` gate.
     pub fn any_open(&self) -> bool {
-        self.save_as.is_some() || self.open.is_some()
+        self.save_as.is_some() || self.open.is_some() || self.export_stl.is_some()
     }
 }
 
@@ -68,6 +69,12 @@ impl FileDialogState {
 /// initially seeded with a fresh timestamped name so a user who just
 /// wants a new file can press Enter without typing.
 pub struct SaveAsDialog {
+    pub name: String,
+}
+
+/// State for the Export-STL-As dialog. Same shape as `SaveAsDialog`
+/// but the finaliser appends `.stl` (see `ui::finalise_export_path`).
+pub struct ExportStlDialog {
     pub name: String,
 }
 
@@ -106,6 +113,14 @@ fn handle_dialog_actions(
                     selected: None,
                 });
                 state.save_as = None;
+                state.export_stl = None;
+            }
+            AppAction::ShowExportStlDialog => {
+                state.export_stl = Some(ExportStlDialog {
+                    name: String::new(),
+                });
+                state.save_as = None;
+                state.open = None;
             }
             _ => {}
         }
@@ -149,6 +164,12 @@ fn emit_project_hotkeys(
         } else {
             actions.send(AppAction::ShowOpenDialog);
         }
+    }
+    // Ctrl+Shift+E → Export STL As… dialog. Ctrl+E stays instant
+    // (handled in export.rs) so a habitual "just export it" still
+    // dumps a timestamped file in CWD without the modal.
+    if keys.just_pressed(KeyCode::KeyE) && shift {
+        actions.send(AppAction::ShowExportStlDialog);
     }
 }
 
