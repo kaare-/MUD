@@ -75,8 +75,9 @@ pub struct SculptTool {
     pub kind: ToolKind,
     pub size: f32,
     /// Finger + paddle: how far the tool centre advances along the
-    /// surface normal each frame while held. Closest thing Stage 1
-    /// has to pressure sensitivity.
+    /// surface normal each frame while held (Press / paddle only).
+    /// Pull stamps sit on the ray hit so add-material paints the
+    /// surface instead of chasing the tip toward the camera.
     pub advance_per_step: f32,
     /// Finger-only: whether to apply the magic-clay bulge on Press.
     pub displace: bool,
@@ -337,12 +338,17 @@ fn apply_at(
             } else {
                 BrushMode::Press
             };
-            // Offset each frame so a held button carves progressively:
-            // Press pushes deeper into the surface, Pull backs out.
+            // Offset each frame so a held Press carves progressively
+            // deeper. Pull must NOT advance outward each frame: the
+            // ray re-hits the freshly added tip, so `hit - into *
+            // advance` walks toward the camera and grows a stalk.
+            // (That chase was masked earlier while ray_march still
+            // tunnelled onto the starter sphere.) Pull sits on the
+            // contact so Shift+drag paints material onto the surface.
             let advance = tool.advance_per_step;
             let center = match mode {
                 BrushMode::Press => hit + into_surface * advance,
-                BrushMode::Pull => hit - into_surface * advance,
+                BrushMode::Pull => hit,
             };
             let brush = SphereBrush {
                 center,
