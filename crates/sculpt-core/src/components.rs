@@ -39,6 +39,11 @@ pub struct ComponentField {
     /// `voxel_count[i]` is the number of voxels with `ComponentId == i`.
     /// `voxel_count[0]` counts empty voxels.
     voxel_count: Vec<u32>,
+    /// Inclusive-exclusive AABB per component in voxel coordinates.
+    /// `bounds[i] = (min, max)` where `min.x..max.x` covers every
+    /// voxel with `ComponentId == i` (and analogously for y, z).
+    /// `bounds[0]` is unused (empty voxels have no meaningful box).
+    bounds: Vec<(UVec3, UVec3)>,
 }
 
 impl ComponentField {
@@ -73,6 +78,21 @@ impl ComponentField {
         self.voxel_count(id) as f32 * voxel_size.powi(3)
     }
 
+    /// Voxel-coordinate AABB of a component: `(min, max)` where
+    /// `min.x..max.x` is the half-open x range spanned by any voxel
+    /// with `ComponentId == id`. Returns `None` for empty ids or
+    /// out-of-range component ids. Cheap: filled during labelling.
+    pub fn bounds_of(&self, id: ComponentId) -> Option<(UVec3, UVec3)> {
+        if id == EMPTY {
+            return None;
+        }
+        let (min, max) = *self.bounds.get(id as usize)?;
+        if max.x <= min.x || max.y <= min.y || max.z <= min.z {
+            return None;
+        }
+        Some((min, max))
+    }
+
     /// Every non-empty component id in size order (largest first).
     /// Handy for "select the biggest" and "list the tiny fragments"
     /// UIs. Cost: O(k log k) where k = number of components.
@@ -103,6 +123,8 @@ pub fn label_components(grid: &Grid) -> ComponentField {
     let mut ids = vec![EMPTY; n];
     // voxel_count[0] = empty voxel count.
     let mut voxel_count: Vec<u32> = vec![0];
+    // bounds[0] is a placeholder; the fill fields it in for id >= 1.
+    let mut bounds: Vec<(UVec3, UVec3)> = vec![(UVec3::ZERO, UVec3::ZERO)];
     let mut next_id: ComponentId = 1;
     let mut queue: VecDeque<(u32, u32, u32)> = VecDeque::new();
 
@@ -121,6 +143,11 @@ pub fn label_components(grid: &Grid) -> ComponentField {
                 let comp_id = next_id;
                 next_id += 1;
                 voxel_count.push(0);
+                // Seed the AABB with the first voxel. min = start,
+                // max = start + 1 (half-open). Grows as the flood
+                // finds more voxels.
+                let mut c_min = UVec3::new(ix, iy, iz);
+                let mut c_max = UVec3::new(ix + 1, iy + 1, iz + 1);
 
                 queue.clear();
                 queue.push_back((ix, iy, iz));
@@ -128,6 +155,12 @@ pub fn label_components(grid: &Grid) -> ComponentField {
 
                 while let Some((x, y, z)) = queue.pop_front() {
                     voxel_count[comp_id as usize] += 1;
+                    c_min.x = c_min.x.min(x);
+                    c_min.y = c_min.y.min(y);
+                    c_min.z = c_min.z.min(z);
+                    c_max.x = c_max.x.max(x + 1);
+                    c_max.y = c_max.y.max(y + 1);
+                    c_max.z = c_max.z.max(z + 1);
 
                     // 6-connected neighbours. Inline the loop for
                     // faster iteration on the 128³ grid.
@@ -166,6 +199,8 @@ pub fn label_components(grid: &Grid) -> ComponentField {
                         queue.push_back((nx, ny, nz));
                     }
                 }
+
+                bounds.push((c_min, c_max));
             }
         }
     }
@@ -174,6 +209,7 @@ pub fn label_components(grid: &Grid) -> ComponentField {
         ids,
         res,
         voxel_count,
+        bounds,
     }
 }
 
@@ -280,6 +316,49 @@ mod tests {
         assert_eq!(ranked.len(), 2);
         // First element = biggest.
         assert!(f.voxel_count(ranked[0]) > f.voxel_count(ranked[1]));
+    }
+
+    #[test]
+    fn bounds_cover_component_voxels() {
+        // Add one sphere and check its AABB spans exactly the voxels
+        // that belong to it in the labelled field. min is inclusive,
+        // max is exclusive.
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        let s = SphereBrush {
+            center: Vec3::new(16.0, 16.0, 16.0),
+            radius: 4.0,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            displace: false,
+            workbench_y: None,
+        };
+        let _ = apply_sphere_brush(&mut g, &s);
+        let f = label_components(&g);
+        assert_eq!(f.component_count(), 1);
+        let id = f.ids_by_size_desc()[0];
+        let (mn, mx) = f.bounds_of(id).expect("component has bounds");
+        // Every voxel labelled with `id` must lie inside [mn, mx),
+        // and no voxel outside that AABB may carry `id`.
+        for iz in 0..32u32 {
+            for iy in 0..32u32 {
+                for ix in 0..32u32 {
+                    if f.id_at(ix, iy, iz) == id {
+                        assert!(ix >= mn.x && ix < mx.x, "x out of bounds");
+                        assert!(iy >= mn.y && iy < mx.y, "y out of bounds");
+                        assert!(iz >= mn.z && iz < mx.z, "z out of bounds");
+                    }
+                }
+            }
+        }
+        assert!(mx.x > mn.x && mx.y > mn.y && mx.z > mn.z);
+    }
+
+    #[test]
+    fn bounds_of_empty_or_unknown_id_is_none() {
+        let g = sphere_grid(5.0, Vec3::new(16.0, 16.0, 16.0));
+        let f = label_components(&g);
+        assert!(f.bounds_of(EMPTY).is_none());
+        assert!(f.bounds_of(9999).is_none());
     }
 
     #[test]
