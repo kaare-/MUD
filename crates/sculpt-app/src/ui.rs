@@ -96,10 +96,6 @@ fn draw_ui(
                     actions.send(AppAction::ShowExportStlDialog);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Quick STL export (auto-name)", "Ctrl+Shift+E") {
-                    actions.send(AppAction::ExportStl);
-                    ui.close_menu();
-                }
                 ui.separator();
                 if menu_item(ui, "Quit", "Esc") {
                     // Quit is a special case: the AppAction handler in
@@ -632,6 +628,7 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
         }
         ToolKind::Select => {
             "LMB picks the piece under the cursor.\n\
+             The selected piece is boxed in yellow.\n\
              Del  removes the selected piece.\n\
              A    active-only sculpt (other pieces stay).\n\
              Ctrl+G  drop every floating piece."

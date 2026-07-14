@@ -18,6 +18,8 @@
 //! whenever they're needed.
 
 use bevy::prelude::*;
+use bevy::render::mesh::{Indices, PrimitiveTopology};
+use bevy::render::render_asset::RenderAssetUsages;
 use bevy::window::PrimaryWindow;
 use glam::{UVec3, Vec3 as GVec3};
 use sculpt_core::{label_components, ChunkCoord, ComponentField, ComponentId, EMPTY};
@@ -31,9 +33,18 @@ use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
+    // PostStartup so `WorkpieceRoot` has been spawned by
+    // `workpiece::spawn_workpiece` (also `Startup`) and we can
+    // parent the highlight under it.
+    app.add_systems(PostStartup, spawn_selection_highlight);
     app.add_systems(
         Update,
-        (selection_input, handle_selection_actions, delete_hotkey)
+        (
+            selection_input,
+            handle_selection_actions,
+            delete_hotkey,
+            update_selection_highlight,
+        )
             .after(TurntableSet),
     );
 }
@@ -334,4 +345,143 @@ fn delete_selected_component(
     selection.picked_voxel = None;
     selection.invalidate_labels();
     info!("deleted selected component ({removed} voxels)");
+}
+
+/// Marker component for the wireframe box overlay that highlights the
+/// selected component. One entity, parented under [`WorkpieceRoot`]
+/// so it turns with the turntable.
+#[derive(Component)]
+pub struct SelectionHighlight;
+
+/// Spawn the highlight entity. Mesh is a unit-cube's 12 edges as a
+/// `LineList` so scaling the transform stretches it into any AABB.
+/// Material is unlit-emissive so it reads on any background.
+fn spawn_selection_highlight(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    q_root: Query<Entity, With<WorkpieceRoot>>,
+) {
+    let mesh = meshes.add(unit_cube_edges());
+    let material = materials.add(StandardMaterial {
+        base_color: Color::srgba(1.0, 0.85, 0.35, 0.95),
+        emissive: LinearRgba::new(2.6, 2.1, 0.6, 1.0),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        double_sided: true,
+        cull_mode: None,
+        ..default()
+    });
+    let entity = commands
+        .spawn((
+            Mesh3d(mesh),
+            MeshMaterial3d(material),
+            Transform::default(),
+            Visibility::Hidden,
+            SelectionHighlight,
+        ))
+        .id();
+    if let Ok(root) = q_root.get_single() {
+        commands.entity(root).add_child(entity);
+    }
+}
+
+/// Reposition + rescale the highlight to hug the selected
+/// component's voxel-space AABB (converted to piece-local mm).
+/// Hides the entity when nothing is selected.
+///
+/// A tiny padding is added so the wire sits *just outside* the
+/// meshed surface rather than z-fighting the marching-cubes shell.
+#[allow(clippy::too_many_arguments)]
+fn update_selection_highlight(
+    mut selection: ResMut<Selection>,
+    workpiece: Res<SculptWorkpiece>,
+    mut q_highlight: Query<
+        (&mut Transform, &mut Visibility),
+        With<SelectionHighlight>,
+    >,
+) {
+    let Ok((mut tf, mut vis)) = q_highlight.get_single_mut() else {
+        return;
+    };
+
+    // Nothing picked, or the picked voxel got carved away.
+    if selection.picked_voxel.is_none() {
+        *vis = Visibility::Hidden;
+        return;
+    }
+
+    // Only run the labeller when it's stale; keep the reference
+    // shape short so we don't fight the borrow checker with the
+    // grid probe below. Same "temporarily own the labels" trick
+    // as `delete_selected_component`.
+    let bounds = {
+        ensure_labels_fresh(&mut selection, &workpiece);
+        let labels = selection
+            .labels
+            .take()
+            .expect("labels populated just above");
+        let bounds = selection
+            .selected_id(&labels)
+            .and_then(|id| labels.bounds_of(id));
+        selection.labels = Some(labels);
+        bounds
+    };
+
+    let Some((min, max)) = bounds else {
+        *vis = Visibility::Hidden;
+        return;
+    };
+
+    let vs = workpiece.grid.voxel_size();
+    let origin = workpiece.grid.origin();
+    let pad = vs * 0.35;
+    let local_min = glam::Vec3::new(
+        origin.x + min.x as f32 * vs - pad,
+        origin.y + min.y as f32 * vs - pad,
+        origin.z + min.z as f32 * vs - pad,
+    );
+    let local_max = glam::Vec3::new(
+        origin.x + max.x as f32 * vs + pad,
+        origin.y + max.y as f32 * vs + pad,
+        origin.z + max.z as f32 * vs + pad,
+    );
+    let centre = (local_min + local_max) * 0.5;
+    let size = local_max - local_min;
+    tf.translation = Vec3::new(centre.x, centre.y, centre.z);
+    tf.scale = Vec3::new(size.x, size.y, size.z);
+    tf.rotation = Quat::IDENTITY;
+    *vis = Visibility::Visible;
+}
+
+/// Build a [`LineList`] mesh with the 12 edges of a unit cube from
+/// `-0.5..0.5`. Transform scaling then stretches it into whatever
+/// AABB we need without ever regenerating the mesh.
+fn unit_cube_edges() -> Mesh {
+    let corners: [[f32; 3]; 8] = [
+        [-0.5, -0.5, -0.5],
+        [0.5, -0.5, -0.5],
+        [0.5, 0.5, -0.5],
+        [-0.5, 0.5, -0.5],
+        [-0.5, -0.5, 0.5],
+        [0.5, -0.5, 0.5],
+        [0.5, 0.5, 0.5],
+        [-0.5, 0.5, 0.5],
+    ];
+    // 12 edges, each two consecutive indices form one line segment.
+    let edges: [u32; 24] = [
+        0, 1, 1, 2, 2, 3, 3, 0, // bottom Z
+        4, 5, 5, 6, 6, 7, 7, 4, // top Z
+        0, 4, 1, 5, 2, 6, 3, 7, // vertical pillars
+    ];
+    let mut mesh = Mesh::new(
+        PrimitiveTopology::LineList,
+        RenderAssetUsages::default(),
+    );
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, corners.to_vec());
+    // Bevy's PBR pipeline requires a normal attribute even for lines.
+    let normals: Vec<[f32; 3]> = vec![[0.0, 1.0, 0.0]; corners.len()];
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, normals);
+    mesh.insert_indices(Indices::U32(edges.to_vec()));
+    mesh
 }

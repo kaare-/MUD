@@ -16,7 +16,7 @@
 
 use std::fs::File;
 use std::io::BufWriter;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
@@ -41,19 +41,15 @@ fn emit_export_hotkey(
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let super_key =
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     if !(ctrl || super_key) {
         return;
     }
     if keys.just_pressed(KeyCode::KeyE) {
-        // Ctrl+E → dialog (matches user expectation that "export STL"
-        // should ask where). Ctrl+Shift+E stays as the quick,
-        // auto-timestamped path for the rare "just dump it" flow.
-        if shift {
-            actions.send(AppAction::ExportStl);
-        } else {
-            actions.send(AppAction::ShowExportStlDialog);
-        }
+        // Ctrl+E always opens the Export-STL dialog so the shortcut
+        // and the File > Export STL… menu item behave identically.
+        // Shift is intentionally ignored — there's no divergent
+        // "quick auto-name" path any more.
+        actions.send(AppAction::ShowExportStlDialog);
     }
 }
 
@@ -62,13 +58,8 @@ fn handle_export_action(
     workpiece: Res<SculptWorkpiece>,
 ) {
     for a in events.read() {
-        match a {
-            AppAction::ExportStl => {
-                let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".stl"));
-                export_stl_to(&workpiece, &path);
-            }
-            AppAction::ExportStlAs(path) => export_stl_to(&workpiece, path),
-            _ => {}
+        if let AppAction::ExportStlAs(path) = a {
+            export_stl_to(&workpiece, path);
         }
     }
 }
