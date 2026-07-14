@@ -179,12 +179,14 @@ fn update_preview(
         let normal_bevy = Vec3::new(normal.x, normal.y, normal.z);
         tf.translation = hit_bevy + normal_bevy * bias;
 
-        // Radially symmetric tools (finger + wire cutter marker) need
-        // no rotation. Cutter prisms align their local Y axis with
-        // the surface normal so the extrusion direction is visible.
+        // Radially symmetric tools (finger, smooth, wire-cutter
+        // marker) need no rotation. Cutter prisms and the paddle
+        // disk align their local Y axis with the surface normal.
         tf.rotation = match tool.kind {
-            ToolKind::Finger | ToolKind::WireCutter => Quat::IDENTITY,
-            ToolKind::Cutter(_) => Quat::from_rotation_arc(Vec3::Y, normal_bevy),
+            ToolKind::Finger | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
+            ToolKind::Cutter(_) | ToolKind::Paddle => {
+                Quat::from_rotation_arc(Vec3::Y, normal_bevy)
+            }
         };
     }
     if let Ok(mut vis) = q_visibility.get_mut(preview_entity) {
@@ -208,7 +210,11 @@ fn hide(entity: Entity, q_visibility: &mut Query<&mut Visibility>) {
 /// Build the preview mesh for the given tool state.
 fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
     match kind {
-        ToolKind::Finger => Sphere::new(size).mesh().uv(24, 16),
+        // Both finger and smooth are radially-symmetric sphere
+        // brushes at their `size` radius — the preview mesh is
+        // identical. The material tint distinguishes them if we
+        // want to later (currently the same emissive blue).
+        ToolKind::Finger | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)
@@ -218,6 +224,11 @@ fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
         // the user still gets 'cursor is on the material' feedback;
         // the actual cut plane appears on release.
         ToolKind::WireCutter => Sphere::new(2.5).mesh().uv(16, 12),
+        // Paddle: a thin disk oriented so its flat face sits on the
+        // surface. Cylinder along Y with a tiny height so it reads
+        // as a plate rather than a rod. Alignment to the surface
+        // normal is handled by the transform-rotation code below.
+        ToolKind::Paddle => Cylinder::new(size, 1.5).mesh().resolution(32).build(),
     }
 }
 
