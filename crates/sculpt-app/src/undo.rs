@@ -131,6 +131,15 @@ impl UndoHistory {
             self.undo.remove(0);
         }
     }
+
+    /// Wipe all history. Used when we replace the grid wholesale
+    /// (e.g. loading a project file) — the recorded pre/post voxel
+    /// values are now nonsense against the new grid, so we drop them
+    /// rather than let the user Ctrl+Z into a corrupt intermediate.
+    pub fn clear(&mut self) {
+        self.undo.clear();
+        self.redo.clear();
+    }
 }
 
 /// Wraps the stroke recorder so `sculpt_input` can push voxel values

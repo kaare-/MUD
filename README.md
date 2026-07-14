@@ -67,6 +67,8 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `7` | Smooth (hold LMB to polish high-frequency detail) |
 | `8` | Paddle (hold LMB to press a flat) |
 | `Ctrl+E` | Export the current piece to a binary STL file (Z-up, print-ready) |
+| `Ctrl+S` | Save the current piece as a native `.mudclay` project file |
+| `Ctrl+O` | Load the newest `.mudclay` project from the working directory |
 
 `Esc` to quit.
 
