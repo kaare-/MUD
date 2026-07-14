@@ -19,19 +19,27 @@
 //! The panels also publish an [`UiCapturesInput`] snapshot every
 //! frame so world-input systems know when to yield.
 
+use std::path::PathBuf;
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin);
     app.add_systems(
         Update,
-        (draw_ui, publish_ui_capture.after(draw_ui)).chain(),
+        (
+            draw_ui,
+            draw_dialogs.after(draw_ui),
+            publish_ui_capture.after(draw_dialogs),
+        )
+            .chain(),
     );
 }
 
@@ -54,7 +62,16 @@ fn draw_ui(
                     actions.send(AppAction::SaveProject);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Load newest", "Ctrl+O") {
+                if menu_item(ui, "Save As\u{2026}", "Ctrl+Shift+S") {
+                    actions.send(AppAction::ShowSaveAsDialog);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if menu_item(ui, "Open\u{2026}", "Ctrl+O") {
+                    actions.send(AppAction::ShowOpenDialog);
+                    ui.close_menu();
+                }
+                if menu_item(ui, "Reopen most recent", "Ctrl+Shift+O") {
                     actions.send(AppAction::LoadNewestProject);
                     ui.close_menu();
                 }
@@ -143,6 +160,147 @@ fn draw_ui(
     });
 }
 
+/// Save-As and Open modal dialogs, when their state is populated.
+///
+/// Both dialogs are drawn as centred `egui::Window`s. While either
+/// is up, the `publish_ui_capture` snapshot marks pointer + keyboard
+/// as UI-owned so background clicks and Escape don't leak through.
+///
+/// - **Save As** shows a text field pre-filled with a timestamped
+///   filename, plus Save / Cancel. Enter in the field saves. Any
+///   filename without an extension gets `.mudclay` appended.
+/// - **Open** shows the list of `.mudclay` files in the CWD (newest
+///   first by mtime), plus Open / Cancel. Single click selects,
+///   double click opens.
+fn draw_dialogs(
+    mut contexts: EguiContexts,
+    mut state: ResMut<FileDialogState>,
+    mut actions: EventWriter<AppAction>,
+) {
+    let ctx = contexts.ctx_mut();
+
+    // Save-As dialog. Egui doesn't have a first-class modal concept,
+    // so we anchor to the centre, disable resize/collapse, and rely
+    // on `publish_ui_capture` to suppress world input.
+    if state.save_as.is_some() {
+        let mut done = None; // Some(Ok(path)) = save, Some(Err) = cancel
+        if let Some(dialog) = state.save_as.as_mut() {
+            egui::Window::new("Save As")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Filename:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut dialog.name)
+                            .desired_width(280.0),
+                    );
+                    // Enter in the field = commit. First frame the
+                    // dialog opens we also want focus in the field
+                    // so the user can just type.
+                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                        done = Some(Ok(finalise_save_path(&dialog.name)));
+                    }
+                    if !resp.has_focus() {
+                        resp.request_focus();
+                    }
+                    ui.small(
+                        "Saves into the working directory. Extension\n\
+                         `.mudclay` is added automatically.",
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button("Save").clicked() && !dialog.name.trim().is_empty() {
+                            done = Some(Ok(finalise_save_path(&dialog.name)));
+                        }
+                        if ui.button("Cancel").clicked() {
+                            done = Some(Err(()));
+                        }
+                    });
+                });
+        }
+        match done {
+            Some(Ok(path)) => {
+                actions.send(AppAction::SaveProjectAs(path));
+                state.save_as = None;
+            }
+            Some(Err(())) => {
+                state.save_as = None;
+            }
+            None => {}
+        }
+    }
+
+    // Open dialog.
+    if state.open.is_some() {
+        let mut done: Option<Option<PathBuf>> = None;
+        if let Some(dialog) = state.open.as_mut() {
+            egui::Window::new("Open project")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    if dialog.files.is_empty() {
+                        ui.label("No .mudclay files in this directory.");
+                    } else {
+                        ui.label(format!(
+                            "{} projects (newest first):",
+                            dialog.files.len()
+                        ));
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                for (path, _mtime) in &dialog.files {
+                                    let name = path
+                                        .file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("?");
+                                    let selected =
+                                        dialog.selected.as_deref() == Some(path.as_path());
+                                    let resp = ui.selectable_label(selected, name);
+                                    if resp.clicked() {
+                                        dialog.selected = Some(path.clone());
+                                    }
+                                    if resp.double_clicked() {
+                                        done = Some(Some(path.clone()));
+                                    }
+                                }
+                            });
+                    }
+                    ui.horizontal(|ui| {
+                        let can_open = dialog.selected.is_some();
+                        if ui
+                            .add_enabled(can_open, egui::Button::new("Open"))
+                            .clicked()
+                        {
+                            done = Some(dialog.selected.clone());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            done = Some(None);
+                        }
+                    });
+                });
+        }
+        if let Some(result) = done {
+            if let Some(path) = result {
+                actions.send(AppAction::OpenProject(path));
+            }
+            state.open = None;
+        }
+    }
+}
+
+/// Fold "user typed some name" into a canonical PathBuf: trim
+/// whitespace, and add `.mudclay` if no extension is present. Keeps
+/// the dialog code above tidy.
+fn finalise_save_path(input: &str) -> PathBuf {
+    let mut path = PathBuf::from(input.trim());
+    if path.extension().is_none() {
+        path.set_extension("mudclay");
+    }
+    path
+}
+
 /// After egui has processed inputs for the frame, snapshot whether
 /// the UI is absorbing pointer or keyboard events. World-input
 /// systems consult this resource before consuming input themselves.
@@ -157,11 +315,20 @@ fn draw_ui(
 ///   We check `memory.any_popup_open()` and treat that as "keyboard
 ///   is in UI-land" too, so Escape (and future menu-navigation keys)
 ///   don't leak through to `esc_quit`.
-fn publish_ui_capture(mut contexts: EguiContexts, mut gate: ResMut<UiCapturesInput>) {
+/// - When a **file-dialog window** is on screen, the whole app should
+///   feel modal: clicks anywhere shouldn't sculpt, and shortcut keys
+///   shouldn't move the turntable while the user's typing a filename.
+///   We check the `FileDialogState` resource directly for this.
+fn publish_ui_capture(
+    mut contexts: EguiContexts,
+    dialogs: Res<FileDialogState>,
+    mut gate: ResMut<UiCapturesInput>,
+) {
     let ctx = contexts.ctx_mut();
-    gate.pointer = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
+    let modal = dialogs.any_open();
+    gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
-        ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
+        modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
 }
 
 /// A single menu item with a right-aligned shortcut hint. Egui's

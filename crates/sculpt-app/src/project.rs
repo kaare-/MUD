@@ -21,7 +21,8 @@
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use bevy::prelude::*;
 use sculpt_core::{project_size, read_project, write_project};
@@ -33,12 +34,85 @@ use crate::undo::UndoHistory;
 use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, (emit_project_hotkeys, handle_project_actions));
+    app.init_resource::<FileDialogState>();
+    app.add_systems(
+        Update,
+        (
+            emit_project_hotkeys,
+            handle_project_actions,
+            handle_dialog_actions,
+        ),
+    );
 }
 
-/// Keyboard emitter — Ctrl+S and Ctrl+O fire the same events UI menu
-/// items do. Nothing else in this system, so the work function
-/// stays testable without a running Bevy world.
+/// Which (if any) in-app dialog is currently visible.
+///
+/// The dialog is drawn by the `ui` module and reads/writes this
+/// resource. Handler systems here own the "spawn the dialog" and
+/// "act on the dialog's result" paths.
+#[derive(Resource, Default)]
+pub struct FileDialogState {
+    pub save_as: Option<SaveAsDialog>,
+    pub open: Option<OpenDialog>,
+}
+
+impl FileDialogState {
+    /// True while any modal file dialog is on screen. World-input
+    /// systems check this via the `UiCapturesInput` gate.
+    pub fn any_open(&self) -> bool {
+        self.save_as.is_some() || self.open.is_some()
+    }
+}
+
+/// State for the Save-As dialog. `name` is the editable text field —
+/// initially seeded with a fresh timestamped name so a user who just
+/// wants a new file can press Enter without typing.
+pub struct SaveAsDialog {
+    pub name: String,
+}
+
+/// State for the Open dialog. `files` is a snapshot of `list_mudclay_in_cwd`
+/// taken at the moment the dialog opened; `selected` is whatever the
+/// user's clicked on so far.
+pub struct OpenDialog {
+    pub files: Vec<(PathBuf, SystemTime)>,
+    pub selected: Option<PathBuf>,
+}
+
+fn handle_dialog_actions(
+    mut events: EventReader<AppAction>,
+    mut state: ResMut<FileDialogState>,
+) {
+    for a in events.read() {
+        match a {
+            AppAction::ShowSaveAsDialog => {
+                state.save_as = Some(SaveAsDialog {
+                    name: timestamped_filename("mud-sculpt-", ".mudclay"),
+                });
+                // Only one dialog at a time — a Save-As while an
+                // Open is drifting on screen would be confusing.
+                state.open = None;
+            }
+            AppAction::ShowOpenDialog => {
+                state.open = Some(OpenDialog {
+                    files: list_mudclay_in_cwd(),
+                    selected: None,
+                });
+                state.save_as = None;
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Keyboard emitter — fires the same events UI menu items do.
+///
+/// | Shortcut              | Action                           |
+/// |-----------------------|----------------------------------|
+/// | Ctrl+S                | SaveProject (auto-timestamp)     |
+/// | Ctrl+Shift+S          | ShowSaveAsDialog                 |
+/// | Ctrl+O                | ShowOpenDialog (list picker)     |
+/// | Ctrl+Shift+O          | LoadNewestProject (quick reopen) |
 fn emit_project_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     ui_gate: Res<UiCapturesInput>,
@@ -47,11 +121,27 @@ fn emit_project_hotkeys(
     if ui_gate.keyboard {
         return;
     }
-    if just_pressed_with_ctrl(&keys, KeyCode::KeyS) {
-        actions.send(AppAction::SaveProject);
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let super_key =
+        keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    let modifier = ctrl || super_key;
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if !modifier {
+        return;
     }
-    if just_pressed_with_ctrl(&keys, KeyCode::KeyO) {
-        actions.send(AppAction::LoadNewestProject);
+    if keys.just_pressed(KeyCode::KeyS) {
+        if shift {
+            actions.send(AppAction::ShowSaveAsDialog);
+        } else {
+            actions.send(AppAction::SaveProject);
+        }
+    }
+    if keys.just_pressed(KeyCode::KeyO) {
+        if shift {
+            actions.send(AppAction::LoadNewestProject);
+        } else {
+            actions.send(AppAction::ShowOpenDialog);
+        }
     }
 }
 
@@ -62,17 +152,30 @@ fn handle_project_actions(
 ) {
     for a in events.read() {
         match a {
-            AppAction::SaveProject => save_current(&workpiece),
-            AppAction::LoadNewestProject => load_newest(&mut workpiece, &mut history),
+            AppAction::SaveProject => {
+                let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
+                save_to_path(&workpiece, &path);
+            }
+            AppAction::SaveProjectAs(path) => save_to_path(&workpiece, path),
+            AppAction::LoadNewestProject => match newest_mudclay_in_cwd() {
+                Some(p) => load_from_path(&p, &mut workpiece, &mut history),
+                None => warn!("no mud-sculpt-*.mudclay files in the working directory"),
+            },
+            AppAction::OpenProject(path) => {
+                load_from_path(path, &mut workpiece, &mut history)
+            }
             _ => {}
         }
     }
 }
 
-fn save_current(workpiece: &SculptWorkpiece) {
-    let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
+/// Write the workpiece's grid to `path`. Wraps every failure in a
+/// user-facing log message rather than propagating — we're being
+/// called from a fire-and-forget event handler and there's nowhere
+/// useful for the Result to go.
+pub fn save_to_path(workpiece: &SculptWorkpiece, path: &Path) {
     info!("saving project to {}", path.display());
-    let file = match File::create(&path) {
+    let file = match File::create(path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to create {}: {e}", path.display());
@@ -88,16 +191,16 @@ fn save_current(workpiece: &SculptWorkpiece) {
     info!("wrote {} bytes to {}", bytes, path.display());
 }
 
-fn load_newest(workpiece: &mut SculptWorkpiece, history: &mut UndoHistory) {
-    let path = match newest_mudclay_in_cwd() {
-        Some(p) => p,
-        None => {
-            warn!("no mud-sculpt-*.mudclay files found in the working directory");
-            return;
-        }
-    };
+/// Read a `.mudclay` file at `path` and swap it into the workpiece.
+/// Clears the undo history on success — journaled voxel values from
+/// before the swap reference a different grid.
+pub fn load_from_path(
+    path: &Path,
+    workpiece: &mut SculptWorkpiece,
+    history: &mut UndoHistory,
+) {
     info!("loading project from {}", path.display());
-    let file = match File::open(&path) {
+    let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to open {}: {e}", path.display());
@@ -128,38 +231,52 @@ fn load_newest(workpiece: &mut SculptWorkpiece, history: &mut UndoHistory) {
     }
 }
 
-fn just_pressed_with_ctrl(keys: &ButtonInput<KeyCode>, key: KeyCode) -> bool {
-    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
-    let super_key =
-        keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    (ctrl || super_key) && keys.just_pressed(key)
+/// Newest `.mudclay` in the current working directory by mtime,
+/// or `None` if the directory has none.
+fn newest_mudclay_in_cwd() -> Option<PathBuf> {
+    newest_mudclay_in(&std::env::current_dir().ok()?)
 }
 
-/// Newest `mud-sculpt-*.mudclay` in the current working directory,
-/// or `None` if the directory has none. Uses alphabetical order,
-/// which is chronological order given the timestamped filename
-/// convention.
-fn newest_mudclay_in_cwd() -> Option<PathBuf> {
-    let dir = std::env::current_dir().ok()?;
-    let mut best: Option<PathBuf> = None;
-    for entry in fs::read_dir(&dir).ok()?.flatten() {
-        let path = entry.path();
-        let Some(fname) = path.file_name().and_then(|s| s.to_str()) else {
-            continue;
-        };
-        if !fname.starts_with("mud-sculpt-") || !fname.ends_with(".mudclay") {
-            continue;
-        }
-        match &best {
-            None => best = Some(path),
-            Some(b) => {
-                if path.file_name() > b.file_name() {
-                    best = Some(path);
-                }
-            }
-        }
+/// Testable core of `newest_mudclay_in_cwd`. Parameterising the
+/// directory lets tests use dedicated tmp dirs without racing on the
+/// process-global `current_dir` while `cargo test` runs test threads
+/// in parallel.
+fn newest_mudclay_in(dir: &Path) -> Option<PathBuf> {
+    list_mudclay_in(dir).into_iter().next().map(|(p, _)| p)
+}
+
+/// Every `.mudclay` file in the working directory, paired with its
+/// modification time. Sorted newest-first for the Open dialog.
+pub fn list_mudclay_in_cwd() -> Vec<(PathBuf, SystemTime)> {
+    match std::env::current_dir() {
+        Ok(dir) => list_mudclay_in(&dir),
+        Err(_) => Vec::new(),
     }
-    best
+}
+
+/// Testable core of `list_mudclay_in_cwd`. Filters by `.mudclay`
+/// extension and sorts by descending mtime, so a hand-renamed
+/// `wolf-head.mudclay` participates alongside the auto-timestamped
+/// files.
+fn list_mudclay_in(dir: &Path) -> Vec<(PathBuf, SystemTime)> {
+    let iter = match fs::read_dir(dir) {
+        Ok(i) => i,
+        Err(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for entry in iter.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("mudclay") {
+            continue;
+        }
+        let mtime = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        out.push((path, mtime));
+    }
+    out.sort_by_key(|entry| std::cmp::Reverse(entry.1));
+    out
 }
 
 #[cfg(test)]
@@ -167,59 +284,68 @@ mod tests {
     use super::*;
     use std::io::Write as _;
 
-    /// Guard for the CWD environment change: sets a temp dir on
-    /// construction, restores the previous CWD on drop. Kept private
-    /// so no other test accidentally leaks the state.
-    struct CwdGuard {
-        prev: PathBuf,
-    }
-
-    impl CwdGuard {
-        fn to(new_cwd: &PathBuf) -> Self {
-            let prev = std::env::current_dir().unwrap();
-            std::env::set_current_dir(new_cwd).unwrap();
-            CwdGuard { prev }
-        }
-    }
-
-    impl Drop for CwdGuard {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.prev).ok();
-        }
+    /// Fresh scratch directory keyed by test name. Each test owns its
+    /// own path so parallel `cargo test` can't clobber siblings — we
+    /// avoid the process-global `current_dir` entirely by passing
+    /// paths in.
+    fn scratch(name: &str) -> PathBuf {
+        let tmp = std::env::temp_dir().join(format!("mud-project-test-{name}"));
+        let _ = fs::remove_dir_all(&tmp);
+        fs::create_dir_all(&tmp).unwrap();
+        tmp
     }
 
     #[test]
-    fn newest_finds_the_latest_timestamped_file() {
-        let tmp = std::env::temp_dir().join("mud-newest-test");
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
+    fn list_filters_by_extension_and_picks_up_hand_named_files() {
+        let dir = scratch("list-filter");
         for name in [
-            "mud-sculpt-20250101-000000.mudclay",
             "mud-sculpt-20260714-081500.mudclay",
-            "mud-sculpt-20260714-081459.mudclay",
+            "wolf-head-v3.mudclay",
             "not-a-mudclay.txt",
-            "random.mudclay",
+            "random.stl",
         ] {
-            let mut f = File::create(tmp.join(name)).unwrap();
+            let mut f = File::create(dir.join(name)).unwrap();
             f.write_all(b"stub").unwrap();
         }
 
-        let _guard = CwdGuard::to(&tmp);
-        let newest = newest_mudclay_in_cwd().expect("should find at least one");
-        assert_eq!(
-            newest.file_name().unwrap().to_str().unwrap(),
-            "mud-sculpt-20260714-081500.mudclay",
-            "alphabetical order = chronological order given our filename convention",
-        );
+        let list = list_mudclay_in(&dir);
+        assert_eq!(list.len(), 2, "only .mudclay files count, txt/stl ignored");
+        let names: Vec<String> = list
+            .iter()
+            .map(|(p, _)| p.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"mud-sculpt-20260714-081500.mudclay".into()));
+        assert!(names.contains(&"wolf-head-v3.mudclay".into()));
     }
 
     #[test]
-    fn newest_returns_none_when_directory_has_no_projects() {
-        let tmp = std::env::temp_dir().join("mud-newest-empty-test");
-        let _ = fs::remove_dir_all(&tmp);
-        fs::create_dir_all(&tmp).unwrap();
-        File::create(tmp.join("some-other.stl")).unwrap();
-        let _guard = CwdGuard::to(&tmp);
-        assert!(newest_mudclay_in_cwd().is_none());
+    fn list_returns_empty_when_directory_has_no_projects() {
+        let dir = scratch("list-empty");
+        File::create(dir.join("some-other.stl")).unwrap();
+        assert!(list_mudclay_in(&dir).is_empty());
+        assert!(newest_mudclay_in(&dir).is_none());
+    }
+
+    #[test]
+    fn newest_returns_the_most_recently_modified() {
+        // set_modified pins mtimes deterministically, avoiding
+        // sleep-in-test flakiness on filesystems with 1s mtime
+        // resolution.
+        use std::time::{Duration, SystemTime};
+        let dir = scratch("newest-mtime");
+        let now = SystemTime::now();
+        for (name, secs_ago) in [
+            ("old.mudclay", 3600),
+            ("recent.mudclay", 60),
+            ("middle.mudclay", 600),
+        ] {
+            let f = File::create(dir.join(name)).unwrap();
+            f.set_modified(now - Duration::from_secs(secs_ago)).unwrap();
+        }
+        let newest = newest_mudclay_in(&dir).expect("should find one");
+        assert_eq!(
+            newest.file_name().unwrap().to_str().unwrap(),
+            "recent.mudclay",
+        );
     }
 }
