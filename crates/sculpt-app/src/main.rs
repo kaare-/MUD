@@ -29,12 +29,14 @@
 //!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
+//!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
 //!   Esc .............. quit
 
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
 mod camera;
+mod export;
 mod preview;
 mod sculpt;
 mod turntable;
@@ -76,6 +78,7 @@ fn main() {
             undo::plugin,
             sculpt::plugin,
             preview::plugin,
+            export::plugin,
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
