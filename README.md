@@ -46,7 +46,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | Input | Action |
 |---|---|
 | Left-drag | Add/Remove tool: remove material |
-| Shift + Left-drag | Add/Remove tool: add material (sideways hold + Q/E can draw a ring) |
+| Shift + Left-drag | Add/Remove tool: add material (sideways hold + Q/E can draw a ring; over empty bench = deposit a blob) |
 | `[` / `]` or `-` / `=` | Shrink / grow the active tool (keyboard) |
 | Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
 | `M` | Toggle magic-clay (Add/Remove only) |

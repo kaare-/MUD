@@ -129,6 +129,7 @@ fn draw_ui(
             ui.add_space(6.0);
             ui.small(
                 "LMB remove · Shift+LMB add\n\
+                 Shift+LMB on an empty bench builds up.\n\
                  Shift+scroll or [ / ] resize.\n\
                  Right-drag orbits · Q / E turntable.\n\
                  Sideways add + Q/E can draw a ring.",
