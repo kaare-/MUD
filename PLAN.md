@@ -34,7 +34,9 @@ convincing lump of clay, quickly*.
 - `[x]` `.mudclay` save / load, Save-As and Open dialogs (in-app).
 - `[x]` STL export to CWD (`Ctrl+E`).
 - `[x]` Egui menus + tool palette + status strip.
-- `[x]` Hover ghost preview matching the stamp centre.
+- `[x]` Hover ghost preview matching the stamp centre; ghost stays
+  visible (dimmed) during a stroke so the brush footprint reads
+  while dragging.
 - `[x]` Ray march robust against warped SDFs (front-face lock).
 - `[x]` Add/Remove UX: soft join, tangent-plane lock, side-column
   rings, no camera stalks, no top-down 45° climb.
@@ -48,8 +50,9 @@ convincing lump of clay, quickly*.
 
 Ordered roughly easiest → hardest. Each item includes what it needs.
 
-1. `[x]` **Export STL via dialog.** — `Ctrl+Shift+E` opens Save As-style
-   dialog, `Ctrl+E` still instant-exports to CWD.
+1. `[x]` **Export STL via dialog.** — `Ctrl+E` and `File → Export STL…`
+   both open the Export-STL-As dialog; there is no divergent
+   "quick auto-name" path any more.
 
 2. `[x]` **Clear worktable.** — `Ctrl+N` / `File → New`. Swaps in an
    empty grid, clears undo + live stroke.
@@ -68,9 +71,11 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    the selected piece as a single undo stroke. `A` toggles
    **active-only** — sculpt stamps skip when the hit doesn't fall on
    the selected piece. HUD shows `Sel #N: X vx · Y mm³` + Delete
-   button + Active-only toggle. Labels are recomputed lazily
-   (invalidated after any stroke / undo / redo / Insert / New /
-   Load). Option B (multi-piece scene) still deferred.
+   button + Active-only toggle. **Selected piece is boxed** by a
+   yellow wireframe hugging its voxel-space AABB (turns with the
+   piece). Labels are recomputed lazily (invalidated after any
+   stroke / undo / redo / Insert / New / Load). Option B (multi-piece
+   scene) still deferred.
 
 6. `[x]` **Rigid gravity (rest).** `File → Rest pieces on bench`
    (`Ctrl+G`). Every floating connected component is translated
