@@ -19,6 +19,8 @@ use sculpt_core::{
     SphereBrush, WireCutter,
 };
 
+use crate::actions::AppAction;
+use crate::input_gate::UiCapturesInput;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
@@ -58,15 +60,6 @@ impl CutterFamily {
                 outer: size,
                 inner_ratio: 0.4,
             },
-        }
-    }
-
-    pub fn label(self) -> &'static str {
-        match self {
-            CutterFamily::Circle => "circle",
-            CutterFamily::Square => "square",
-            CutterFamily::Hexagon => "hexagon",
-            CutterFamily::Star5 => "star",
         }
     }
 }
@@ -139,7 +132,66 @@ pub fn plugin(app: &mut App) {
     app.init_resource::<SculptTool>();
     app.init_resource::<SculptSymmetry>();
     app.init_resource::<WireCutState>();
-    app.add_systems(Update, (sculpt_input, wire_cutter_input, adjust_tool));
+    app.add_systems(
+        Update,
+        (
+            sculpt_input,
+            wire_cutter_input,
+            adjust_tool,
+            handle_tool_actions,
+        ),
+    );
+}
+
+/// Consume [`AppAction`] events that affect tool state. Runs in the
+/// same schedule as the keyboard emitters — events are 2-frame
+/// buffered so ordering doesn't matter for correctness, only for the
+/// visible latency (~ 16 ms, imperceptible).
+fn handle_tool_actions(
+    mut events: EventReader<AppAction>,
+    mut tool: ResMut<SculptTool>,
+    mut symmetry: ResMut<SculptSymmetry>,
+) {
+    for a in events.read() {
+        match a {
+            AppAction::SelectTool(kind) => {
+                if tool.kind != *kind {
+                    tool.kind = *kind;
+                    bevy::log::info!("tool: {}", tool_label(*kind));
+                }
+            }
+            AppAction::ToggleSymmetry => {
+                symmetry.enabled = !symmetry.enabled;
+                bevy::log::info!(
+                    "symmetry: {}",
+                    if symmetry.enabled { "on" } else { "off" }
+                );
+            }
+            AppAction::ToggleMagicClay => {
+                tool.displace = !tool.displace;
+                bevy::log::info!(
+                    "magic-clay displacement: {}",
+                    if tool.displace { "on" } else { "off" }
+                );
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Human-readable label for a tool kind. Used for log lines and the
+/// tool-palette UI.
+pub fn tool_label(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Finger => "finger",
+        ToolKind::Cutter(CutterFamily::Circle) => "cutter/circle",
+        ToolKind::Cutter(CutterFamily::Square) => "cutter/square",
+        ToolKind::Cutter(CutterFamily::Hexagon) => "cutter/hexagon",
+        ToolKind::Cutter(CutterFamily::Star5) => "cutter/star",
+        ToolKind::WireCutter => "wire cutter",
+        ToolKind::Smooth => "smooth",
+        ToolKind::Paddle => "paddle",
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -151,6 +203,7 @@ fn sculpt_input(
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
+    ui_gate: Res<UiCapturesInput>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
@@ -158,6 +211,13 @@ fn sculpt_input(
     // Wire cutter has its own lifecycle (drag anchors A→B on release);
     // hand it off to `wire_cutter_input`.
     if matches!(tool.kind, ToolKind::WireCutter) {
+        return;
+    }
+
+    // Menus and panels absorb clicks. Without this gate a click on the
+    // "Save" menu item would immediately start a sculpting stroke on
+    // whatever the cursor was near.
+    if ui_gate.pointer {
         return;
     }
 
@@ -390,6 +450,7 @@ fn wire_cutter_input(
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
+    ui_gate: Res<UiCapturesInput>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
@@ -399,6 +460,10 @@ fn wire_cutter_input(
         // Clean up any stale state if the user switched tools mid-drag.
         state.anchor_a = None;
         state.view_dir_local = None;
+        return;
+    }
+
+    if ui_gate.pointer {
         return;
     }
 
@@ -570,55 +635,56 @@ fn adjust_tool(
     keys: Res<ButtonInput<KeyCode>>,
     mut wheel: EventReader<MouseWheel>,
     mut tool: ResMut<SculptTool>,
-    mut symmetry: ResMut<SculptSymmetry>,
+    mut actions: EventWriter<AppAction>,
+    ui_gate: Res<UiCapturesInput>,
 ) {
+    // When egui has an active text input or a focused button, keyboard
+    // events belong to the UI, not the sculpt path. Number keys and
+    // toggle keys would otherwise fight the UI's own keyboard use.
+    if ui_gate.keyboard {
+        return;
+    }
+
+    // Tool selection — fire an event; the actual mutation happens in
+    // handle_tool_actions so the UI and keyboard share exactly one code
+    // path.
+    let mut send_tool = |kind: ToolKind| {
+        actions.send(AppAction::SelectTool(kind));
+    };
     if keys.just_pressed(KeyCode::Digit1) {
-        tool.kind = ToolKind::Finger;
-        bevy::log::info!("tool: finger");
+        send_tool(ToolKind::Finger);
     }
     if keys.just_pressed(KeyCode::Digit2) {
-        tool.kind = ToolKind::Cutter(CutterFamily::Circle);
-        bevy::log::info!("tool: cutter/{}", CutterFamily::Circle.label());
+        send_tool(ToolKind::Cutter(CutterFamily::Circle));
     }
     if keys.just_pressed(KeyCode::Digit3) {
-        tool.kind = ToolKind::Cutter(CutterFamily::Square);
-        bevy::log::info!("tool: cutter/{}", CutterFamily::Square.label());
+        send_tool(ToolKind::Cutter(CutterFamily::Square));
     }
     if keys.just_pressed(KeyCode::Digit4) {
-        tool.kind = ToolKind::Cutter(CutterFamily::Hexagon);
-        bevy::log::info!("tool: cutter/{}", CutterFamily::Hexagon.label());
+        send_tool(ToolKind::Cutter(CutterFamily::Hexagon));
     }
     if keys.just_pressed(KeyCode::Digit5) {
-        tool.kind = ToolKind::Cutter(CutterFamily::Star5);
-        bevy::log::info!("tool: cutter/{}", CutterFamily::Star5.label());
+        send_tool(ToolKind::Cutter(CutterFamily::Star5));
     }
     if keys.just_pressed(KeyCode::Digit6) {
-        tool.kind = ToolKind::WireCutter;
-        bevy::log::info!("tool: wire cutter");
+        send_tool(ToolKind::WireCutter);
     }
     if keys.just_pressed(KeyCode::Digit7) {
-        tool.kind = ToolKind::Smooth;
-        bevy::log::info!("tool: smooth");
+        send_tool(ToolKind::Smooth);
     }
     if keys.just_pressed(KeyCode::Digit8) {
-        tool.kind = ToolKind::Paddle;
-        bevy::log::info!("tool: paddle");
+        send_tool(ToolKind::Paddle);
     }
 
-    // Size: three equivalent ways to adjust it. Track the old value
-    // so we only log when it actually changes.
+    // Size: continuous adjustment, stays inline (no menu path needs
+    // it — it's driven by scroll and bracket keys during a stroke).
     let old_size = tool.size;
-
-    // Keyboard: [ / ] and - / =.
     if keys.just_pressed(KeyCode::BracketLeft) || keys.just_pressed(KeyCode::Minus) {
         tool.size = (tool.size * SIZE_STEP_DOWN).max(SIZE_MIN);
     }
     if keys.just_pressed(KeyCode::BracketRight) || keys.just_pressed(KeyCode::Equal) {
         tool.size = (tool.size * SIZE_STEP_UP).min(SIZE_MAX);
     }
-
-    // Shift + scroll wheel. When Shift is held the camera plugin
-    // yields, so this doesn't double up with zoom.
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let mut scroll_delta = 0.0f32;
     for ev in wheel.read() {
@@ -630,24 +696,20 @@ fn adjust_tool(
         tool.size = (tool.size * (1.0 + scroll_delta * SIZE_SCROLL_SENSITIVITY))
             .clamp(SIZE_MIN, SIZE_MAX);
     }
-
     if (tool.size - old_size).abs() > 0.05 {
         bevy::log::info!("tool size: {:.1} mm", tool.size);
     }
 
+    // Mode toggles.
     if keys.just_pressed(KeyCode::KeyM) {
-        tool.displace = !tool.displace;
-        bevy::log::info!(
-            "magic-clay displacement: {}",
-            if tool.displace { "on" } else { "off" }
-        );
+        actions.send(AppAction::ToggleMagicClay);
     }
-
-    if keys.just_pressed(KeyCode::KeyS) {
-        symmetry.enabled = !symmetry.enabled;
-        bevy::log::info!(
-            "symmetry: {}",
-            if symmetry.enabled { "on" } else { "off" }
-        );
+    // Note: `Ctrl+S` is also KeyS; we only toggle symmetry when Ctrl
+    // is *not* held, so the save-file shortcut wins that race.
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let super_key =
+        keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    if keys.just_pressed(KeyCode::KeyS) && !ctrl && !super_key {
+        actions.send(AppAction::ToggleSymmetry);
     }
 }

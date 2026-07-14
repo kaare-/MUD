@@ -37,12 +37,15 @@
 use bevy::prelude::*;
 use bevy::window::WindowResolution;
 
+mod actions;
 mod camera;
 mod export;
+mod input_gate;
 mod preview;
 mod project;
 mod sculpt;
 mod turntable;
+mod ui;
 mod undo;
 mod workpiece;
 
@@ -75,6 +78,8 @@ fn main() {
             brightness: 220.0,
         })
         .add_plugins((
+            actions::plugin,
+            input_gate::plugin,
             camera::plugin,
             turntable::plugin,
             workpiece::plugin,
@@ -83,6 +88,7 @@ fn main() {
             preview::plugin,
             export::plugin,
             project::plugin,
+            ui::plugin,
         ))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
@@ -131,8 +137,15 @@ fn setup_scene(
     ));
 }
 
-fn esc_quit(keys: Res<ButtonInput<KeyCode>>, mut ev: EventWriter<AppExit>) {
+fn esc_quit(
+    keys: Res<ButtonInput<KeyCode>>,
+    ui_gate: Res<input_gate::UiCapturesInput>,
+    mut actions: EventWriter<actions::AppAction>,
+) {
+    if ui_gate.keyboard {
+        return;
+    }
     if keys.just_pressed(KeyCode::Escape) {
-        ev.send(AppExit::Success);
+        actions.send(actions::AppAction::Quit);
     }
 }

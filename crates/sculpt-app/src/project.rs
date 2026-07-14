@@ -26,25 +26,52 @@ use std::path::PathBuf;
 use bevy::prelude::*;
 use sculpt_core::{project_size, read_project, write_project};
 
+use crate::actions::AppAction;
 use crate::export::timestamped_filename;
+use crate::input_gate::UiCapturesInput;
 use crate::undo::UndoHistory;
 use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, (save_on_hotkey, load_on_hotkey));
+    app.add_systems(Update, (emit_project_hotkeys, handle_project_actions));
 }
 
-fn save_on_hotkey(
+/// Keyboard emitter — Ctrl+S and Ctrl+O fire the same events UI menu
+/// items do. Nothing else in this system, so the work function
+/// stays testable without a running Bevy world.
+fn emit_project_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
-    workpiece: Res<SculptWorkpiece>,
+    ui_gate: Res<UiCapturesInput>,
+    mut actions: EventWriter<AppAction>,
 ) {
-    if !just_pressed_with_ctrl(&keys, KeyCode::KeyS) {
+    if ui_gate.keyboard {
         return;
     }
+    if just_pressed_with_ctrl(&keys, KeyCode::KeyS) {
+        actions.send(AppAction::SaveProject);
+    }
+    if just_pressed_with_ctrl(&keys, KeyCode::KeyO) {
+        actions.send(AppAction::LoadNewestProject);
+    }
+}
 
+fn handle_project_actions(
+    mut events: EventReader<AppAction>,
+    mut workpiece: ResMut<SculptWorkpiece>,
+    mut history: ResMut<UndoHistory>,
+) {
+    for a in events.read() {
+        match a {
+            AppAction::SaveProject => save_current(&workpiece),
+            AppAction::LoadNewestProject => load_newest(&mut workpiece, &mut history),
+            _ => {}
+        }
+    }
+}
+
+fn save_current(workpiece: &SculptWorkpiece) {
     let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
     info!("saving project to {}", path.display());
-
     let file = match File::create(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -61,15 +88,7 @@ fn save_on_hotkey(
     info!("wrote {} bytes to {}", bytes, path.display());
 }
 
-fn load_on_hotkey(
-    keys: Res<ButtonInput<KeyCode>>,
-    mut workpiece: ResMut<SculptWorkpiece>,
-    mut history: ResMut<UndoHistory>,
-) {
-    if !just_pressed_with_ctrl(&keys, KeyCode::KeyO) {
-        return;
-    }
-
+fn load_newest(workpiece: &mut SculptWorkpiece, history: &mut UndoHistory) {
     let path = match newest_mudclay_in_cwd() {
         Some(p) => p,
         None => {
@@ -78,7 +97,6 @@ fn load_on_hotkey(
         }
     };
     info!("loading project from {}", path.display());
-
     let file = match File::open(&path) {
         Ok(f) => f,
         Err(e) => {
@@ -94,7 +112,6 @@ fn load_on_hotkey(
             return;
         }
     };
-
     match workpiece.swap_grid(new_grid) {
         Ok(()) => {
             history.clear();
@@ -111,8 +128,6 @@ fn load_on_hotkey(
     }
 }
 
-/// Ctrl (or Super/Cmd) held plus the given key freshly pressed. Shared
-/// modifier-check for both save and load so the two paths can't drift.
 fn just_pressed_with_ctrl(keys: &ButtonInput<KeyCode>, key: KeyCode) -> bool {
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let super_key =

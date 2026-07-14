@@ -23,6 +23,7 @@ use glam::UVec3;
 
 use sculpt_core::{ChunkCoord, DirtyRegion, Grid, CHUNK_SIZE};
 
+use crate::input_gate::UiCapturesInput;
 use crate::workpiece::SculptWorkpiece;
 
 /// Cap on how many strokes we remember. Prevents runaway memory growth
@@ -158,9 +159,13 @@ pub fn plugin(app: &mut App) {
 
 fn handle_undo_redo_input(
     keys: Res<ButtonInput<KeyCode>>,
+    ui_gate: Res<UiCapturesInput>,
     mut history: ResMut<UndoHistory>,
     mut workpiece: ResMut<SculptWorkpiece>,
 ) {
+    if ui_gate.keyboard {
+        return;
+    }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
 

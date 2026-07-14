@@ -4,6 +4,8 @@
 use bevy::input::mouse::{MouseMotion, MouseWheel};
 use bevy::prelude::*;
 
+use crate::input_gate::UiCapturesInput;
+
 #[derive(Component)]
 pub struct OrbitCamera {
     pub target: Vec3,
@@ -45,22 +47,28 @@ fn compute_transform(cam: &OrbitCamera) -> Transform {
 fn orbit_camera_control(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    ui_gate: Res<UiCapturesInput>,
     mut motion: EventReader<MouseMotion>,
     mut wheel: EventReader<MouseWheel>,
     mut q: Query<(&mut OrbitCamera, &mut Transform)>,
 ) {
+    // Drain events even when the UI has the pointer, so we don't
+    // apply a huge accumulated delta the frame the cursor re-enters
+    // the viewport. But skip actually moving the camera.
     let mut mouse_delta = Vec2::ZERO;
     for ev in motion.read() {
         mouse_delta += ev.delta;
     }
-    // Yield the scroll wheel to the sculpt module when Shift is held —
-    // that's the size-adjustment gesture. Plain scroll still zooms.
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
     let mut scroll = 0.0f32;
     for ev in wheel.read() {
         if !shift {
             scroll += ev.y;
         }
+    }
+
+    if ui_gate.pointer {
+        return;
     }
 
     let Ok((mut cam, mut tf)) = q.get_single_mut() else {
