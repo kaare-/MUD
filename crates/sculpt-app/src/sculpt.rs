@@ -45,6 +45,11 @@ pub enum ToolKind {
     /// so the user can Delete it or scope other tools to it via
     /// active-only mode.
     Select,
+    /// Move: rigidly translate the currently-selected component
+    /// along X / Y / Z via a small numeric HUD widget. Picking
+    /// with LMB (like Select) is also accepted so users can jump
+    /// straight into "pick + move".
+    Move,
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
@@ -205,6 +210,7 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
         ToolKind::Smooth => "smooth",
         ToolKind::Paddle => "paddle",
         ToolKind::Select => "select",
+        ToolKind::Move => "move",
     }
 }
 
@@ -224,9 +230,13 @@ fn sculpt_input(
     mut history: ResMut<UndoHistory>,
     mut selection: ResMut<Selection>,
 ) {
-    // Wire cutter and Select have their own systems (drag anchors on
-    // release / pick-only click respectively) — bail here.
-    if matches!(tool.kind, ToolKind::WireCutter | ToolKind::Select) {
+    // Wire cutter, Select, and Move have their own systems (drag
+    // anchors on release / pick-only click / numeric widget
+    // respectively) — bail here.
+    if matches!(
+        tool.kind,
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move
+    ) {
         return;
     }
 
@@ -267,9 +277,9 @@ fn sculpt_input(
             buttons.pressed(MouseButton::Left)
         }
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
-        // Wire cutter and Select both live in their own systems and
-        // must not fire the general-purpose sculpt pipeline.
-        ToolKind::WireCutter | ToolKind::Select => return,
+        // Wire cutter, Select, and Move live in their own systems
+        // and must not fire the general-purpose sculpt pipeline.
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move => return,
     };
     if !should_engage {
         return;
@@ -548,8 +558,8 @@ fn apply_at(
 
     let region = match kind {
         // These live in their own systems (wire_cutter_input,
-        // selection_input) and must never run through here.
-        ToolKind::WireCutter | ToolKind::Select => return,
+        // selection_input, move_input) and must never run through here.
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move => return,
         ToolKind::Clay => {
             let adding =
                 keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -992,6 +1002,9 @@ fn adjust_tool(
     }
     if keys.just_pressed(KeyCode::Digit9) {
         send_tool(ToolKind::Select);
+    }
+    if keys.just_pressed(KeyCode::Digit0) {
+        send_tool(ToolKind::Move);
     }
 
     // Size: continuous adjustment, stays inline (no menu path needs

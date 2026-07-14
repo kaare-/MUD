@@ -244,10 +244,12 @@ fn update_preview(
             ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
-            // Select shows the same small pip as the wire cutter
-            // ("cursor is on material"); the actual selection
-            // feedback is text in the HUD.
-            ToolKind::Select => Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15,
+            // Select and Move show the same small pip as the wire
+            // cutter ("cursor is on material"); the real feedback
+            // for each is the HUD (selection details, Move widget).
+            ToolKind::Select | ToolKind::Move => {
+                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
+            }
         };
         tf.translation = piece_tf.transform_point(local_pos);
 
@@ -255,7 +257,8 @@ fn update_preview(
             ToolKind::Clay
             | ToolKind::Smooth
             | ToolKind::WireCutter
-            | ToolKind::Select => Quat::IDENTITY,
+            | ToolKind::Select
+            | ToolKind::Move => Quat::IDENTITY,
             ToolKind::Cutter(_) | ToolKind::Paddle => {
                 let normal_world = piece_tf.rotation() * normal_local;
                 let n = if normal_world.length_squared() > 1e-8 {
@@ -286,10 +289,10 @@ fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
         // identical. The material tint distinguishes them if we
         // want to later (currently the same emissive blue).
         ToolKind::Clay | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
-        // Select tool: same "cursor is on material" pip as the wire
-        // cutter marker, in the same emissive tint so users don't
-        // confuse it with a live brush.
-        ToolKind::Select => Sphere::new(2.5).mesh().uv(16, 12),
+        // Select and Move: same "cursor is on material" pip as the
+        // wire cutter marker, in the same emissive tint so users
+        // don't confuse it with a live brush.
+        ToolKind::Select | ToolKind::Move => Sphere::new(2.5).mesh().uv(16, 12),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)

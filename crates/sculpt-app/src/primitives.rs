@@ -15,6 +15,7 @@ use glam::Vec3 as GVec3;
 use sculpt_core::{apply_primitive_with_callback, ChunkCoord, Primitive, PrimitiveKind};
 
 use crate::actions::AppAction;
+use crate::sculpt::{tool_label, SculptTool, ToolKind};
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::SculptWorkpiece;
 
@@ -89,10 +90,11 @@ fn handle_insert_action(
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<crate::selection::Selection>,
+    mut tool: ResMut<SculptTool>,
 ) {
     for a in events.read() {
         if let AppAction::InsertPrimitive(shape, size_mm) = a {
-            insert_primitive_centered_on_bench(
+            let seed = insert_primitive_centered_on_bench(
                 *shape,
                 *size_mm,
                 &mut workpiece,
@@ -100,19 +102,37 @@ fn handle_insert_action(
                 &mut stroke,
             );
             selection.invalidate_labels();
+            // Auto-select the newly-inserted piece and switch to
+            // the Move tool so the XYZ widget is right there. Done
+            // via direct mutation of `SculptTool` rather than a
+            // second AppAction event because Bevy forbids reading
+            // and writing the same event type in one system.
+            if let Some(voxel) = seed {
+                selection.picked_voxel = Some(voxel);
+                if tool.kind != ToolKind::Move {
+                    tool.kind = ToolKind::Move;
+                    stroke.discard_live();
+                    info!("tool: {}", tool_label(ToolKind::Move));
+                }
+            }
         }
     }
 }
 
 /// Perform the SDF union of `shape` at the workbench centre, sized
 /// by `size_mm`. Recorded as a single undo stroke.
+///
+/// Returns a voxel coordinate that lies inside the freshly-unioned
+/// primitive (its geometric centre, clamped to the grid), so callers
+/// can seed the [`Selection`] with the new piece. Returns `None`
+/// when the union was a full no-op.
 fn insert_primitive_centered_on_bench(
     shape: PrimitiveShape,
     size_mm: f32,
     workpiece: &mut SculptWorkpiece,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
-) {
+) -> Option<(u32, u32, u32)> {
     // Abandon any live drag; the insert supersedes it.
     stroke.discard_live();
     let size = size_mm.max(1.0);
@@ -163,7 +183,24 @@ fn insert_primitive_centered_on_bench(
     if let Some(entry) = recorder.finish(&workpiece.grid) {
         history.push_stroke(entry);
         info!("inserted {} ({:.1} mm)", shape.label().to_lowercase(), size);
+        // Voxel index of the primitive's centre. Clamped so we
+        // never hand out an out-of-range index — the primitive is
+        // always at least partly in-bounds because we clipped it
+        // to the bench.
+        let grid_res = workpiece.grid.res();
+        let vs = workpiece.grid.voxel_size();
+        let origin = workpiece.grid.origin();
+        let cx = ((prim.center.x - origin.x) / vs).round() as i32;
+        let cy = ((prim.center.y - origin.y) / vs).round() as i32;
+        let cz = ((prim.center.z - origin.z) / vs).round() as i32;
+        let voxel = (
+            cx.clamp(0, grid_res.x as i32 - 1) as u32,
+            cy.clamp(0, grid_res.y as i32 - 1) as u32,
+            cz.clamp(0, grid_res.z as i32 - 1) as u32,
+        );
+        Some(voxel)
     } else {
         info!("insert {} was a no-op — nothing changed", shape.label());
+        None
     }
 }
