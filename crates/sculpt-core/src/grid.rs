@@ -29,6 +29,34 @@ impl Grid {
         }
     }
 
+    /// Build a grid from an existing `data` buffer. The buffer must
+    /// have length `res.x * res.y * res.z`; otherwise this returns
+    /// `None`. Layout must match [`Grid::idx`] (x-major).
+    ///
+    /// Used by the project-file loader — round-tripping the raw f32
+    /// samples is the cheapest way to preserve an exact sculpt state
+    /// across sessions.
+    pub fn from_samples(res: UVec3, voxel_size: f32, origin: Vec3, data: Vec<f32>) -> Option<Self> {
+        let expected = (res.x as usize)
+            .checked_mul(res.y as usize)?
+            .checked_mul(res.z as usize)?;
+        if data.len() != expected {
+            return None;
+        }
+        Some(Self {
+            data,
+            res,
+            voxel_size,
+            origin,
+        })
+    }
+
+    /// Raw sample buffer. Read-only. Provided so the project-file
+    /// writer can emit the SDF bytes without going voxel-by-voxel.
+    pub fn samples(&self) -> &[f32] {
+        &self.data
+    }
+
     /// Create a grid initialised to the SDF of a solid sphere. Everything
     /// outside the sphere has a *bounded* positive distance (still exact
     /// for gradient purposes near the surface).
