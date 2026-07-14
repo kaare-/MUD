@@ -172,12 +172,6 @@ fn emit_project_hotkeys(
             actions.send(AppAction::ShowOpenDialog);
         }
     }
-    // Ctrl+Shift+E → Export STL As… dialog. Ctrl+E stays instant
-    // (handled in export.rs) so a habitual "just export it" still
-    // dumps a timestamped file in CWD without the modal.
-    if keys.just_pressed(KeyCode::KeyE) && shift {
-        actions.send(AppAction::ShowExportStlDialog);
-    }
 }
 
 #[allow(clippy::too_many_arguments)]
