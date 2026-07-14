@@ -1,12 +1,7 @@
-//! MUD — Stage 0 prototype.
+//! MUD — digital clay modeller.
 //!
-//! One SDF grid, one spherical brush, orbit camera, Q/E turntable.
-//! No undo, no workbench collision, no volume redistribution.
-//! The point of this stage is to answer:
-//!
-//!   "Does a 3D-native player, with no tutorial, start pushing material
-//!    around within 30 seconds and end up with something they're
-//!    pleased with in five minutes?"
+//! Dense SDF workpiece, Add/Remove + cutters / smooth / paddle,
+//! orbit camera, Q/E turntable, undo, save/load, STL export.
 //!
 //! Controls:
 //!   Right-drag ....... orbit camera

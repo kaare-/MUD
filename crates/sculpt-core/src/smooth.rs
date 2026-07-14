@@ -1,7 +1,7 @@
 //! Smoothing brush.
 //!
 //! Sculptors reach for a smoother almost as often as they reach for a
-//! finger; MUD needs one before the interaction feels complete. This
+//! clay brush; MUD needs one before the interaction feels complete. This
 //! is the "polish it out" primitive: run a small local blur on the
 //! SDF, weighted by a radial falloff around the brush centre, so
 //! high-frequency features (crenelated bulge rims, jaggies from

@@ -30,7 +30,7 @@ use glam::{Vec2 as GVec2, Vec3 as GVec3};
 
 use sculpt_core::Profile;
 
-use crate::sculpt::{SculptTool, ToolKind};
+use crate::sculpt::{clay_brush_center, SculptTool, ToolKind};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
 /// Marker component for the single preview entity.
@@ -103,6 +103,7 @@ fn spawn_preview(
 #[allow(clippy::too_many_arguments)]
 fn update_preview(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
@@ -172,40 +173,50 @@ fn update_preview(
             return;
         }
     };
-    // Surface normal from the SDF gradient — used to orient cutters /
-    // paddles. Clay / Smooth ignore it for placement (see below).
+    // Surface normal from the SDF gradient. Preview placement for Clay
+    // matches the stamp centre; Smooth / cutters use the outward normal.
     let grad = workpiece.grid.gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
     } else {
         -GVec3::new(dir_local.x, dir_local.y, dir_local.z)
     };
+    let into = -normal;
 
     // (4) World-space placement — no parent under WorkpieceRoot.
     // piece_tf already includes the turntable rotation (propagated).
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
-        let hit_local = Vec3::new(hit.x, hit.y, hit.z);
+        let hit_g = hit;
+        let into_g = into;
+        let view_g = GVec3::new(dir_local.x, dir_local.y, dir_local.z);
         let normal_local = Vec3::new(normal.x, normal.y, normal.z);
-        let view_local = Vec3::new(dir_local.x, dir_local.y, dir_local.z);
 
-        // Clay / Smooth: sit the ghost on the *view ray*, just in
-        // front of the hit (`hit - dir * radius`). Offsetting along the
-        // SDF normal instead slides the ball off the cursor toward the
-        // radial "sphere shell" on grazing looks — which reads as the
-        // ghost wanting to stick to the starter sphere. View-aligned
-        // placement keeps the tip on the camera-facing surface under
-        // the cursor. Cutter / paddle / wire keep a tiny lift along
-        // the outward normal to avoid z-fighting.
         let local_pos = match tool.kind {
-            ToolKind::Clay | ToolKind::Smooth => hit_local - view_local * (tool.size + 0.15),
+            // Same centre math as the clay stamp so the ghost shows
+            // the bite, not a view-ray ball floating off the surface.
+            ToolKind::Clay => {
+                let adding =
+                    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                let c = clay_brush_center(
+                    hit_g,
+                    into_g,
+                    view_g,
+                    tool.size,
+                    tool.advance_per_step,
+                    adding,
+                );
+                Vec3::new(c.x, c.y, c.z)
+            }
+            // Smooth stamps at the contact; tiny lift avoids z-fight.
+            ToolKind::Smooth => {
+                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
+            }
             ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
-                hit_local + normal_local * 0.15
+                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
         };
         tf.translation = piece_tf.transform_point(local_pos);
 
-        // Radially symmetric tools need no rotation. Cutter / paddle
-        // align local Y with the *world* outward normal.
         tf.rotation = match tool.kind {
             ToolKind::Clay | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
             ToolKind::Cutter(_) | ToolKind::Paddle => {

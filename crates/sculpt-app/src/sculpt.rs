@@ -76,10 +76,9 @@ impl CutterFamily {
 pub struct SculptTool {
     pub kind: ToolKind,
     pub size: f32,
-    /// Clay + paddle: how far the tool centre advances along the
-    /// surface normal each frame while held. For clay this is the
-    /// shallow bite/build depth and the sideways-column gain; for
-    /// the paddle it still drives plane advance.
+    /// Clay: shallow bite / side-column gain used when placing the
+    /// brush centre. Paddle: how far the plane advances into the
+    /// surface each frame while held.
     pub advance_per_step: f32,
     /// Clay-only: whether to apply soft CSG + the magic-clay bulge
     /// on remove.
@@ -158,12 +157,14 @@ fn handle_tool_actions(
     mut events: EventReader<AppAction>,
     mut tool: ResMut<SculptTool>,
     mut symmetry: ResMut<SculptSymmetry>,
+    mut stroke: ResMut<SculptStroke>,
 ) {
     for a in events.read() {
         match a {
             AppAction::SelectTool(kind) => {
                 if tool.kind != *kind {
                     tool.kind = *kind;
+                    stroke.discard_live();
                     bevy::log::info!("tool: {}", tool_label(*kind));
                 }
             }
@@ -222,26 +223,26 @@ fn sculpt_input(
         return;
     }
 
-    // Menus and panels absorb clicks. Without this gate a click on the
-    // "Save" menu item would immediately start a sculpting stroke on
-    // whatever the cursor was near.
-    if ui_gate.pointer {
-        return;
-    }
-
-    // Stroke lifecycle. Same recorder shape for both tools; the
-    // cutter just contributes fewer stamps (typically one).
-    if buttons.just_pressed(MouseButton::Left) {
-        stroke.recorder = Some(StrokeRecorder::default());
-        stroke.last_clay_hit = None;
-        stroke.paint_plane = None;
-    }
+    // Always finish on LMB release — even when the pointer is over a
+    // menu/panel — otherwise a stroke started in the viewport and
+    // released on the UI never hits the undo journal.
     if buttons.just_released(MouseButton::Left) {
         if let Some(rec) = stroke.recorder.take() {
             if let Some(entry) = rec.finish(&workpiece.grid) {
                 history.push_stroke(entry);
             }
         }
+        stroke.last_clay_hit = None;
+        stroke.paint_plane = None;
+    }
+
+    // Menus and panels absorb new presses / continued stamping.
+    if ui_gate.pointer {
+        return;
+    }
+
+    if buttons.just_pressed(MouseButton::Left) {
+        stroke.recorder = Some(StrokeRecorder::default());
         stroke.last_clay_hit = None;
         stroke.paint_plane = None;
     }
@@ -309,47 +310,34 @@ fn sculpt_input(
     let is_add = is_clay
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
-    // Face-on vs side-column weight (same basis as stamp placement).
-    let outward = -into_surface;
-    let side = 1.0 - outward.dot(-dir_g).clamp(0.0, 1.0);
-    let flatness = GVec3::new(outward.x, 0.0, outward.z)
-        .length()
-        .clamp(0.0, 1.0);
-    let column = side * flatness * flatness;
+    let column = clay_column_weight(into_surface, dir_g);
 
-    // Pin face-on add strokes to the first contact's tangent plane so
-    // a front-view vertical drag can't tip-chase toward the camera
-    // (which read as a 45° climb). Side-column / ring modes leave
-    // the plane unlocked.
+    // Pin face-on *add* strokes to the first contact's tangent plane so
+    // a front-view vertical drag can't tip-chase toward the camera.
+    // Side-column / ring modes, and remove, leave the plane unlocked.
     let mut hit = hit;
     let mut into_surface = into_surface;
-    if is_add {
-        if column < 0.35 {
-            if let Some((plane_p, plane_n)) = stroke.paint_plane {
-                let n_len_sq = plane_n.length_squared();
-                if n_len_sq > 1e-8 {
-                    let n = plane_n * (1.0 / n_len_sq.sqrt());
-                    hit -= n * (hit - plane_p).dot(n);
-                    into_surface = n;
-                }
-            } else {
-                stroke.paint_plane = Some((hit, into_surface));
+    if is_add && column < CLAY_COLUMN_UNLOCK {
+        if let Some((plane_p, plane_n)) = stroke.paint_plane {
+            let n_len_sq = plane_n.length_squared();
+            if n_len_sq > 1e-8 {
+                let n = plane_n * (1.0 / n_len_sq.sqrt());
+                hit -= n * (hit - plane_p).dot(n);
+                into_surface = n;
             }
         } else {
-            stroke.paint_plane = None;
+            stroke.paint_plane = Some((hit, into_surface));
         }
+    } else {
+        stroke.paint_plane = None;
     }
 
-    // Stamp spacing. Face-on add/remove needs a generous gap so holding
-    // still doesn't race toward (or into) the camera. While the
-    // turntable is turning — or when adding sideways — keep spacing
-    // tight relative to brush size so small tools leave a continuous
-    // bead instead of lagging / skipping out of the ring path.
+    // Stamp spacing. Face-on needs a generous gap so hold-still doesn't
+    // race along the view. Turning or unlocked side-column uses denser
+    // spacing so small brushes leave a continuous ring bead.
     if is_clay {
         let turning = turntable.angular_vel.abs() > 1e-4;
-        let min_spacing = if is_add && (turning || side > 0.3) {
-            // Continuous ring/bead: denser for tiny brushes, never so
-            // loose that a slow Q/E frame skips a stamp.
+        let min_spacing = if is_add && (turning || column >= CLAY_COLUMN_UNLOCK) {
             (tool.size * 0.18).clamp(0.35, 2.5)
         } else {
             (tool.size * 0.4).max(0.8)
@@ -394,6 +382,50 @@ fn sculpt_input(
     }
 }
 
+/// Above this column weight, Add may grow a horizontal side column /
+/// ring; below it, stamps stay face-on surface paint (plane-locked).
+pub const CLAY_COLUMN_UNLOCK: f32 = 0.35;
+
+/// How strongly the contact wants a sideways horizontal column
+/// (`0` = face-on / crown, `1` = equatorial side facing the camera).
+pub fn clay_column_weight(into_surface: GVec3, view_dir: GVec3) -> f32 {
+    let outward = -into_surface;
+    let side = 1.0 - outward.dot(-view_dir).clamp(0.0, 1.0);
+    let flatness = GVec3::new(outward.x, 0.0, outward.z)
+        .length()
+        .clamp(0.0, 1.0);
+    side * flatness * flatness
+}
+
+/// Piece-local brush centre for the Clay tool — shared by stamping and
+/// the ghost preview so hover matches the bite.
+pub fn clay_brush_center(
+    hit: GVec3,
+    into_surface: GVec3,
+    view_dir: GVec3,
+    size: f32,
+    advance: f32,
+    adding: bool,
+) -> GVec3 {
+    let outward = -into_surface;
+    let column = clay_column_weight(into_surface, view_dir);
+    let shallow_embed = (size - advance).max(size * 0.5);
+    if !adding {
+        // Shallow remove: seat almost the whole sphere in air.
+        return hit - into_surface * shallow_embed;
+    }
+    let flat_out = GVec3::new(outward.x, 0.0, outward.z);
+    let flatness = flat_out.length().clamp(0.0, 1.0);
+    let embed = shallow_embed * (1.0 - column) + size * 0.15 * column;
+    let push = (advance * 4.0 + size * 0.05) * column * column;
+    let push_dir = if flatness > 1e-3 {
+        flat_out / flatness
+    } else {
+        GVec3::ZERO
+    };
+    hit + into_surface * embed + push_dir * push
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_at(
     workpiece: &mut SculptWorkpiece,
@@ -410,45 +442,24 @@ fn apply_at(
     let region = match kind {
         ToolKind::WireCutter => return, // handled by wire_cutter_input
         ToolKind::Clay => {
-            let mode = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
+            let adding =
+                keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+            let mode = if adding {
                 BrushMode::Pull
             } else {
                 BrushMode::Press
             };
-            let advance = tool.advance_per_step;
-            let outward = -into_surface;
-            // How much of the outward normal aims back at the camera.
-            // Face-on (≈1) must stay subtle; sideways (≈0) may grow a
-            // short column so Q/E while holding draws a ring in air.
-            let side = 1.0 - outward.dot(-view_dir).clamp(0.0, 1.0);
-            // Column / ring growth only when the surface faces sideways
-            // in the world (normal in XZ). Looking straight down and
-            // drawing across the crown must stay level: tilted normals
-            // still look "sideways to the camera" but extruding along
-            // them climbs at ~45°. Require a horizontal outward and
-            // push only in XZ.
-            let flat_out = GVec3::new(outward.x, 0.0, outward.z);
-            let flatness = flat_out.length().clamp(0.0, 1.0);
-            let column = side * flatness * flatness;
-            let shallow_embed = (tool.size - advance).max(tool.size * 0.5);
-            let center = match mode {
-                // Shallow bite: seat almost the whole sphere in air so
-                // only a thin cap carves — matches add's subtlety.
-                BrushMode::Press => hit - into_surface * shallow_embed,
-                BrushMode::Pull => {
-                    // Crown / face-on → deep embed (surface paint).
-                    // Equator from the side → short horizontal column
-                    // so Q/E while holding draws a ring in air.
-                    let embed = shallow_embed * (1.0 - column) + tool.size * 0.15 * column;
-                    let push = (advance * 4.0 + tool.size * 0.05) * column * column;
-                    let push_dir = if flatness > 1e-3 {
-                        flat_out / flatness
-                    } else {
-                        GVec3::ZERO
-                    };
-                    hit + into_surface * embed + push_dir * push
-                }
-            };
+            // BrushMode::Pull = add, Press = remove (historical names in
+            // sculpt-core). Placement matches the ghost via
+            // `clay_brush_center`.
+            let center = clay_brush_center(
+                hit,
+                into_surface,
+                view_dir,
+                tool.size,
+                tool.advance_per_step,
+                adding,
+            );
             let brush = SphereBrush {
                 center,
                 radius: tool.size,
@@ -568,12 +579,7 @@ fn wire_cutter_input(
         return;
     }
 
-    if ui_gate.pointer {
-        return;
-    }
-
-    // Resolve the cursor ray in piece-local space. Returns (hit, dir_local)
-    // if the cursor is over the workpiece surface, else None.
+    // Piece-local cursor sample (hit, view dir).
     let sample = || -> Option<(GVec3, GVec3)> {
         let window = q_window.get_single().ok()?;
         let cursor = window.cursor_position()?;
@@ -596,30 +602,16 @@ fn wire_cutter_input(
         ))
     };
 
-    // LMB down: record anchor A and start a stroke recorder.
-    if buttons.just_pressed(MouseButton::Left) {
-        if let Some((hit, dir)) = sample() {
-            state.anchor_a = Some(hit);
-            state.view_dir_local = Some(dir);
-            stroke.recorder = Some(StrokeRecorder::default());
-        }
-    }
-
-    // LMB up: complete the cut.
+    // LMB up always resolves in-flight state (even over UI) so a drag
+    // started in-world and released on a panel still finishes or clears.
     if buttons.just_released(MouseButton::Left) {
-        // Take the recorded anchor and view direction, whether or not
-        // we get a valid B — clearing state must happen either way.
         let anchor_a = state.anchor_a.take();
         let view_dir = state.view_dir_local.take();
         let recorder_opt = stroke.recorder.take();
 
         if let (Some(a), Some(view), Some(rec)) = (anchor_a, view_dir, recorder_opt) {
-            // Try to get anchor B from the current cursor position.
-            // If the release wasn't over the workpiece, use whatever
-            // the ray hit — if that fails too, drop the stroke.
             let b_opt = sample().map(|(hit, _)| hit);
             let mut rec = rec;
-
             if let Some(b) = b_opt {
                 let mut rec_opt: Option<&mut StrokeRecorder> = Some(&mut rec);
                 apply_wire_cut(
@@ -631,10 +623,22 @@ fn wire_cutter_input(
                     symmetry.enabled,
                 );
             }
-
             if let Some(entry) = rec.finish(&workpiece.grid) {
                 history.push_stroke(entry);
             }
+        }
+        return;
+    }
+
+    if ui_gate.pointer {
+        return;
+    }
+
+    if buttons.just_pressed(MouseButton::Left) {
+        if let Some((hit, dir)) = sample() {
+            state.anchor_a = Some(hit);
+            state.view_dir_local = Some(dir);
+            stroke.recorder = Some(StrokeRecorder::default());
         }
     }
 }

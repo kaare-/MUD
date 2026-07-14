@@ -2,23 +2,16 @@ use glam::{UVec3, Vec3};
 
 use crate::grid::{DirtyRegion, Grid};
 
-/// Which side of the "displace vs. remove" line this brush sits on.
+/// Which side of the add / remove line this brush sits on.
 ///
-/// This is a per-tool property in the finished product (see DESIGN §5).
-/// In Stage 1 the finger brush supports both because the app is still
-/// exposing one tool with two modes.
+/// Names are historical (`Press` = remove, `Pull` = add). The app's
+/// Clay tool maps LMB → Press and Shift+LMB → Pull.
 #[derive(Copy, Clone, Debug)]
 pub enum BrushMode {
-    /// Carve material away. The brush footprint is subtracted from
-    /// the workpiece. When paired with `SphereBrush::displace = true`,
-    /// the displaced material bulges out around the brush — the core
-    /// of Stage 1's "magic clay" behaviour.
+    /// Remove material (LMB). Soft CSG when `displace` is on.
     Press,
-    /// Add material. Hard CSG is a sphere union; with `displace = true`
-    /// the join is a soft (polynomial) union so the pull blends into
-    /// the existing clay instead of leaving a hard crease. We
-    /// deliberately do **not** excavate a recruitment ring for Pull —
-    /// that carved a visible moat around every Shift+LMB add.
+    /// Add material (Shift+LMB). Soft-min fillet when `displace` is on;
+    /// no recruitment-ring excavation (that carved a moat).
     Pull,
 }
 

@@ -1,7 +1,7 @@
 //! Cookie cutter tool.
 //!
 //! A cookie cutter is a `Profile` extruded along an axis, applied as
-//! a CSG subtraction to the workpiece. Unlike the finger brush, the
+//! a CSG subtraction to the workpiece. Unlike the clay brush, the
 //! cutter is a *removal* tool (DESIGN §5, decision 1): pressing it
 //! into clay carves a shape-of-the-profile channel that goes all the
 //! way through whatever it hits. No magic-clay bulge — clay squeezed
@@ -25,7 +25,7 @@ use crate::profile::{extrude_profile, Profile};
 /// This is the *removal* half of Stage 2's cutting story. Formal
 /// object identity (each disconnected piece as its own editable
 /// object) is deferred; the current dense-grid workpiece already
-/// treats disconnected SDF regions correctly for the finger and
+/// treats disconnected SDF regions correctly for the clay brush and
 /// cookie cutter, so cut → sculpt-each-half works implicitly.
 #[derive(Copy, Clone, Debug)]
 pub struct WireCutter {
