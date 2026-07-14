@@ -21,6 +21,8 @@
 //!   4 ................ tool: cookie cutter (hexagon)
 //!   5 ................ tool: cookie cutter (star)
 //!   6 ................ tool: wire cutter (LMB-drag slices through)
+//!   7 ................ tool: smooth (hold LMB to polish high-frequency detail)
+//!   8 ................ tool: paddle (hold LMB to press a flat)
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay displacement (finger)

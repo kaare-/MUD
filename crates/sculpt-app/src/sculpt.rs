@@ -13,8 +13,10 @@ use bevy::window::PrimaryWindow;
 use glam::Vec3 as GVec3;
 
 use sculpt_core::{
-    apply_cookie_cutter_with_callback, apply_sphere_brush_with_callback,
-    apply_wire_cutter_with_callback, BrushMode, CookieCutter, Profile, SphereBrush, WireCutter,
+    apply_cookie_cutter_with_callback, apply_paddle_with_callback,
+    apply_smooth_brush_with_callback, apply_sphere_brush_with_callback,
+    apply_wire_cutter_with_callback, BrushMode, CookieCutter, Paddle, Profile, SmoothBrush,
+    SphereBrush, WireCutter,
 };
 
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
@@ -29,6 +31,11 @@ pub enum ToolKind {
     /// positions (LMB down = anchor A, LMB up = anchor B). Slices
     /// all the way through anything it intersects.
     WireCutter,
+    /// Smooth brush — local Laplacian blur of the SDF, ironing out
+    /// high-frequency detail while leaving shape intact.
+    Smooth,
+    /// Paddle — a disk-shaped half-space press for making flats.
+    Paddle,
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
@@ -66,19 +73,24 @@ impl CutterFamily {
 
 /// The active tool plus its size and mode flags.
 ///
-/// `size` is a shared knob (mm). For the finger it's the brush
-/// radius; for a cutter it's the profile's characteristic size.
-/// `[` and `]` adjust it regardless of which tool is active.
+/// `size` is a shared knob (mm). Every stampable tool interprets it
+/// as its footprint radius / characteristic size. `[`, `]`, `-`, `=`,
+/// and `Shift + scroll` all adjust it regardless of which tool is
+/// active.
 #[derive(Resource)]
 pub struct SculptTool {
     pub kind: ToolKind,
     pub size: f32,
-    /// Finger-only: how far the brush centre advances along the surface
-    /// normal each frame while held. Closest thing Stage 1 has to
-    /// pressure sensitivity.
+    /// Finger + paddle: how far the tool centre advances along the
+    /// surface normal each frame while held. Closest thing Stage 1
+    /// has to pressure sensitivity.
     pub advance_per_step: f32,
     /// Finger-only: whether to apply the magic-clay bulge on Press.
     pub displace: bool,
+    /// Smooth-only: per-frame Laplacian blend factor, 0..1. Small
+    /// values give a gentle polish; 1.0 fully replaces each voxel
+    /// with its neighbour average in one frame.
+    pub smooth_strength: f32,
 }
 
 impl Default for SculptTool {
@@ -88,6 +100,7 @@ impl Default for SculptTool {
             size: 12.0,
             advance_per_step: 0.6,
             displace: true,
+            smooth_strength: 0.35,
         }
     }
 }
@@ -161,11 +174,14 @@ fn sculpt_input(
         }
     }
 
-    // The finger engages every frame LMB is held. The cutter is a
-    // one-shot: fire on the frame LMB is first pressed, then stop
-    // so a slow drag doesn't chain cutter stamps by accident.
+    // Continuous tools (finger, smooth, paddle) engage every frame
+    // LMB is held. The cookie cutter is a one-shot: fire on the frame
+    // LMB is first pressed, then stop so a slow drag doesn't chain
+    // cutter stamps by accident. Wire cutter has its own path.
     let should_engage = match tool.kind {
-        ToolKind::Finger => buttons.pressed(MouseButton::Left),
+        ToolKind::Finger | ToolKind::Smooth | ToolKind::Paddle => {
+            buttons.pressed(MouseButton::Left)
+        }
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
         ToolKind::WireCutter => return,
     };
@@ -302,6 +318,41 @@ fn apply_at(
                 })
             } else {
                 apply_cookie_cutter_with_callback(&mut workpiece.grid, &cutter, |_, _, _, _| {})
+            }
+        }
+        ToolKind::Smooth => {
+            let brush = SmoothBrush {
+                center: hit,
+                radius: tool.size,
+                strength: tool.smooth_strength,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_smooth_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_smooth_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+            }
+        }
+        ToolKind::Paddle => {
+            // Paddle plane advances into the surface each frame, so
+            // holding the button gradually flattens the piece to a
+            // deeper plane. `normal` points *outward* from the
+            // workpiece (opposite the surface's into-direction).
+            let advance = tool.advance_per_step;
+            let paddle = Paddle {
+                center: hit + into_surface * advance,
+                normal: -into_surface,
+                radius: tool.size,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_paddle_with_callback(&mut workpiece.grid, &paddle, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_paddle_with_callback(&mut workpiece.grid, &paddle, |_, _, _, _| {})
             }
         }
     };
@@ -544,6 +595,14 @@ fn adjust_tool(
     if keys.just_pressed(KeyCode::Digit6) {
         tool.kind = ToolKind::WireCutter;
         bevy::log::info!("tool: wire cutter");
+    }
+    if keys.just_pressed(KeyCode::Digit7) {
+        tool.kind = ToolKind::Smooth;
+        bevy::log::info!("tool: smooth");
+    }
+    if keys.just_pressed(KeyCode::Digit8) {
+        tool.kind = ToolKind::Paddle;
+        bevy::log::info!("tool: paddle");
     }
 
     // Size: three equivalent ways to adjust it. Track the old value
