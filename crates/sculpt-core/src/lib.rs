@@ -13,6 +13,7 @@ pub mod brush;
 pub mod components;
 pub mod cutter;
 pub mod export;
+pub mod gravity;
 pub mod grid;
 pub mod mesh;
 pub mod paddle;
@@ -25,6 +26,7 @@ pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
+pub use gravity::{rest_components_on_bench, RestSummary};
 pub use cutter::{
     apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,
     apply_wire_cutter_with_callback, CookieCutter, WireCutter,

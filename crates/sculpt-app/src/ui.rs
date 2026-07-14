@@ -101,6 +101,11 @@ fn draw_ui(
                     ui.close_menu();
                 }
                 ui.separator();
+                if menu_item(ui, "Rest pieces on bench", "Ctrl+G") {
+                    actions.send(AppAction::RestPiecesOnBench);
+                    ui.close_menu();
+                }
+                ui.separator();
                 if menu_item(ui, "Quit", "Esc") {
                     // Quit is a special case: the AppAction handler in
                     // `actions::plugin` fires AppExit, but a menu click
