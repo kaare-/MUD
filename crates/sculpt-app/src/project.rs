@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use bevy::prelude::*;
-use sculpt_core::{project_size, read_project, write_project};
+use sculpt_core::{project_size, read_project, write_project, Grid};
 
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
@@ -54,13 +54,14 @@ pub fn plugin(app: &mut App) {
 pub struct FileDialogState {
     pub save_as: Option<SaveAsDialog>,
     pub open: Option<OpenDialog>,
+    pub export_stl: Option<ExportStlDialog>,
 }
 
 impl FileDialogState {
     /// True while any modal file dialog is on screen. World-input
     /// systems check this via the `UiCapturesInput` gate.
     pub fn any_open(&self) -> bool {
-        self.save_as.is_some() || self.open.is_some()
+        self.save_as.is_some() || self.open.is_some() || self.export_stl.is_some()
     }
 }
 
@@ -68,6 +69,12 @@ impl FileDialogState {
 /// initially seeded with a fresh timestamped name so a user who just
 /// wants a new file can press Enter without typing.
 pub struct SaveAsDialog {
+    pub name: String,
+}
+
+/// State for the Export-STL-As dialog. Same shape as `SaveAsDialog`
+/// but the finaliser appends `.stl` (see `ui::finalise_export_path`).
+pub struct ExportStlDialog {
     pub name: String,
 }
 
@@ -106,6 +113,14 @@ fn handle_dialog_actions(
                     selected: None,
                 });
                 state.save_as = None;
+                state.export_stl = None;
+            }
+            AppAction::ShowExportStlDialog => {
+                state.export_stl = Some(ExportStlDialog {
+                    name: String::new(),
+                });
+                state.save_as = None;
+                state.open = None;
             }
             _ => {}
         }
@@ -136,6 +151,13 @@ fn emit_project_hotkeys(
     if !modifier {
         return;
     }
+    if keys.just_pressed(KeyCode::KeyN) {
+        if shift {
+            actions.send(AppAction::ShowInsertPrimitiveDialog);
+        } else {
+            actions.send(AppAction::NewWorkpiece);
+        }
+    }
     if keys.just_pressed(KeyCode::KeyS) {
         if shift {
             actions.send(AppAction::ShowSaveAsDialog);
@@ -150,6 +172,12 @@ fn emit_project_hotkeys(
             actions.send(AppAction::ShowOpenDialog);
         }
     }
+    // Ctrl+Shift+E → Export STL As… dialog. Ctrl+E stays instant
+    // (handled in export.rs) so a habitual "just export it" still
+    // dumps a timestamped file in CWD without the modal.
+    if keys.just_pressed(KeyCode::KeyE) && shift {
+        actions.send(AppAction::ShowExportStlDialog);
+    }
 }
 
 fn handle_project_actions(
@@ -160,6 +188,9 @@ fn handle_project_actions(
 ) {
     for a in events.read() {
         match a {
+            AppAction::NewWorkpiece => {
+                clear_worktable(&mut workpiece, &mut history, &mut stroke);
+            }
             AppAction::SaveProject => {
                 let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
                 save_to_path(&workpiece, &path);
@@ -173,6 +204,31 @@ fn handle_project_actions(
                 load_from_path(path, &mut workpiece, &mut history, &mut stroke)
             }
             _ => {}
+        }
+    }
+}
+
+/// Reset the workpiece to an empty grid at the current dimensions.
+/// Clears undo history and any in-flight stroke — the journal held
+/// pre/post values against the old grid and would misapply otherwise.
+pub fn clear_worktable(
+    workpiece: &mut SculptWorkpiece,
+    history: &mut UndoHistory,
+    stroke: &mut SculptStroke,
+) {
+    let empty = Grid::empty(
+        workpiece.grid.res(),
+        workpiece.grid.voxel_size(),
+        workpiece.grid.origin(),
+    );
+    match workpiece.swap_grid(empty) {
+        Ok(()) => {
+            history.clear();
+            stroke.discard_live();
+            info!("worktable cleared — undo history cleared");
+        }
+        Err(e) => {
+            error!("can't clear worktable: {e}");
         }
     }
 }

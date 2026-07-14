@@ -292,9 +292,28 @@ fn sculpt_input(
 
     let hit_g = GVec3::new(origin_local.x, origin_local.y, origin_local.z);
     let dir_g = GVec3::new(dir_local.x, dir_local.y, dir_local.z);
+    let is_clay_early = matches!(tool.kind, ToolKind::Clay);
+    let is_add_early = is_clay_early
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
     let hit = match workpiece.grid.ray_march(hit_g, dir_g, 4000.0) {
         Some(p) => p,
-        None => return,
+        None => {
+            // Empty worktable Add: no surface, but a click on the bench
+            // still deposits a blob so the user can build up from
+            // nothing. Every other tool needs a hit and bails.
+            if is_add_early {
+                empty_bench_add(
+                    &mut workpiece,
+                    &mut stroke,
+                    &tool,
+                    turntable.angular_vel,
+                    symmetry.enabled,
+                    hit_g,
+                    dir_g,
+                );
+            }
+            return;
+        }
     };
 
     // "Into surface" direction — SDF gradient points outward, so
@@ -306,9 +325,8 @@ fn sculpt_input(
         dir_g
     };
 
-    let is_clay = matches!(tool.kind, ToolKind::Clay);
-    let is_add = is_clay
-        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+    let is_clay = is_clay_early;
+    let is_add = is_add_early;
 
     let column = clay_column_weight(into_surface, dir_g);
 
@@ -533,6 +551,103 @@ fn apply_at(
         }
     };
 
+    if let Some(region) = region {
+        if let Some(rec) = recorder.as_mut() {
+            rec.record_dirty_region(region, grid_res);
+        }
+        for c in region.touched_chunks(grid_res) {
+            workpiece.dirty.insert((c.x, c.y, c.z));
+        }
+    }
+}
+
+/// Intersect a piece-local ray with the workbench plane (y = 0). Only
+/// returns a point when the ray is aimed downward at a bench point in
+/// front of the camera. Returns `None` if the ray points up, is
+/// parallel to the plane, or starts below the bench.
+fn ray_bench_intersection(origin: GVec3, dir: GVec3) -> Option<GVec3> {
+    if origin.y <= 0.0 || dir.y >= -1e-4 {
+        return None;
+    }
+    let t = -origin.y / dir.y;
+    if t <= 0.0 {
+        return None;
+    }
+    let p = origin + dir * t;
+    Some(GVec3::new(p.x, 0.0, p.z))
+}
+
+/// Stamp a Clay-Add sphere resting on the empty workbench. Called
+/// when `sculpt_input`'s ray march missed the workpiece but the user
+/// is holding Shift+LMB — instead of doing nothing, deposit a blob
+/// on the bench so the user can build up from nothing. All other
+/// tools require an existing surface.
+#[allow(clippy::too_many_arguments)]
+fn empty_bench_add(
+    workpiece: &mut SculptWorkpiece,
+    stroke: &mut SculptStroke,
+    tool: &SculptTool,
+    angular_vel: f32,
+    symmetric: bool,
+    ray_origin_local: GVec3,
+    ray_dir_local: GVec3,
+) {
+    let Some(bench) = ray_bench_intersection(ray_origin_local, ray_dir_local) else {
+        return;
+    };
+
+    // Stamp spacing so hold-still doesn't puddle in one spot. Same
+    // "denser while turning" idea as the surface path, since Q/E
+    // with an empty-bench hold should paint a ring in the air.
+    let turning = angular_vel.abs() > 1e-4;
+    let min_spacing = if turning {
+        (tool.size * 0.18).clamp(0.35, 2.5)
+    } else {
+        (tool.size * 0.4).max(0.8)
+    };
+    if let Some(last) = stroke.last_clay_hit {
+        if (bench - last).length_squared() < min_spacing * min_spacing {
+            return;
+        }
+    }
+
+    // Face-on paint is not meaningful with no surface; skip the plane
+    // lock and drop a sphere sitting on the bench (`center.y = size`).
+    stroke.paint_plane = None;
+    stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, bench);
+    if symmetric {
+        let mirrored = GVec3::new(-bench.x, 0.0, bench.z);
+        stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, mirrored);
+    }
+    stroke.last_clay_hit = Some(bench);
+}
+
+/// Stamp a single Add sphere resting on the bench at the given
+/// (x, 0, z). Splits out the actual sculpt-core call so the mirrored
+/// stamp reuses it.
+fn stamp_bench_blob(
+    workpiece: &mut SculptWorkpiece,
+    mut recorder: Option<&mut StrokeRecorder>,
+    tool: &SculptTool,
+    bench: GVec3,
+) {
+    let grid_res = workpiece.grid.res();
+    let center = GVec3::new(bench.x, tool.size, bench.z);
+    let brush = SphereBrush {
+        center,
+        radius: tool.size,
+        mode: BrushMode::Pull,
+        direction: GVec3::new(0.0, -1.0, 0.0),
+        displace: tool.displace,
+        workbench_y: Some(0.0),
+    };
+    let region = if let Some(rec) = recorder.as_mut() {
+        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+            rec.record_pre_value(x, y, z, pre)
+        })
+    } else {
+        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+    };
     if let Some(region) = region {
         if let Some(rec) = recorder.as_mut() {
             rec.record_dirty_region(region, grid_res);

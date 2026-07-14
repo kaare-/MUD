@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
+use crate::primitives::PrimitiveShape;
 use crate::sculpt::ToolKind;
 
 /// A user-triggered command. Emitted by keyboard handlers, UI
@@ -28,6 +29,15 @@ pub enum AppAction {
     ToggleSymmetry,
     /// Flip magic-clay soft CSG / bulge for the Add/Remove tool.
     ToggleMagicClay,
+    /// Reset the workpiece to an empty worktable (no material).
+    /// Clears the undo history and any in-flight stroke.
+    NewWorkpiece,
+    /// Pop up the Insert Primitive dialog.
+    ShowInsertPrimitiveDialog,
+    /// Union a primitive of the given shape and size (mm) into the
+    /// current grid, resting on the workbench, recorded as one undo
+    /// stroke.
+    InsertPrimitive(PrimitiveShape, f32),
     /// Write the current SDF grid to a timestamped `.mudclay` file
     /// in the working directory.
     SaveProject,
@@ -42,8 +52,15 @@ pub enum AppAction {
     ShowSaveAsDialog,
     /// Pop up the Open dialog listing every `.mudclay` file in CWD.
     ShowOpenDialog,
-    /// Extract a mesh from the current SDF and write a binary STL.
+    /// Extract a mesh from the current SDF and write a binary STL to
+    /// a timestamped path in CWD.
     ExportStl,
+    /// Extract a mesh and write a binary STL to a specific path
+    /// (from the Export-STL-As dialog).
+    ExportStlAs(PathBuf),
+    /// Pop up the Export-STL-As dialog. UI-only affordance; keyboard
+    /// has Ctrl+Shift+E.
+    ShowExportStlDialog,
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).
     Quit,
 }

@@ -46,11 +46,13 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | Input | Action |
 |---|---|
 | Left-drag | Add/Remove tool: remove material |
-| Shift + Left-drag | Add/Remove tool: add material (sideways hold + Q/E can draw a ring) |
+| Shift + Left-drag | Add/Remove tool: add material (sideways hold + Q/E can draw a ring; over empty bench = deposit a blob) |
 | `[` / `]` or `-` / `=` | Shrink / grow the active tool (keyboard) |
 | Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
 | `M` | Toggle magic-clay (Add/Remove only) |
 | `S` | Toggle mirror symmetry (piece-local X = 0) |
+| `Ctrl+N` | Clear the worktable (empty grid, clears undo) |
+| `Shift+N` | Insert Primitive… (sphere / cube / cylinder / torus) |
 | `Ctrl+Z` | Undo last stroke |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 
@@ -67,6 +69,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `7` | Smooth (hold LMB to polish high-frequency detail) |
 | `8` | Paddle (hold LMB to press a flat) |
 | `Ctrl+E` | Export the current piece to a binary STL file (Z-up, print-ready) |
+| `Ctrl+Shift+E` | Export STL As… — dialog with a filename you choose |
 | `Ctrl+S` | Save the current piece as a native `.mudclay` project file (auto-timestamped) |
 | `Ctrl+Shift+S` | Save As… — dialog with a filename you choose |
 | `Ctrl+O` | Open… — picker showing every `.mudclay` in the working directory |

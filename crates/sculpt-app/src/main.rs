@@ -24,7 +24,10 @@
 //!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
+//!   Ctrl+N ........... clear the worktable (empty grid)
+//!   Shift+N .......... insert a primitive shape via dialog
 //!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
+//!   Ctrl+Shift+E ..... export STL with a chosen filename (dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
 //!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)
 //!   Ctrl+O ........... open a project via a picker dialog
@@ -39,6 +42,7 @@ mod camera;
 mod export;
 mod input_gate;
 mod preview;
+mod primitives;
 mod project;
 mod sculpt;
 mod turntable;
@@ -85,6 +89,7 @@ fn main() {
             preview::plugin,
             export::plugin,
             project::plugin,
+            primitives::plugin,
             ui::plugin,
         ))
         .add_systems(Startup, setup_scene)

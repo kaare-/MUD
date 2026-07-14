@@ -48,32 +48,19 @@ convincing lump of clay, quickly*.
 
 Ordered roughly easiest → hardest. Each item includes what it needs.
 
-1. `[ ]` **Export STL via dialog.**
-   - Reuse the Save-As dialog pattern from `project.rs`.
-   - New action `ShowExportStlDialog` + `ExportStlTo(path)`.
-   - Suggest `mud-sculpt-<timestamp>.stl` in CWD; validate `.stl`
-     extension.
+1. `[x]` **Export STL via dialog.** — `Ctrl+Shift+E` opens Save As-style
+   dialog, `Ctrl+E` still instant-exports to CWD.
 
-2. `[ ]` **Clear worktable.**
-   - `File → New` (and `Ctrl+N`) emits `AppAction::NewWorkpiece`.
-   - Resets grid to empty (all outside), clears undo history and any
-     live stroke via `SculptStroke::discard_live()`.
-   - Confirm prompt only if grid is non-trivial (skip when already
-     empty).
+2. `[x]` **Clear worktable.** — `Ctrl+N` / `File → New`. Swaps in an
+   empty grid, clears undo + live stroke.
 
-3. `[ ]` **Add material on an empty worktable.**
-   - Currently Clay Add requires a ray-march hit.
-   - When the ray misses, project the cursor onto a horizontal plane
-     at `workbench_y + tool.size` (or the ray's closest point to the
-     bench) and stamp a small sphere there, clipped to `y ≥ 0`.
-   - Face-on paint-plane lock still applies to the first stamp.
+3. `[x]` **Add material on an empty worktable.** — Shift+LMB on the
+   empty bench projects the ray onto y = 0 and deposits a blob
+   sitting on the bench. Every other tool still bails on a miss.
 
-4. `[ ]` **Primitives menu.**
-   - `File → Insert Primitive` (also `Shift+N`): sphere / box /
-     cylinder / cone / torus, plus a `Size (mm)` field.
-   - Adds to the current grid via SDF union (not a hard grid reset).
-   - Pairs naturally with (2) and (3) — start empty, drop a shape,
-     sculpt it.
+4. `[x]` **Primitives menu.** — `Shift+N` / `File → Insert Primitive…`.
+   Sphere / Cube / Cylinder / Torus with a size slider; unioned into
+   the current grid, journaled as one undo stroke.
 
 5. `[ ]` **Selection tool: pick tiny bits.** *(spike first)*
    - Two viable designs; pick before coding:
