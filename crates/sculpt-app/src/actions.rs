@@ -67,6 +67,9 @@ pub enum AppAction {
     /// Flip active-only sculpt gating: when on, sculpting tools only
     /// mutate voxels belonging to the selected component.
     ToggleActiveOnly,
+    /// Drop every floating connected component onto the workbench
+    /// (rigid gravity — no plastic deformation).
+    RestPiecesOnBench,
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).
     Quit,
 }

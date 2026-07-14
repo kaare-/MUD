@@ -72,14 +72,15 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    (invalidated after any stroke / undo / redo / Insert / New /
    Load). Option B (multi-piece scene) still deferred.
 
-6. `[ ]` **Rigid gravity (setting 1).** *(depends on 5)*
-   - After a cut, drop each connected component as a rigid body
-     onto the bench (y = 0). Clay is infinitely stiff — only the
-     transform changes.
-   - Simple resting: translate each component so its lowest point
-     touches y = 0; optionally rotate to its convex-hull minimum
-     face. No inter-component collision at first.
-   - `View → Gravity: Off / Rest`.
+6. `[x]` **Rigid gravity (rest).** `File → Rest pieces on bench`
+   (`Ctrl+G`). Every floating connected component is translated
+   along −Y so its lowest voxel lands at `iy = 0`. No plastic
+   deformation, no inter-component collision (overlapping landing
+   zones union naturally through min-SDF). Journaled as one undo
+   stroke via `sculpt_core::rest_components_on_bench`. Rotation to
+   a minimum-face rest pose is *not* implemented — components keep
+   their orientation. Continuous "gravity on" mode is deferred: it
+   would fight active sculpting.
 
 7. `[ ]` **Plastic gravity (gradual setting).** *(spike required)*
    - Slider 0 → 1 = elastic → yielding clay.

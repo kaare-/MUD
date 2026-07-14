@@ -21,6 +21,7 @@
 //!   9 ................ tool: select (LMB picks a connected piece)
 //!   Delete / Backspace  remove the selected piece
 //!   A ................ toggle active-only sculpt gating
+//!   Ctrl+G ........... rest every floating piece on the workbench
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay (Add/Remove)
@@ -43,6 +44,7 @@ use bevy::window::WindowResolution;
 mod actions;
 mod camera;
 mod export;
+mod gravity;
 mod input_gate;
 mod preview;
 mod primitives;
@@ -95,6 +97,7 @@ fn main() {
             project::plugin,
             primitives::plugin,
             selection::plugin,
+            gravity::plugin,
             ui::plugin,
         ))
         .add_systems(Startup, setup_scene)
