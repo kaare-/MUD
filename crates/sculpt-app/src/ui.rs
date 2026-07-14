@@ -26,6 +26,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 use crate::actions::AppAction;
+use crate::export::timestamped_filename;
 use crate::input_gate::UiCapturesInput;
 use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
@@ -190,32 +191,37 @@ fn draw_dialogs(
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
-                    ui.label("Filename:");
+                    ui.label("Filename (blank = timestamped):");
                     let resp = ui.add(
                         egui::TextEdit::singleline(&mut dialog.name)
-                            .desired_width(280.0),
+                            .desired_width(280.0)
+                            .hint_text("wolf-head-v3"),
                     );
-                    // Enter in the field = commit. First frame the
-                    // dialog opens we also want focus in the field
-                    // so the user can just type.
-                    if resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                        done = Some(Ok(finalise_save_path(&dialog.name)));
-                    }
+                    // Enter = commit. First frame the dialog opens
+                    // we want focus in the field so the user can
+                    // just type. On subsequent frames the resp keeps
+                    // its own focus; requesting again is a no-op.
+                    let submit_via_enter =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if !resp.has_focus() {
                         resp.request_focus();
                     }
                     ui.small(
                         "Saves into the working directory. Extension\n\
-                         `.mudclay` is added automatically.",
+                         .mudclay is added automatically. Leaving the\n\
+                         field blank saves with a fresh timestamp.",
                     );
-                    ui.horizontal(|ui| {
-                        if ui.button("Save").clicked() && !dialog.name.trim().is_empty() {
-                            done = Some(Ok(finalise_save_path(&dialog.name)));
-                        }
-                        if ui.button("Cancel").clicked() {
-                            done = Some(Err(()));
-                        }
+                    let save_clicked = ui.horizontal(|ui| {
+                        let save = ui.button("Save").clicked();
+                        let cancel = ui.button("Cancel").clicked();
+                        (save, cancel)
                     });
+                    let (save, cancel) = save_clicked.inner;
+                    if save || submit_via_enter {
+                        done = Some(Ok(finalise_save_path(&dialog.name)));
+                    } else if cancel {
+                        done = Some(Err(()));
+                    }
                 });
         }
         match done {
@@ -290,15 +296,28 @@ fn draw_dialogs(
     }
 }
 
-/// Fold "user typed some name" into a canonical PathBuf: trim
-/// whitespace, and add `.mudclay` if no extension is present. Keeps
-/// the dialog code above tidy.
+/// Fold "user typed some name" into a canonical PathBuf.
+///
+/// - Empty (or whitespace-only) input falls back to a fresh
+///   timestamped filename, so pressing Enter with nothing typed
+///   still saves.
+/// - Otherwise: trim whitespace, and add `.mudclay` if the path
+///   doesn't already end with `.mudclay`. We check the whole suffix
+///   rather than `path.extension().is_none()` because names like
+///   `wolf.v3` or `mudclayawolf-head` have an "extension" that
+///   isn't `.mudclay`; we want those to save as `wolf.v3.mudclay`
+///   or `mudclayawolf-head.mudclay`, not to silently keep whatever
+///   suffix the user typed and become non-loadable.
 fn finalise_save_path(input: &str) -> PathBuf {
-    let mut path = PathBuf::from(input.trim());
-    if path.extension().is_none() {
-        path.set_extension("mudclay");
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
     }
-    path
+    if trimmed.ends_with(".mudclay") {
+        PathBuf::from(trimmed)
+    } else {
+        PathBuf::from(format!("{trimmed}.mudclay"))
+    }
 }
 
 /// After egui has processed inputs for the frame, snapshot whether
@@ -371,5 +390,51 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::WireCutter => "Wire cutter",
         ToolKind::Smooth => "Smooth",
         ToolKind::Paddle => "Paddle",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_falls_back_to_timestamp() {
+        let p = finalise_save_path("");
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("mud-sculpt-"));
+        assert!(name.ends_with(".mudclay"));
+        // Whitespace-only counts as empty.
+        let ws = finalise_save_path("   \t");
+        assert!(ws
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("mud-sculpt-"));
+    }
+
+    #[test]
+    fn extension_is_appended_when_missing() {
+        assert_eq!(finalise_save_path("wolf-head"), PathBuf::from("wolf-head.mudclay"));
+        assert_eq!(finalise_save_path("  spaces  "), PathBuf::from("spaces.mudclay"));
+    }
+
+    #[test]
+    fn extension_is_kept_when_already_correct() {
+        assert_eq!(finalise_save_path("wolf.mudclay"), PathBuf::from("wolf.mudclay"));
+    }
+
+    #[test]
+    fn non_mudclay_extension_is_treated_as_stem_and_appended() {
+        // The pre-fix behaviour let names like "wolf.v3" through
+        // unmodified, producing files unloadable as projects. Now
+        // the whole-suffix check catches them.
+        assert_eq!(
+            finalise_save_path("wolf.v3"),
+            PathBuf::from("wolf.v3.mudclay"),
+        );
+        assert_eq!(
+            finalise_save_path("mud-sculpt-20260714-104649.mudclayawolf-head"),
+            PathBuf::from("mud-sculpt-20260714-104649.mudclayawolf-head.mudclay"),
+        );
     }
 }

@@ -86,8 +86,15 @@ fn handle_dialog_actions(
     for a in events.read() {
         match a {
             AppAction::ShowSaveAsDialog => {
+                // Start empty. Hint text in the dialog nudges the
+                // user toward what to type; leaving the field blank
+                // and hitting Save (or Enter) falls back to a fresh
+                // timestamp, so 'just save something' still works
+                // without typing. Pre-filling would force users to
+                // clear a long string every time they want a name
+                // of their own.
                 state.save_as = Some(SaveAsDialog {
-                    name: timestamped_filename("mud-sculpt-", ".mudclay"),
+                    name: String::new(),
                 });
                 // Only one dialog at a time — a Save-As while an
                 // Open is drifting on screen would be confusing.
