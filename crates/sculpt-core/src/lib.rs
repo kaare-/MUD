@@ -10,6 +10,7 @@
 //! same physical units as `voxel_size` (millimetres, by convention).
 
 pub mod brush;
+pub mod components;
 pub mod cutter;
 pub mod export;
 pub mod grid;
@@ -23,6 +24,7 @@ pub mod smooth;
 pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
+pub use components::{label_components, ComponentField, ComponentId, EMPTY};
 pub use cutter::{
     apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,
     apply_wire_cutter_with_callback, CookieCutter, WireCutter,
