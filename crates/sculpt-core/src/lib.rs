@@ -26,7 +26,7 @@ pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
-pub use gravity::{rest_components_on_bench, RestSummary};
+pub use gravity::{rest_components_on_bench, translate_component, RestSummary};
 pub use cutter::{
     apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,
     apply_wire_cutter_with_callback, CookieCutter, WireCutter,
