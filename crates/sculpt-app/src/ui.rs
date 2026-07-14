@@ -28,10 +28,12 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
 use crate::input_gate::UiCapturesInput;
+use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
 use crate::selection::Selection;
+use crate::view::{ViewPreset, WorkbenchGridState};
 use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
@@ -54,6 +56,8 @@ fn draw_ui(
     symmetry: Res<SculptSymmetry>,
     selection: Res<Selection>,
     workpiece: Res<SculptWorkpiece>,
+    grid_state: Res<WorkbenchGridState>,
+    mut move_state: ResMut<MoveState>,
     mut actions: EventWriter<AppAction>,
     mut app_exit: EventWriter<AppExit>,
 ) {
@@ -141,6 +145,32 @@ fn draw_ui(
                     ui.close_menu();
                 }
             });
+            ui.menu_button("View", |ui| {
+                let grid_label = if grid_state.visible {
+                    "Workbench grid ✓"
+                } else {
+                    "Workbench grid"
+                };
+                if menu_item(ui, grid_label, "") {
+                    actions.send(AppAction::ToggleWorkbenchGrid);
+                    ui.close_menu();
+                }
+                ui.separator();
+                for preset in [
+                    ViewPreset::Perspective,
+                    ViewPreset::Top,
+                    ViewPreset::Bottom,
+                    ViewPreset::Front,
+                    ViewPreset::Back,
+                    ViewPreset::Left,
+                    ViewPreset::Right,
+                ] {
+                    if menu_item(ui, preset.label(), "") {
+                        actions.send(AppAction::SetView(preset));
+                        ui.close_menu();
+                    }
+                }
+            });
             ui.separator();
             ui.label(
                 egui::RichText::new(format!("Tool: {}", tool_label(tool.kind)))
@@ -157,9 +187,9 @@ fn draw_ui(
         .show(ctx, |ui| {
             ui.heading("Tools");
             ui.add_space(4.0);
-            for (n, kind) in tool_palette_order() {
+            for (digit, kind) in tool_palette_order() {
                 let selected = tool.kind == kind;
-                let label = format!("{n}  {}", short_label(kind));
+                let label = format!("{digit}  {}", short_label(kind));
                 if ui.selectable_label(selected, label).clicked() {
                     actions.send(AppAction::SelectTool(kind));
                 }
@@ -207,6 +237,75 @@ fn draw_ui(
             ui.small("Ctrl+Z / Ctrl+Y — undo / redo");
         });
     });
+
+    // Move widget. Only shown when the Move tool is active — the
+    // widget is a floating egui window anchored to the top-right
+    // corner of the viewport (out of the sculpt path). Compact
+    // X/Y/Z spinners in mm plus an Apply button.
+    if matches!(tool.kind, ToolKind::Move) {
+        draw_move_widget(ctx, &selection, &mut move_state, &mut actions);
+    }
+}
+
+/// Compact `⟨ X | Y | Z ⟩` translate widget. Reads / writes the
+/// pending delta on [`MoveState`]; Apply fires
+/// [`AppAction::MoveSelection`], which the `move_tool` module
+/// handles. Nothing about the piece's absolute position is shown
+/// — a sculptor thinks in nudges, not coordinates.
+fn draw_move_widget(
+    ctx: &egui::Context,
+    selection: &Selection,
+    state: &mut MoveState,
+    actions: &mut EventWriter<AppAction>,
+) {
+    let has_selection = selection.picked_voxel.is_some();
+    egui::Window::new("Move")
+        .anchor(egui::Align2::RIGHT_TOP, [-12.0, 44.0])
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if has_selection {
+                ui.label("Nudge selection (mm):");
+            } else {
+                ui.small("Pick a piece first (LMB).");
+                ui.small("Or Insert Primitive to auto-select.");
+            }
+            ui.horizontal(|ui| {
+                ui.label("X");
+                ui.add(
+                    egui::DragValue::new(&mut state.pending_mm.x)
+                        .speed(0.5)
+                        .suffix(" mm"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Y");
+                ui.add(
+                    egui::DragValue::new(&mut state.pending_mm.y)
+                        .speed(0.5)
+                        .suffix(" mm"),
+                );
+            });
+            ui.horizontal(|ui| {
+                ui.label("Z");
+                ui.add(
+                    egui::DragValue::new(&mut state.pending_mm.z)
+                        .speed(0.5)
+                        .suffix(" mm"),
+                );
+            });
+            ui.horizontal(|ui| {
+                let apply = ui
+                    .add_enabled(has_selection, egui::Button::new("Apply"))
+                    .clicked();
+                if ui.button("Reset").clicked() {
+                    state.pending_mm = Vec3::ZERO;
+                }
+                if apply {
+                    actions.send(AppAction::MoveSelection(state.pending_mm));
+                }
+            });
+        });
 }
 
 /// Selection segment of the status strip. Shows the picked component
@@ -566,18 +665,21 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 }
 
 /// Palette order + number-key shortcut. Kept in sync with the
-/// keyboard mapping in `sculpt::adjust_tool`.
-fn tool_palette_order() -> [(u8, ToolKind); 9] {
+/// keyboard mapping in `sculpt::adjust_tool`. `0` is the Move tool
+/// so the digit row reads "1..9" for stamps and "0" for the rigid
+/// transform — same convention as most DCC tool palettes.
+fn tool_palette_order() -> [(&'static str, ToolKind); 10] {
     [
-        (1, ToolKind::Clay),
-        (2, ToolKind::Cutter(CutterFamily::Circle)),
-        (3, ToolKind::Cutter(CutterFamily::Square)),
-        (4, ToolKind::Cutter(CutterFamily::Hexagon)),
-        (5, ToolKind::Cutter(CutterFamily::Star5)),
-        (6, ToolKind::WireCutter),
-        (7, ToolKind::Smooth),
-        (8, ToolKind::Paddle),
-        (9, ToolKind::Select),
+        ("1", ToolKind::Clay),
+        ("2", ToolKind::Cutter(CutterFamily::Circle)),
+        ("3", ToolKind::Cutter(CutterFamily::Square)),
+        ("4", ToolKind::Cutter(CutterFamily::Hexagon)),
+        ("5", ToolKind::Cutter(CutterFamily::Star5)),
+        ("6", ToolKind::WireCutter),
+        ("7", ToolKind::Smooth),
+        ("8", ToolKind::Paddle),
+        ("9", ToolKind::Select),
+        ("0", ToolKind::Move),
     ]
 }
 
@@ -595,6 +697,7 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::Smooth => "Smooth",
         ToolKind::Paddle => "Paddle",
         ToolKind::Select => "Select",
+        ToolKind::Move => "Move",
     }
 }
 
@@ -632,6 +735,11 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
              Del  removes the selected piece.\n\
              A    active-only sculpt (other pieces stay).\n\
              Ctrl+G  drop every floating piece."
+        }
+        ToolKind::Move => {
+            "Pick a piece (LMB) or use the current selection,\n\
+             then type the X / Y / Z nudge (mm) and Apply.\n\
+             Values snap to whole voxels."
         }
     }
 }

@@ -135,7 +135,9 @@ fn selection_input(
     workpiece: Res<SculptWorkpiece>,
     mut selection: ResMut<Selection>,
 ) {
-    if !matches!(tool.kind, ToolKind::Select) {
+    // Both Select and Move accept LMB-picks so the user can jump
+    // straight into "pick and move" without swapping tools.
+    if !matches!(tool.kind, ToolKind::Select | ToolKind::Move) {
         return;
     }
     if ui_gate.pointer {
