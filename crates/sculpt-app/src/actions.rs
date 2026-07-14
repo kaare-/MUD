@@ -28,6 +28,9 @@ pub enum AppAction {
     ToggleSymmetry,
     /// Flip magic-clay soft CSG / bulge for the Add/Remove tool.
     ToggleMagicClay,
+    /// Reset the workpiece to an empty worktable (no material).
+    /// Clears the undo history and any in-flight stroke.
+    NewWorkpiece,
     /// Write the current SDF grid to a timestamped `.mudclay` file
     /// in the working directory.
     SaveProject,

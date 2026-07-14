@@ -51,6 +51,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
 | `M` | Toggle magic-clay (Add/Remove only) |
 | `S` | Toggle mirror symmetry (piece-local X = 0) |
+| `Ctrl+N` | Clear the worktable (empty grid, clears undo) |
 | `Ctrl+Z` | Undo last stroke |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 

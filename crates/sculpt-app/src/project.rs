@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use bevy::prelude::*;
-use sculpt_core::{project_size, read_project, write_project};
+use sculpt_core::{project_size, read_project, write_project, Grid};
 
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
@@ -151,6 +151,9 @@ fn emit_project_hotkeys(
     if !modifier {
         return;
     }
+    if keys.just_pressed(KeyCode::KeyN) && !shift {
+        actions.send(AppAction::NewWorkpiece);
+    }
     if keys.just_pressed(KeyCode::KeyS) {
         if shift {
             actions.send(AppAction::ShowSaveAsDialog);
@@ -181,6 +184,9 @@ fn handle_project_actions(
 ) {
     for a in events.read() {
         match a {
+            AppAction::NewWorkpiece => {
+                clear_worktable(&mut workpiece, &mut history, &mut stroke);
+            }
             AppAction::SaveProject => {
                 let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
                 save_to_path(&workpiece, &path);
@@ -194,6 +200,31 @@ fn handle_project_actions(
                 load_from_path(path, &mut workpiece, &mut history, &mut stroke)
             }
             _ => {}
+        }
+    }
+}
+
+/// Reset the workpiece to an empty grid at the current dimensions.
+/// Clears undo history and any in-flight stroke — the journal held
+/// pre/post values against the old grid and would misapply otherwise.
+pub fn clear_worktable(
+    workpiece: &mut SculptWorkpiece,
+    history: &mut UndoHistory,
+    stroke: &mut SculptStroke,
+) {
+    let empty = Grid::empty(
+        workpiece.grid.res(),
+        workpiece.grid.voxel_size(),
+        workpiece.grid.origin(),
+    );
+    match workpiece.swap_grid(empty) {
+        Ok(()) => {
+            history.clear();
+            stroke.discard_live();
+            info!("worktable cleared — undo history cleared");
+        }
+        Err(e) => {
+            error!("can't clear worktable: {e}");
         }
     }
 }

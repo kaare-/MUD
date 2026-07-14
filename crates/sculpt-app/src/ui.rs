@@ -59,6 +59,11 @@ fn draw_ui(
     egui::TopBottomPanel::top("mud_menu_bar").show(ctx, |ui| {
         egui::menu::bar(ui, |ui| {
             ui.menu_button("File", |ui| {
+                if menu_item(ui, "New", "Ctrl+N") {
+                    actions.send(AppAction::NewWorkpiece);
+                    ui.close_menu();
+                }
+                ui.separator();
                 if menu_item(ui, "Save", "Ctrl+S") {
                     actions.send(AppAction::SaveProject);
                     ui.close_menu();

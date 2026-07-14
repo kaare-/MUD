@@ -24,6 +24,7 @@
 //!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
+//!   Ctrl+N ........... clear the worktable (empty grid)
 //!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
 //!   Ctrl+Shift+E ..... export STL with a chosen filename (dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
