@@ -22,24 +22,42 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bevy::prelude::*;
 use sculpt_core::{extract_full_mesh, stl_binary_size, write_stl_binary, Orientation};
 
+use crate::actions::AppAction;
+use crate::input_gate::UiCapturesInput;
 use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Update, export_stl_on_hotkey);
+    app.add_systems(Update, (emit_export_hotkey, handle_export_action));
 }
 
-fn export_stl_on_hotkey(
+fn emit_export_hotkey(
     keys: Res<ButtonInput<KeyCode>>,
-    workpiece: Res<SculptWorkpiece>,
+    ui_gate: Res<UiCapturesInput>,
+    mut actions: EventWriter<AppAction>,
 ) {
+    if ui_gate.keyboard {
+        return;
+    }
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let super_key =
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    let modifier = ctrl || super_key;
-    if !(modifier && keys.just_pressed(KeyCode::KeyE)) {
-        return;
+    if (ctrl || super_key) && keys.just_pressed(KeyCode::KeyE) {
+        actions.send(AppAction::ExportStl);
     }
+}
 
+fn handle_export_action(
+    mut events: EventReader<AppAction>,
+    workpiece: Res<SculptWorkpiece>,
+) {
+    for a in events.read() {
+        if matches!(a, AppAction::ExportStl) {
+            export_stl_now(&workpiece);
+        }
+    }
+}
+
+fn export_stl_now(workpiece: &SculptWorkpiece) {
     let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".stl"));
     info!("exporting STL to {}", path.display());
 

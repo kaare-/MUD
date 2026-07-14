@@ -20,3 +20,12 @@ bevy = { version = "0.15", default-features = false, features = [
     "zstd",
     "x11",
 ] }
+# Immediate-mode UI for the top menu bar, tool palette, and status
+# strip. 0.33 is the last version tracking Bevy 0.15. We deliberately
+# opt out of `manage_clipboard` and `open_url` — no text fields to
+# copy from, no links to launch — which strips the arboard and
+# webbrowser transitive deps and keeps the binary lean.
+bevy_egui = { version = "0.33", default-features = false, features = [
+    "render",
+    "default_fonts",
+] }

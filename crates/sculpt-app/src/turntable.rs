@@ -4,6 +4,7 @@
 
 use bevy::prelude::*;
 
+use crate::input_gate::UiCapturesInput;
 use crate::workpiece::WorkpieceRoot;
 
 #[derive(Resource, Default)]
@@ -22,10 +23,18 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-fn read_turntable_input(keys: Res<ButtonInput<KeyCode>>, mut state: ResMut<TurntableState>) {
+fn read_turntable_input(
+    keys: Res<ButtonInput<KeyCode>>,
+    ui_gate: Res<UiCapturesInput>,
+    mut state: ResMut<TurntableState>,
+) {
     // Default speed: one revolution in ~4 seconds. Slow enough to feel
     // deliberate, fast enough to actually help work continuously.
     const TARGET_SPEED: f32 = std::f32::consts::TAU / 4.0;
+    if ui_gate.keyboard {
+        state.angular_vel = 0.0;
+        return;
+    }
     let mut v = 0.0f32;
     if keys.pressed(KeyCode::KeyQ) {
         v += TARGET_SPEED;

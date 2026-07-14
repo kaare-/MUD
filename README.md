@@ -70,6 +70,11 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Ctrl+S` | Save the current piece as a native `.mudclay` project file |
 | `Ctrl+O` | Load the newest `.mudclay` project from the working directory |
 
+All of the above are also reachable from the on-screen UI: the top
+**File** menu (Save / Load / Export STL / Quit), the left **Tools**
+palette (click a tool to pick it up), and the bottom status strip
+(click the *Symmetry* / *Magic clay* readouts to toggle them).
+
 `Esc` to quit.
 
 ## Layout
