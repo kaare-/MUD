@@ -390,21 +390,33 @@ fn apply_at(
             // How much of the outward normal aims back at the camera.
             // Face-on (≈1) must stay subtle; sideways (≈0) may grow a
             // short column so Q/E while holding draws a ring in air.
-            let cam_face = outward.dot(-view_dir).clamp(0.0, 1.0);
-            let side = 1.0 - cam_face;
+            let side = 1.0 - outward.dot(-view_dir).clamp(0.0, 1.0);
+            // Column / ring growth only when the surface faces sideways
+            // in the world (normal in XZ). Looking straight down and
+            // drawing across the crown must stay level: tilted normals
+            // still look "sideways to the camera" but extruding along
+            // them climbs at ~45°. Require a horizontal outward and
+            // push only in XZ.
+            let flat_out = GVec3::new(outward.x, 0.0, outward.z);
+            let flatness = flat_out.length().clamp(0.0, 1.0);
+            let column = side * flatness * flatness;
             let shallow_embed = (tool.size - advance).max(tool.size * 0.5);
             let center = match mode {
                 // Shallow bite: seat almost the whole sphere in air so
                 // only a thin cap carves — matches add's subtlety.
                 BrushMode::Press => hit - into_surface * shallow_embed,
                 BrushMode::Pull => {
-                    // Face-on → deep embed (surface paint). Sideways →
-                    // hover near the tip with a small outward push so
-                    // a held add grows a side column without racing
-                    // toward the lens.
-                    let embed = shallow_embed * cam_face + tool.size * 0.15 * side;
-                    let push = (advance * 4.0 + tool.size * 0.05) * side * side;
-                    hit + into_surface * embed + outward * push
+                    // Crown / face-on → deep embed (surface paint).
+                    // Equator from the side → short horizontal column
+                    // so Q/E while holding draws a ring in air.
+                    let embed = shallow_embed * (1.0 - column) + tool.size * 0.15 * column;
+                    let push = (advance * 4.0 + tool.size * 0.05) * column * column;
+                    let push_dir = if flatness > 1e-3 {
+                        flat_out / flatness
+                    } else {
+                        GVec3::ZERO
+                    };
+                    hit + into_surface * embed + push_dir * push
                 }
             };
             let brush = SphereBrush {
