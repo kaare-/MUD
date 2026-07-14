@@ -19,6 +19,7 @@
 //!   7 ................ tool: smooth (hold LMB to polish high-frequency detail)
 //!   8 ................ tool: paddle (hold LMB to press a flat)
 //!   9 ................ tool: select (LMB picks a connected piece)
+//!   0 ................ tool: move (nudge the selected piece via XYZ mm widget)
 //!   Delete / Backspace  remove the selected piece
 //!   A ................ toggle active-only sculpt gating
 //!   Ctrl+G ........... rest every floating piece on the workbench
@@ -45,6 +46,7 @@ mod camera;
 mod export;
 mod gravity;
 mod input_gate;
+mod move_tool;
 mod preview;
 mod primitives;
 mod project;
@@ -53,6 +55,7 @@ mod selection;
 mod turntable;
 mod ui;
 mod undo;
+mod view;
 mod workpiece;
 
 fn main() {
@@ -97,8 +100,11 @@ fn main() {
             primitives::plugin,
             selection::plugin,
             gravity::plugin,
-            ui::plugin,
+            view::plugin,
         ))
+        // Bevy caps `Plugins` tuples at 15 entries; the rest of
+        // the plugins live in a second call.
+        .add_plugins((move_tool::plugin, ui::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
         .run();

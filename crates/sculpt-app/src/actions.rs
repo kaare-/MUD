@@ -17,6 +17,7 @@ use bevy::prelude::*;
 
 use crate::primitives::PrimitiveShape;
 use crate::sculpt::ToolKind;
+use crate::view::ViewPreset;
 
 /// A user-triggered command. Emitted by keyboard handlers, UI
 /// buttons, or (eventually) OS integrations. Handlers live in the
@@ -68,6 +69,15 @@ pub enum AppAction {
     /// Drop every floating connected component onto the workbench
     /// (rigid gravity — no plastic deformation).
     RestPiecesOnBench,
+    /// Flip the workbench grid overlay.
+    ToggleWorkbenchGrid,
+    /// Snap the orbit camera to a standard preset (Top / Front /
+    /// Left / Right / Back / Bottom / Perspective). Distance and
+    /// target are preserved.
+    SetView(ViewPreset),
+    /// Rigidly translate the selected component by `(dx, dy, dz)`
+    /// millimetres. No-op when nothing is selected.
+    MoveSelection(Vec3),
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).
     Quit,
 }
