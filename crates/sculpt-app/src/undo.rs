@@ -153,6 +153,11 @@ pub struct SculptStroke {
     /// current stroke. Used to space stamps so hold-still can't race
     /// along the view axis.
     pub last_clay_hit: Option<glam::Vec3>,
+    /// When painting face-on (not growing a side column), stamps are
+    /// projected onto this tangent plane `(point, normal)` so a
+    /// screen-vertical drag stays vertical instead of tip-chasing
+    /// toward the camera at ~45°.
+    pub paint_plane: Option<(glam::Vec3, glam::Vec3)>,
 }
 
 pub fn plugin(app: &mut App) {

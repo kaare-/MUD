@@ -234,6 +234,7 @@ fn sculpt_input(
     if buttons.just_pressed(MouseButton::Left) {
         stroke.recorder = Some(StrokeRecorder::default());
         stroke.last_clay_hit = None;
+        stroke.paint_plane = None;
     }
     if buttons.just_released(MouseButton::Left) {
         if let Some(rec) = stroke.recorder.take() {
@@ -242,6 +243,7 @@ fn sculpt_input(
             }
         }
         stroke.last_clay_hit = None;
+        stroke.paint_plane = None;
     }
 
     // Continuous tools (clay, smooth, paddle) engage every frame
@@ -307,15 +309,43 @@ fn sculpt_input(
     let is_add = is_clay
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
+    // Face-on vs side-column weight (same basis as stamp placement).
+    let outward = -into_surface;
+    let side = 1.0 - outward.dot(-dir_g).clamp(0.0, 1.0);
+    let flatness = GVec3::new(outward.x, 0.0, outward.z)
+        .length()
+        .clamp(0.0, 1.0);
+    let column = side * flatness * flatness;
+
+    // Pin face-on add strokes to the first contact's tangent plane so
+    // a front-view vertical drag can't tip-chase toward the camera
+    // (which read as a 45° climb). Side-column / ring modes leave
+    // the plane unlocked.
+    let mut hit = hit;
+    let mut into_surface = into_surface;
+    if is_add {
+        if column < 0.35 {
+            if let Some((plane_p, plane_n)) = stroke.paint_plane {
+                let n_len_sq = plane_n.length_squared();
+                if n_len_sq > 1e-8 {
+                    let n = plane_n * (1.0 / n_len_sq.sqrt());
+                    hit -= n * (hit - plane_p).dot(n);
+                    into_surface = n;
+                }
+            } else {
+                stroke.paint_plane = Some((hit, into_surface));
+            }
+        } else {
+            stroke.paint_plane = None;
+        }
+    }
+
     // Stamp spacing. Face-on add/remove needs a generous gap so holding
     // still doesn't race toward (or into) the camera. While the
     // turntable is turning — or when adding sideways — keep spacing
     // tight relative to brush size so small tools leave a continuous
     // bead instead of lagging / skipping out of the ring path.
     if is_clay {
-        let outward = -into_surface;
-        let cam_face = outward.dot(-dir_g).clamp(0.0, 1.0);
-        let side = 1.0 - cam_face;
         let turning = turntable.angular_vel.abs() > 1e-4;
         let min_spacing = if is_add && (turning || side > 0.3) {
             // Continuous ring/bead: denser for tiny brushes, never so
