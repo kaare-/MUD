@@ -31,6 +31,13 @@ fn soft_min(a: f32, b: f32, k: f32) -> f32 {
     a.min(b) - h * h * k * 0.25
 }
 
+/// Polynomial smooth-max — soft CSG intersection complement used for
+/// magic-clay Press so a shallow bite reads like clay, not a hard ball
+/// boolean.
+fn soft_max(a: f32, b: f32, k: f32) -> f32 {
+    -soft_min(-a, -b, k)
+}
+
 /// A single-step spherical brush stamp.
 ///
 /// - `center`, `radius` — in piece-local mm.
@@ -146,7 +153,10 @@ where
 
                 // Base CSG / soft-CSG operation.
                 let mut new = match brush.mode {
-                    // Subtract: A minus B in SDF land is max(A, -B).
+                    // Subtract: hard max(A, -B), soft when magic clay.
+                    BrushMode::Press if brush.displace => {
+                        soft_max(old, -d_brush, brush.radius * 0.45)
+                    }
                     BrushMode::Press => old.max(-d_brush),
                     // Union: hard min when magic clay is off; soft min
                     // (rounded fillet at the join) when on. Soft-min

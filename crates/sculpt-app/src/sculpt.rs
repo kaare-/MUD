@@ -1,8 +1,8 @@
 //! Sculpt input dispatch.
 //!
-//! Two tools live here in Stage 2: the spherical finger from Stage 0/1
-//! and the cookie cutter introduced by Stage 2. Left-drag engages the
-//! finger continuously; left-click one-shots the cookie cutter.
+//! Two tools live here in Stage 2: the spherical add/remove clay brush
+//! from Stage 0/1 and the cookie cutter introduced by Stage 2. Left-drag
+//! engages clay continuously; left-click one-shots the cookie cutter.
 //!
 //! Symmetry is a small overlay that applies each stamp again at its
 //! mirror image across the piece-local X = 0 plane. Toggle with `S`.
@@ -27,7 +27,8 @@ use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 /// Which tool the user is currently holding.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum ToolKind {
-    Finger,
+    /// Spherical add (Shift+LMB) / remove (LMB) brush.
+    Clay,
     Cutter(CutterFamily),
     /// Wire cutter — a planar slab cut defined by two cursor
     /// positions (LMB down = anchor A, LMB up = anchor B). Slices
@@ -74,12 +75,13 @@ impl CutterFamily {
 pub struct SculptTool {
     pub kind: ToolKind,
     pub size: f32,
-    /// Finger + paddle: how far the tool centre advances along the
-    /// surface normal each frame while held (Press / paddle only).
-    /// Pull stamps sit on the ray hit so add-material paints the
-    /// surface instead of chasing the tip toward the camera.
+    /// Clay + paddle: how far the tool centre advances along the
+    /// surface normal each frame while held. For clay this is the
+    /// shallow bite/build depth and the sideways-column gain; for
+    /// the paddle it still drives plane advance.
     pub advance_per_step: f32,
-    /// Finger-only: whether to apply the magic-clay bulge on Press.
+    /// Clay-only: whether to apply soft CSG + the magic-clay bulge
+    /// on remove.
     pub displace: bool,
     /// Smooth-only: per-frame Laplacian blend factor, 0..1. Small
     /// values give a gentle polish; 1.0 fully replaces each voxel
@@ -90,7 +92,7 @@ pub struct SculptTool {
 impl Default for SculptTool {
     fn default() -> Self {
         Self {
-            kind: ToolKind::Finger,
+            kind: ToolKind::Clay,
             size: 12.0,
             advance_per_step: 0.6,
             displace: true,
@@ -184,7 +186,7 @@ fn handle_tool_actions(
 /// tool-palette UI.
 pub fn tool_label(kind: ToolKind) -> &'static str {
     match kind {
-        ToolKind::Finger => "finger",
+        ToolKind::Clay => "add/remove",
         ToolKind::Cutter(CutterFamily::Circle) => "cutter/circle",
         ToolKind::Cutter(CutterFamily::Square) => "cutter/square",
         ToolKind::Cutter(CutterFamily::Hexagon) => "cutter/hexagon",
@@ -226,7 +228,7 @@ fn sculpt_input(
     // cutter just contributes fewer stamps (typically one).
     if buttons.just_pressed(MouseButton::Left) {
         stroke.recorder = Some(StrokeRecorder::default());
-        stroke.last_pull_hit = None;
+        stroke.last_clay_hit = None;
     }
     if buttons.just_released(MouseButton::Left) {
         if let Some(rec) = stroke.recorder.take() {
@@ -234,15 +236,15 @@ fn sculpt_input(
                 history.push_stroke(entry);
             }
         }
-        stroke.last_pull_hit = None;
+        stroke.last_clay_hit = None;
     }
 
-    // Continuous tools (finger, smooth, paddle) engage every frame
+    // Continuous tools (clay, smooth, paddle) engage every frame
     // LMB is held. The cookie cutter is a one-shot: fire on the frame
     // LMB is first pressed, then stop so a slow drag doesn't chain
     // cutter stamps by accident. Wire cutter has its own path.
     let should_engage = match tool.kind {
-        ToolKind::Finger | ToolKind::Smooth | ToolKind::Paddle => {
+        ToolKind::Clay | ToolKind::Smooth | ToolKind::Paddle => {
             buttons.pressed(MouseButton::Left)
         }
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
@@ -294,15 +296,24 @@ fn sculpt_input(
         dir_g
     };
 
-    let is_pull = matches!(tool.kind, ToolKind::Finger)
+    let is_clay = matches!(tool.kind, ToolKind::Clay);
+    let is_add = is_clay
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
-    // Pull spacing: a full-radius sphere centred on the tip grows ~radius
-    // toward the camera every frame and races to the grid bound. Only
-    // stamp again after the contact has moved across the surface.
-    if is_pull {
-        let min_spacing = tool.size * 0.45;
-        if let Some(last) = stroke.last_pull_hit {
+    // Stamp spacing. Face-on add/remove needs a generous gap so holding
+    // still doesn't race toward (or into) the camera. Sideways add
+    // loosens spacing so a held tip can grow a short side column —
+    // then Q/E while holding paints a ring in the air.
+    if is_clay {
+        let outward = -into_surface;
+        let cam_face = outward.dot(-dir_g).clamp(0.0, 1.0);
+        let side = 1.0 - cam_face;
+        let min_spacing = if is_add && side > 0.4 {
+            tool.size * 0.12
+        } else {
+            tool.size * 0.45
+        };
+        if let Some(last) = stroke.last_clay_hit {
             if (hit - last).length_squared() < min_spacing * min_spacing {
                 return;
             }
@@ -320,10 +331,12 @@ fn sculpt_input(
         keys.as_ref(),
         hit,
         into_surface,
+        dir_g,
     );
     if symmetry.enabled {
         let mirrored_hit = GVec3::new(-hit.x, hit.y, hit.z);
         let mirrored_dir = GVec3::new(-into_surface.x, into_surface.y, into_surface.z);
+        let mirrored_view = GVec3::new(-dir_g.x, dir_g.y, dir_g.z);
         apply_at(
             &mut workpiece,
             stroke.recorder.as_mut(),
@@ -332,13 +345,15 @@ fn sculpt_input(
             keys.as_ref(),
             mirrored_hit,
             mirrored_dir,
+            mirrored_view,
         );
     }
-    if is_pull {
-        stroke.last_pull_hit = Some(hit);
+    if is_clay {
+        stroke.last_clay_hit = Some(hit);
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_at(
     workpiece: &mut SculptWorkpiece,
     mut recorder: Option<&mut StrokeRecorder>,
@@ -347,28 +362,38 @@ fn apply_at(
     keys: &ButtonInput<KeyCode>,
     hit: GVec3,
     into_surface: GVec3,
+    view_dir: GVec3,
 ) {
     let grid_res = workpiece.grid.res();
 
     let region = match kind {
         ToolKind::WireCutter => return, // handled by wire_cutter_input
-        ToolKind::Finger => {
+        ToolKind::Clay => {
             let mode = if keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight) {
                 BrushMode::Pull
             } else {
                 BrushMode::Press
             };
-            // Press advances into the surface each frame so a held dig
-            // deepens. Pull embeds the brush so only a shallow cap of
-            // new clay sits outside the contact — a sphere centred on
-            // the tip grows a camera stalk in one stamp, and held
-            // re-hits made that race to the grid bound.
             let advance = tool.advance_per_step;
+            let outward = -into_surface;
+            // How much of the outward normal aims back at the camera.
+            // Face-on (≈1) must stay subtle; sideways (≈0) may grow a
+            // short column so Q/E while holding draws a ring in air.
+            let cam_face = outward.dot(-view_dir).clamp(0.0, 1.0);
+            let side = 1.0 - cam_face;
+            let shallow_embed = (tool.size - advance).max(tool.size * 0.5);
             let center = match mode {
-                BrushMode::Press => hit + into_surface * advance,
+                // Shallow bite: seat almost the whole sphere in air so
+                // only a thin cap carves — matches add's subtlety.
+                BrushMode::Press => hit - into_surface * shallow_embed,
                 BrushMode::Pull => {
-                    let embed = (tool.size - advance).max(tool.size * 0.5);
-                    hit + into_surface * embed
+                    // Face-on → deep embed (surface paint). Sideways →
+                    // hover near the tip with a small outward push so
+                    // a held add grows a side column without racing
+                    // toward the lens.
+                    let embed = shallow_embed * cam_face + tool.size * 0.15 * side;
+                    let push = (advance * 4.0 + tool.size * 0.05) * side * side;
+                    hit + into_surface * embed + outward * push
                 }
             };
             let brush = SphereBrush {
@@ -679,7 +704,7 @@ fn adjust_tool(
         actions.send(AppAction::SelectTool(kind));
     };
     if keys.just_pressed(KeyCode::Digit1) {
-        send_tool(ToolKind::Finger);
+        send_tool(ToolKind::Clay);
     }
     if keys.just_pressed(KeyCode::Digit2) {
         send_tool(ToolKind::Cutter(CutterFamily::Circle));

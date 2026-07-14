@@ -1,7 +1,7 @@
 //! Ghost tool preview: a translucent shape at the cursor showing where
 //! the active tool will land.
 //!
-//! For the finger this is a sphere the same size as the brush; for a
+//! For Add/Remove this is a sphere the same size as the brush; for a
 //! cookie cutter it's a short prism of the profile shape, oriented
 //! along the surface normal at the hit point. The orientation is the
 //! implicit "which way the cut goes" indicator you asked for.
@@ -173,7 +173,7 @@ fn update_preview(
         }
     };
     // Surface normal from the SDF gradient — used to orient cutters /
-    // paddles. Finger / Smooth ignore it for placement (see below).
+    // paddles. Clay / Smooth ignore it for placement (see below).
     let grad = workpiece.grid.gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
@@ -188,7 +188,7 @@ fn update_preview(
         let normal_local = Vec3::new(normal.x, normal.y, normal.z);
         let view_local = Vec3::new(dir_local.x, dir_local.y, dir_local.z);
 
-        // Finger / Smooth: sit the ghost on the *view ray*, just in
+        // Clay / Smooth: sit the ghost on the *view ray*, just in
         // front of the hit (`hit - dir * radius`). Offsetting along the
         // SDF normal instead slides the ball off the cursor toward the
         // radial "sphere shell" on grazing looks — which reads as the
@@ -197,7 +197,7 @@ fn update_preview(
         // the cursor. Cutter / paddle / wire keep a tiny lift along
         // the outward normal to avoid z-fighting.
         let local_pos = match tool.kind {
-            ToolKind::Finger | ToolKind::Smooth => hit_local - view_local * (tool.size + 0.15),
+            ToolKind::Clay | ToolKind::Smooth => hit_local - view_local * (tool.size + 0.15),
             ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
                 hit_local + normal_local * 0.15
             }
@@ -207,7 +207,7 @@ fn update_preview(
         // Radially symmetric tools need no rotation. Cutter / paddle
         // align local Y with the *world* outward normal.
         tf.rotation = match tool.kind {
-            ToolKind::Finger | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
+            ToolKind::Clay | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
             ToolKind::Cutter(_) | ToolKind::Paddle => {
                 let normal_world = piece_tf.rotation() * normal_local;
                 let n = if normal_world.length_squared() > 1e-8 {
@@ -233,11 +233,11 @@ fn hide(entity: Entity, q_visibility: &mut Query<&mut Visibility>) {
 /// Build the preview mesh for the given tool state.
 fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
     match kind {
-        // Both finger and smooth are radially-symmetric sphere
+        // Both clay and smooth are radially-symmetric sphere
         // brushes at their `size` radius — the preview mesh is
         // identical. The material tint distinguishes them if we
         // want to later (currently the same emissive blue).
-        ToolKind::Finger | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
+        ToolKind::Clay | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)
