@@ -226,6 +226,7 @@ fn sculpt_input(
     // cutter just contributes fewer stamps (typically one).
     if buttons.just_pressed(MouseButton::Left) {
         stroke.recorder = Some(StrokeRecorder::default());
+        stroke.last_pull_hit = None;
     }
     if buttons.just_released(MouseButton::Left) {
         if let Some(rec) = stroke.recorder.take() {
@@ -233,6 +234,7 @@ fn sculpt_input(
                 history.push_stroke(entry);
             }
         }
+        stroke.last_pull_hit = None;
     }
 
     // Continuous tools (finger, smooth, paddle) engage every frame
@@ -292,6 +294,21 @@ fn sculpt_input(
         dir_g
     };
 
+    let is_pull = matches!(tool.kind, ToolKind::Finger)
+        && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+
+    // Pull spacing: a full-radius sphere centred on the tip grows ~radius
+    // toward the camera every frame and races to the grid bound. Only
+    // stamp again after the contact has moved across the surface.
+    if is_pull {
+        let min_spacing = tool.size * 0.45;
+        if let Some(last) = stroke.last_pull_hit {
+            if (hit - last).length_squared() < min_spacing * min_spacing {
+                return;
+            }
+        }
+    }
+
     // Apply once at the primary contact, then again mirrored if
     // symmetry is on. The mirror flips both the position and the
     // press direction across piece-local X = 0.
@@ -317,6 +334,9 @@ fn sculpt_input(
             mirrored_dir,
         );
     }
+    if is_pull {
+        stroke.last_pull_hit = Some(hit);
+    }
 }
 
 fn apply_at(
@@ -338,17 +358,18 @@ fn apply_at(
             } else {
                 BrushMode::Press
             };
-            // Offset each frame so a held Press carves progressively
-            // deeper. Pull must NOT advance outward each frame: the
-            // ray re-hits the freshly added tip, so `hit - into *
-            // advance` walks toward the camera and grows a stalk.
-            // (That chase was masked earlier while ray_march still
-            // tunnelled onto the starter sphere.) Pull sits on the
-            // contact so Shift+drag paints material onto the surface.
+            // Press advances into the surface each frame so a held dig
+            // deepens. Pull embeds the brush so only a shallow cap of
+            // new clay sits outside the contact — a sphere centred on
+            // the tip grows a camera stalk in one stamp, and held
+            // re-hits made that race to the grid bound.
             let advance = tool.advance_per_step;
             let center = match mode {
                 BrushMode::Press => hit + into_surface * advance,
-                BrushMode::Pull => hit,
+                BrushMode::Pull => {
+                    let embed = (tool.size - advance).max(tool.size * 0.5);
+                    hit + into_surface * embed
+                }
             };
             let brush = SphereBrush {
                 center,

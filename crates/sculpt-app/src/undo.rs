@@ -149,6 +149,10 @@ impl UndoHistory {
 #[derive(Resource, Default)]
 pub struct SculptStroke {
     pub recorder: Option<StrokeRecorder>,
+    /// Piece-local hit of the last Pull stamp in the current stroke.
+    /// Used to space stamps so a held Shift+LMB can't chase its own
+    /// tip toward the camera.
+    pub last_pull_hit: Option<glam::Vec3>,
 }
 
 pub fn plugin(app: &mut App) {
