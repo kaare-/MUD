@@ -14,10 +14,21 @@ pub enum BrushMode {
     /// the displaced material bulges out around the brush — the core
     /// of Stage 1's "magic clay" behaviour.
     Press,
-    /// Add material. The brush footprint is unioned into the workpiece.
-    /// Stage 1 does not do redistribution for Pull; that would be the
-    /// "smear" operation and lives in a later stage.
+    /// Add material. Hard CSG is a sphere union; with `displace = true`
+    /// the join is a soft (polynomial) union so the pull blends into
+    /// the existing clay instead of leaving a hard crease. We
+    /// deliberately do **not** excavate a recruitment ring for Pull —
+    /// that carved a visible moat around every Shift+LMB add.
     Pull,
+}
+
+/// Polynomial smooth-min used for magic-clay Pull. `k` is the blend
+/// radius in mm; larger = rounder fillet at the join. Same construction
+/// as Inigo Quilez's `smin` — equals `a.min(b)` when `|a-b| >= k`.
+fn soft_min(a: f32, b: f32, k: f32) -> f32 {
+    let k = k.max(1e-6);
+    let h = (k - (a - b).abs()).max(0.0) / k;
+    a.min(b) - h * h * k * 0.25
 }
 
 /// A single-step spherical brush stamp.
@@ -133,57 +144,48 @@ where
                 let d_brush = (p - c).length() - r;
                 let old = grid.get(ix, iy, iz);
 
-                // Base CSG operation.
+                // Base CSG / soft-CSG operation.
                 let mut new = match brush.mode {
                     // Subtract: A minus B in SDF land is max(A, -B).
                     BrushMode::Press => old.max(-d_brush),
-                    // Union: A ∪ B in SDF land is min(A, B).
+                    // Union: hard min when magic clay is off; soft min
+                    // (rounded fillet at the join) when on. Soft-min
+                    // alone is the Pull magic-clay effect — we do not
+                    // also dig a recruitment ring (that was the moat).
+                    BrushMode::Pull if brush.displace => {
+                        soft_min(old, d_brush, brush.radius * 0.45)
+                    }
                     BrushMode::Pull => old.min(d_brush),
                 };
 
-                // Volume-displacement bulge. Fires with `displace = true`
-                // for both Press and Pull, in the annular ring just
-                // outside the brush footprint, only where the pre-stamp
-                // field was near the surface. Direction weight biases
-                // perpendicular / opposite to the tool direction so
-                // material squeezes out (Press) or is recruited from
-                // the surrounding surface (Pull), instead of appearing
-                // straight ahead or behind.
+                // Volume-displacement bulge — Press only. Fires in the
+                // annular ring just outside the brush footprint, where
+                // the pre-stamp field was near the surface. Direction
+                // weight biases perpendicular / opposite to the tool
+                // direction so material squeezes out sideways and
+                // behind the press.
                 //
-                // Sign convention:
-                // - Press: material squeezed OUT of the brush footprint
-                //   piles up in the ring. SDF becomes more negative
-                //   (surface pushed outward) → `new -= bulge`.
-                // - Pull:  material recruited INTO the pulled bulge is
-                //   drawn from the surrounding surface. SDF becomes
-                //   more positive (surrounding surface retreats
-                //   inward) → `new += bulge`. This is what turns Pull
-                //   from "spawn material from air" into "smear".
-                if brush.displace && d_brush > 0.0 && d_brush < bulge_thickness {
+                // Sign: Press piles material OUT of the footprint → SDF
+                // becomes more negative (surface pushed outward)
+                // → `new -= bulge`.
+                if brush.displace
+                    && matches!(brush.mode, BrushMode::Press)
+                    && d_brush > 0.0
+                    && d_brush < bulge_thickness
+                {
                     let surface_weight = (1.0 - (old.abs() / surface_band).min(1.0)).max(0.0);
                     if surface_weight > 0.0 {
                         let ring_t = (d_brush / bulge_thickness).clamp(0.0, 1.0);
-                        // Press piles material against the tool face, so
-                        // weight peaks at the brush rim (`ring_t → 0`).
-                        // Pull must *not* peak there: recruiting at the
-                        // contact seam digs a trench around the freshly
-                        // unioned blob (visible as a moat / glitchy
-                        // silhouette). Instead peak mid-shoulder and
-                        // fall to zero at the rim and outer edge.
-                        let ring_weight = match brush.mode {
-                            BrushMode::Press => (1.0 - ring_t) * (1.0 - ring_t),
-                            BrushMode::Pull => 4.0 * ring_t * (1.0 - ring_t) * (1.0 - ring_t),
-                        };
+                        // Peak at the brush rim (`ring_t → 0`) so clay
+                        // piles against the tool face.
+                        let ring_weight = (1.0 - ring_t) * (1.0 - ring_t);
 
                         let bulge_dir = (p - c) * (1.0 / (d_brush + r).max(1e-6));
                         let cos_theta = bulge_dir.dot(dir);
                         let dir_weight = ((1.0 - cos_theta) * 0.5).clamp(0.0, 1.0);
 
                         let bulge = bulge_intensity * ring_weight * surface_weight * dir_weight;
-                        match brush.mode {
-                            BrushMode::Press => new -= bulge,
-                            BrushMode::Pull => new += bulge,
-                        }
+                        new -= bulge;
                     }
                 }
 
@@ -309,55 +311,60 @@ mod tests {
     }
 
     #[test]
-    fn pull_with_displacement_recruits_from_surrounding_surface() {
-        // Big workpiece so the brush is comfortably at the surface.
+    fn pull_with_displacement_softens_the_join() {
+        // Soft-min Pull fills the crevice between tip and workpiece
+        // (more solid than hard union). Probe sits outside both the
+        // tip sphere and the original workpiece, in the fillet zone.
         let g_res = glam::UVec3::new(64, 64, 64);
-        let mut g = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 20.0);
-
-        // Mid-shoulder probe in the bulge ring (d_brush ≈ 1 mm with
-        // thickness 3 mm → ring_t ≈ 1/3), near the workpiece surface,
-        // perpendicular to the tool direction. Pull recruitment should
-        // retreat the surrounding surface here (SDF grows).
+        let centre = Vec3::new(32.0, 32.0, 32.0);
+        let brush_c = Vec3::new(52.0, 32.0, 32.0);
+        let radius = 5.0;
+        // Outside tip (d_brush ≈ 1) and outside original sphere
+        // (~20.9 mm from centre) — hard union leaves this empty;
+        // soft-min should pull it toward solid.
         let probe = Vec3::new(52.0, 38.0, 32.0);
-        let before = g.sample(probe);
 
-        let brush = SphereBrush {
-            center: Vec3::new(52.0, 32.0, 32.0),
-            radius: 5.0,
+        let mut g_plain = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+        let mut g_disp = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+
+        let plain = SphereBrush {
+            center: brush_c,
+            radius,
             mode: BrushMode::Pull,
             direction: Vec3::new(-1.0, 0.0, 0.0),
-            displace: true,
+            displace: false,
             workbench_y: None,
         };
-        for _ in 0..40 {
-            let _ = apply_sphere_brush(&mut g, &brush);
+        let with_disp = SphereBrush {
+            displace: true,
+            ..plain
+        };
+        for _ in 0..8 {
+            let _ = apply_sphere_brush(&mut g_plain, &plain);
+            let _ = apply_sphere_brush(&mut g_disp, &with_disp);
         }
-        let after = g.sample(probe);
+
+        let plain_probe = g_plain.sample(probe);
+        let disp_probe = g_disp.sample(probe);
         assert!(
-            after > before + 0.3,
-            "pull recruitment should retreat the surrounding surface (SDF should grow): before={before}, after={after}",
+            disp_probe < plain_probe - 0.15,
+            "soft-min Pull should fill the join fillet vs hard union: plain={plain_probe}, soft={disp_probe}",
         );
     }
 
     #[test]
     fn pull_with_displacement_does_not_trench_at_brush_rim() {
-        // Regression for the "moat" around Shift+LMB pulls: recruitment
-        // used to peak at ring_t→0 and carve a trench at the contact
-        // seam. The rim probe sits just outside the brush footprint on
-        // the workpiece surface; after many Pull stamps its SDF must
-        // not jump positive far past the no-displace baseline.
+        // Regression: earlier Pull displace excavated a recruitment
+        // ring and dug a moat around every add. Rim must never read
+        // more empty than the hard-union baseline.
         let g_res = glam::UVec3::new(64, 64, 64);
         let centre = Vec3::new(32.0, 32.0, 32.0);
         let brush_c = Vec3::new(52.0, 32.0, 32.0);
         let radius = 5.0;
-        // Just outside the brush sphere, on the +Y side of the tip —
-        // the contact seam where the old ring weight peaked.
         let rim = Vec3::new(52.0, 37.25, 32.0);
 
-        let mut g_plain =
-            Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
-        let mut g_disp =
-            Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+        let mut g_plain = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
+        let mut g_disp = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, centre, 20.0);
 
         let plain = SphereBrush {
             center: brush_c,
@@ -378,16 +385,12 @@ mod tests {
 
         let plain_rim = g_plain.sample(rim);
         let disp_rim = g_disp.sample(rim);
-        // Displacement may retreat the mid-ring a little, but the rim
-        // must not be dug into empty space relative to plain union.
         assert!(
-            disp_rim < plain_rim + 0.75,
+            disp_rim <= plain_rim + 1e-3,
             "pull displace must not dig a trench at the brush rim: plain={plain_rim}, displace={disp_rim}",
         );
-        // And the rim should still read as solid / near-surface, not a
-        // carved groove (large positive SDF).
         assert!(
-            disp_rim < 1.5,
+            disp_rim < 1.0,
             "pull rim should stay near/inside the surface, got SDF={disp_rim}",
         );
     }

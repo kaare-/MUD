@@ -234,6 +234,11 @@ impl Grid {
     /// The march assumes the ray starts outside the workpiece (φ > 0 at
     /// origin), which is always true when the camera is outside the
     /// piece. If it starts inside, the origin is returned as the hit.
+    ///
+    /// After a coarse sphere-trace latch, we binary-refine back onto
+    /// the zero isosurface so the reported hit (and the ghost tip that
+    /// sits on it) tracks the camera-facing face tightly instead of
+    /// resting one min-step inside the volume.
     pub fn ray_march(&self, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Vec3> {
         let mut t = 0.0;
         // Minimum step: half a voxel. Prevents Zeno-like stalls when the
@@ -242,18 +247,39 @@ impl Grid {
         // Hit epsilon: quarter of a voxel. Tighter than min_step so we
         // actually latch onto the surface rather than skipping through.
         let hit_eps = self.voxel_size * 0.25;
+        let mut hit_t: Option<f32> = None;
         for _ in 0..256 {
             let p = origin + dir * t;
             let d = self.sample(p);
             if d < hit_eps {
-                return Some(p);
+                hit_t = Some(t);
+                break;
             }
             t += d.max(min_step);
             if t > max_dist {
                 return None;
             }
         }
-        None
+        let hit_t = hit_t?;
+
+        // Binary refine between the last outside sample and the latch.
+        // Walk back one min_step for the outside bracket when possible.
+        let mut t_out = (hit_t - min_step).max(0.0);
+        let mut t_in = hit_t;
+        // If the retracted sample is still inside, expand the search
+        // a little so we still bracket a zero crossing.
+        if self.sample(origin + dir * t_out) < 0.0 {
+            t_out = (hit_t - self.voxel_size * 2.0).max(0.0);
+        }
+        for _ in 0..8 {
+            let tm = 0.5 * (t_out + t_in);
+            if self.sample(origin + dir * tm) > 0.0 {
+                t_out = tm;
+            } else {
+                t_in = tm;
+            }
+        }
+        Some(origin + dir * t_in)
     }
 }
 

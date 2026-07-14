@@ -11,12 +11,20 @@
 //! - the user is actively sculpting (LMB held) — the preview would
 //!   otherwise fight the sculpting feedback for attention.
 //!
+//! Placement is in **world space** from the workpiece's
+//! [`GlobalTransform`], computed in `PostUpdate` after transform
+//! propagation. Parenting the ghost under the turntable used piece-
+//! local `Transform`s but raced with deferred `set_parent` and
+//! stale `GlobalTransform`s in `Update`, which made the ghost stick
+//! to the wrong face after Q/E turns.
+//!
 //! One entity is spawned at startup and reused. The mesh is rebuilt
 //! only when the active tool or its size changes, not every frame.
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::transform::TransformSystem;
 use bevy::window::PrimaryWindow;
 use glam::{Vec2 as GVec2, Vec3 as GVec3};
 
@@ -35,11 +43,6 @@ pub struct ToolPreview;
 #[derive(Resource, Default)]
 struct PreviewMeshState {
     last: Option<(ToolKind, i32)>,
-    /// Whether the preview entity has been parented under the
-    /// workpiece root. Done once — re-issuing `set_parent` every
-    /// frame is unnecessary and made the ghost harder to reason about
-    /// when debugging transform issues.
-    parented: bool,
 }
 
 /// Vertical thickness of the cutter preview prism in mm, distributed
@@ -55,7 +58,14 @@ const CIRCLE_SEGMENTS: u32 = 32;
 pub fn plugin(app: &mut App) {
     app.init_resource::<PreviewMeshState>();
     app.add_systems(Startup, spawn_preview);
-    app.add_systems(Update, update_preview);
+    // After TransformPropagate so camera + workpiece GlobalTransforms
+    // match this frame's turntable / orbit — otherwise the ghost ray
+    // is one frame behind the visible clay and drifts off the facing
+    // surface after Q/E.
+    app.add_systems(
+        PostUpdate,
+        update_preview.after(TransformSystem::TransformPropagate),
+    );
 }
 
 fn spawn_preview(
@@ -95,13 +105,12 @@ fn update_preview(
     buttons: Res<ButtonInput<MouseButton>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
-    q_piece: Query<(Entity, &GlobalTransform), With<WorkpieceRoot>>,
+    q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     q_preview: Query<(Entity, &Mesh3d), With<ToolPreview>>,
     workpiece: Res<SculptWorkpiece>,
     tool: Res<SculptTool>,
     mut state: ResMut<PreviewMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut commands: Commands,
     mut q_transforms: Query<&mut Transform>,
     mut q_visibility: Query<&mut Visibility>,
 ) {
@@ -126,7 +135,8 @@ fn update_preview(
         return;
     }
 
-    // (3) Cursor ray → piece-local → SDF hit.
+    // (3) Cursor ray → piece-local → SDF hit (nearest surface along
+    // the camera ray = front / "top" face from the view).
     let Ok(window) = q_window.get_single() else {
         return;
     };
@@ -136,7 +146,7 @@ fn update_preview(
     let Ok((camera, cam_tf)) = q_camera.get_single() else {
         return;
     };
-    let Ok((piece_entity, piece_tf)) = q_piece.get_single() else {
+    let Ok(piece_tf) = q_piece.get_single() else {
         return;
     };
     let ray_world = match camera.viewport_to_world(cam_tf, cursor) {
@@ -168,41 +178,39 @@ fn update_preview(
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
     } else {
+        // Degenerate gradient: aim the contact along the view ray so
+        // the ghost still rests on the camera-facing side.
         -GVec3::new(dir_local.x, dir_local.y, dir_local.z)
     };
 
-    // (4) Parent under the workpiece root once so local hit coords
-    // and turntable rotation both apply correctly. Must happen *before*
-    // we write the piece-local translation.
-    if !state.parented {
-        commands.entity(preview_entity).set_parent(piece_entity);
-        state.parented = true;
-    }
-
-    // (5) Position and orient the preview (piece-local space).
+    // (4) World-space placement — no parent under WorkpieceRoot.
+    // piece_tf already includes the turntable rotation (propagated).
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
-        let hit_bevy = Vec3::new(hit.x, hit.y, hit.z);
-        let normal_bevy = Vec3::new(normal.x, normal.y, normal.z);
+        let hit_local = Vec3::new(hit.x, hit.y, hit.z);
+        let normal_local = Vec3::new(normal.x, normal.y, normal.z);
 
         // Finger / Smooth: rest the ghost sphere *on* the surface
-        // (centre = hit + normal * radius) so it reads as a tip sitting
-        // on clay rather than a ball buried through the near face and
-        // visually glued to the original sphere volume.
-        // Cutter / paddle / wire marker keep a small lift to avoid
-        // z-fighting with the workpiece mesh (~1/10 voxel).
+        // (centre = hit + normal * radius). Cutter / paddle / wire
+        // marker keep a small lift to avoid z-fighting (~1/10 voxel).
         let offset = match tool.kind {
             ToolKind::Finger | ToolKind::Smooth => tool.size + 0.15,
             ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => 0.15,
         };
-        tf.translation = hit_bevy + normal_bevy * offset;
+        let local_pos = hit_local + normal_local * offset;
+        tf.translation = piece_tf.transform_point(local_pos);
 
-        // Radially symmetric tools (finger, smooth, wire-cutter
-        // marker) need no rotation. Cutter prisms and the paddle
-        // disk align their local Y axis with the surface normal.
+        // Radially symmetric tools need no rotation. Cutter / paddle
+        // align local Y with the *world* outward normal.
         tf.rotation = match tool.kind {
             ToolKind::Finger | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
             ToolKind::Cutter(_) | ToolKind::Paddle => {
-                Quat::from_rotation_arc(Vec3::Y, normal_bevy)
+                let normal_world = piece_tf.rotation() * normal_local;
+                let n = if normal_world.length_squared() > 1e-8 {
+                    normal_world.normalize()
+                } else {
+                    Vec3::Y
+                };
+                Quat::from_rotation_arc(Vec3::Y, n)
             }
         };
     }
