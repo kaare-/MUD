@@ -744,6 +744,7 @@ dependencies = [
  "bevy_log",
  "bevy_math",
  "bevy_pbr",
+ "bevy_picking",
  "bevy_ptr",
  "bevy_reflect",
  "bevy_render",

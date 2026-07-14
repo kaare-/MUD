@@ -146,10 +146,22 @@ fn draw_ui(
 /// After egui has processed inputs for the frame, snapshot whether
 /// the UI is absorbing pointer or keyboard events. World-input
 /// systems consult this resource before consuming input themselves.
+///
+/// Two subtle bits:
+/// - `is_pointer_over_area()` covers hover-only cases like tooltip
+///   arming — egui hasn't consumed the pointer, but the sculpt path
+///   still shouldn't fire.
+/// - An **open menu** doesn't set `wants_keyboard_input()` (egui only
+///   flags that for focused text edits), but Escape while a menu is
+///   open should absolutely close the menu rather than quit the app.
+///   We check `memory.any_popup_open()` and treat that as "keyboard
+///   is in UI-land" too, so Escape (and future menu-navigation keys)
+///   don't leak through to `esc_quit`.
 fn publish_ui_capture(mut contexts: EguiContexts, mut gate: ResMut<UiCapturesInput>) {
     let ctx = contexts.ctx_mut();
     gate.pointer = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
-    gate.keyboard = ctx.wants_keyboard_input();
+    gate.keyboard =
+        ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
 }
 
 /// A single menu item with a right-aligned shortcut hint. Egui's
