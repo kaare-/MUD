@@ -11,7 +11,7 @@
 //! Progressive-feel behaviour: the caller offsets the `center` a bit
 //! deeper into the surface each frame the button is held, so the
 //! flat grows in one direction until the plane is buried. Same pattern
-//! as the finger's advance-per-step trick.
+//! as the clay tool's advance-per-step trick.
 //!
 //! Paddle is a *removal* tool (DESIGN §5 decision 1) in this MVP.
 //! Volume-preserving displacement for the paddle (material squeezes

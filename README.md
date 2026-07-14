@@ -45,11 +45,11 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 
 | Input | Action |
 |---|---|
-| Left-drag | Engage the active tool |
-| Shift + Left-drag | Finger only: pull (add material) |
+| Left-drag | Add/Remove tool: remove material |
+| Shift + Left-drag | Add/Remove tool: add material (sideways hold + Q/E can draw a ring) |
 | `[` / `]` or `-` / `=` | Shrink / grow the active tool (keyboard) |
 | Shift + scroll wheel | Shrink / grow the active tool (mouse / trackpad) |
-| `M` | Toggle magic-clay displacement (finger only) |
+| `M` | Toggle magic-clay (Add/Remove only) |
 | `S` | Toggle mirror symmetry (piece-local X = 0) |
 | `Ctrl+Z` | Undo last stroke |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
@@ -58,7 +58,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 
 | Key | Tool |
 |---|---|
-| `1` | Finger (default) |
+| `1` | Add/Remove (default) |
 | `2` | Cookie cutter — circle |
 | `3` | Cookie cutter — square |
 | `4` | Cookie cutter — hexagon |

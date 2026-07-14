@@ -30,7 +30,7 @@ use sculpt_core::{project_size, read_project, write_project};
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
 use crate::input_gate::UiCapturesInput;
-use crate::undo::UndoHistory;
+use crate::undo::{SculptStroke, UndoHistory};
 use crate::workpiece::SculptWorkpiece;
 
 pub fn plugin(app: &mut App) {
@@ -156,6 +156,7 @@ fn handle_project_actions(
     mut events: EventReader<AppAction>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut history: ResMut<UndoHistory>,
+    mut stroke: ResMut<SculptStroke>,
 ) {
     for a in events.read() {
         match a {
@@ -165,11 +166,11 @@ fn handle_project_actions(
             }
             AppAction::SaveProjectAs(path) => save_to_path(&workpiece, path),
             AppAction::LoadNewestProject => match newest_mudclay_in_cwd() {
-                Some(p) => load_from_path(&p, &mut workpiece, &mut history),
+                Some(p) => load_from_path(&p, &mut workpiece, &mut history, &mut stroke),
                 None => warn!("no mud-sculpt-*.mudclay files in the working directory"),
             },
             AppAction::OpenProject(path) => {
-                load_from_path(path, &mut workpiece, &mut history)
+                load_from_path(path, &mut workpiece, &mut history, &mut stroke)
             }
             _ => {}
         }
@@ -199,12 +200,14 @@ pub fn save_to_path(workpiece: &SculptWorkpiece, path: &Path) {
 }
 
 /// Read a `.mudclay` file at `path` and swap it into the workpiece.
-/// Clears the undo history on success — journaled voxel values from
-/// before the swap reference a different grid.
+/// Clears the undo history and any in-flight stroke on success —
+/// journaled voxel values from before the swap reference a different
+/// grid.
 pub fn load_from_path(
     path: &Path,
     workpiece: &mut SculptWorkpiece,
     history: &mut UndoHistory,
+    stroke: &mut SculptStroke,
 ) {
     info!("loading project from {}", path.display());
     let file = match File::open(path) {
@@ -225,6 +228,7 @@ pub fn load_from_path(
     match workpiece.swap_grid(new_grid) {
         Ok(()) => {
             history.clear();
+            stroke.discard_live();
             info!(
                 "loaded {} — undo history cleared",
                 path.file_name()

@@ -1,12 +1,7 @@
-//! MUD — Stage 0 prototype.
+//! MUD — digital clay modeller.
 //!
-//! One SDF grid, one spherical brush, orbit camera, Q/E turntable.
-//! No undo, no workbench collision, no volume redistribution.
-//! The point of this stage is to answer:
-//!
-//!   "Does a 3D-native player, with no tutorial, start pushing material
-//!    around within 30 seconds and end up with something they're
-//!    pleased with in five minutes?"
+//! Dense SDF workpiece, Add/Remove + cutters / smooth / paddle,
+//! orbit camera, Q/E turntable, undo, save/load, STL export.
 //!
 //! Controls:
 //!   Right-drag ....... orbit camera
@@ -14,8 +9,8 @@
 //!   Scroll ........... zoom
 //!   Q / E ............ turntable left / right (hold)
 //!   Left-drag ........ engage the active tool
-//!   Shift+Left ....... finger only: pull (add material)
-//!   1 ................ tool: finger (default)
+//!   Shift+Left ....... Add/Remove only: add material
+//!   1 ................ tool: Add/Remove (default)
 //!   2 ................ tool: cookie cutter (circle)
 //!   3 ................ tool: cookie cutter (square)
 //!   4 ................ tool: cookie cutter (hexagon)
@@ -25,7 +20,7 @@
 //!   8 ................ tool: paddle (hold LMB to press a flat)
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
-//!   M ................ toggle magic-clay displacement (finger)
+//!   M ................ toggle magic-clay (Add/Remove)
 //!   S ................ toggle mirror symmetry (piece-local X = 0)
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)

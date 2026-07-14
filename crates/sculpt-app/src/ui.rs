@@ -119,9 +119,10 @@ fn draw_ui(
             ui.separator();
             ui.add_space(6.0);
             ui.small(
-                "Shift+scroll or [ / ]\nto resize the active tool.\n\
-                 Right-drag orbits the camera.\n\
-                 Q / E turntables left / right.",
+                "LMB remove · Shift+LMB add\n\
+                 Shift+scroll or [ / ] resize.\n\
+                 Right-drag orbits · Q / E turntable.\n\
+                 Sideways add + Q/E can draw a ring.",
             );
         });
 
@@ -146,10 +147,10 @@ fn draw_ui(
             } else {
                 "Magic clay: off"
             };
-            // Magic clay only affects the finger; grey the button out
+            // Magic clay only affects Add/Remove; grey the button out
             // for tools it doesn't apply to so users don't wonder why
             // toggling it changed nothing.
-            let mc_relevant = matches!(tool.kind, ToolKind::Finger);
+            let mc_relevant = matches!(tool.kind, ToolKind::Clay);
             ui.add_enabled_ui(mc_relevant, |ui| {
                 if ui.selectable_label(tool.displace, mc_text).clicked() {
                     actions.send(AppAction::ToggleMagicClay);
@@ -366,7 +367,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 /// keyboard mapping in `sculpt::adjust_tool`.
 fn tool_palette_order() -> [(u8, ToolKind); 8] {
     [
-        (1, ToolKind::Finger),
+        (1, ToolKind::Clay),
         (2, ToolKind::Cutter(CutterFamily::Circle)),
         (3, ToolKind::Cutter(CutterFamily::Square)),
         (4, ToolKind::Cutter(CutterFamily::Hexagon)),
@@ -382,7 +383,7 @@ fn tool_palette_order() -> [(u8, ToolKind); 8] {
 /// (`"cutter/circle"`).
 fn short_label(kind: ToolKind) -> &'static str {
     match kind {
-        ToolKind::Finger => "Finger",
+        ToolKind::Clay => "Add/Remove",
         ToolKind::Cutter(CutterFamily::Circle) => "Circle cutter",
         ToolKind::Cutter(CutterFamily::Square) => "Square cutter",
         ToolKind::Cutter(CutterFamily::Hexagon) => "Hex cutter",

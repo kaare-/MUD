@@ -26,7 +26,7 @@ pub enum AppAction {
     SelectTool(ToolKind),
     /// Flip the mirror-plane symmetry (piece-local X = 0).
     ToggleSymmetry,
-    /// Flip the finger's magic-clay volume-displacement mode.
+    /// Flip magic-clay soft CSG / bulge for the Add/Remove tool.
     ToggleMagicClay,
     /// Write the current SDF grid to a timestamped `.mudclay` file
     /// in the working directory.

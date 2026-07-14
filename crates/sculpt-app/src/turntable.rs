@@ -7,6 +7,12 @@ use bevy::prelude::*;
 use crate::input_gate::UiCapturesInput;
 use crate::workpiece::WorkpieceRoot;
 
+/// System set so sculpt can sample the piece transform *after* this
+/// frame's turntable write (otherwise stamps lag Q/E by one frame and
+/// small-brush rings drop out).
+#[derive(SystemSet, Debug, Clone, PartialEq, Eq, Hash)]
+pub struct TurntableSet;
+
 #[derive(Resource, Default)]
 pub struct TurntableState {
     /// Cumulative rotation angle (radians) around world Y.
@@ -17,9 +23,12 @@ pub struct TurntableState {
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<TurntableState>();
+    app.configure_sets(Update, TurntableSet);
     app.add_systems(
         Update,
-        (read_turntable_input, apply_turntable_rotation).chain(),
+        (read_turntable_input, apply_turntable_rotation)
+            .chain()
+            .in_set(TurntableSet),
     );
 }
 
@@ -28,9 +37,10 @@ fn read_turntable_input(
     ui_gate: Res<UiCapturesInput>,
     mut state: ResMut<TurntableState>,
 ) {
-    // Default speed: one revolution in ~4 seconds. Slow enough to feel
-    // deliberate, fast enough to actually help work continuously.
-    const TARGET_SPEED: f32 = std::f32::consts::TAU / 4.0;
+    // One revolution in ~6.5 s — slower than the old ~4 s turn so
+    // add-while-rotating rings stay controllable, especially with
+    // small brushes.
+    const TARGET_SPEED: f32 = std::f32::consts::TAU / 6.5;
     if ui_gate.keyboard {
         state.angular_vel = 0.0;
         return;

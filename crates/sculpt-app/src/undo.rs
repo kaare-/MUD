@@ -149,6 +149,25 @@ impl UndoHistory {
 #[derive(Resource, Default)]
 pub struct SculptStroke {
     pub recorder: Option<StrokeRecorder>,
+    /// Piece-local hit of the last clay (add/remove) stamp in the
+    /// current stroke. Used to space stamps so hold-still can't race
+    /// along the view axis.
+    pub last_clay_hit: Option<glam::Vec3>,
+    /// Face-on paint lock: `(point, into_surface)` at stroke start.
+    /// Stamps project onto this plane so screen strokes don't
+    /// tip-chase toward the camera. Cleared for side-column / ring.
+    pub paint_plane: Option<(glam::Vec3, glam::Vec3)>,
+}
+
+impl SculptStroke {
+    /// Drop any in-flight stroke without pushing undo (tool switch,
+    /// project load, etc.). Live grid edits from a discarded clay
+    /// stroke stay; only the journal is abandoned.
+    pub fn discard_live(&mut self) {
+        self.recorder = None;
+        self.last_clay_hit = None;
+        self.paint_plane = None;
+    }
 }
 
 pub fn plugin(app: &mut App) {

@@ -1,7 +1,7 @@
 //! Ghost tool preview: a translucent shape at the cursor showing where
 //! the active tool will land.
 //!
-//! For the finger this is a sphere the same size as the brush; for a
+//! For Add/Remove this is a sphere the same size as the brush; for a
 //! cookie cutter it's a short prism of the profile shape, oriented
 //! along the surface normal at the hit point. The orientation is the
 //! implicit "which way the cut goes" indicator you asked for.
@@ -11,18 +11,26 @@
 //! - the user is actively sculpting (LMB held) — the preview would
 //!   otherwise fight the sculpting feedback for attention.
 //!
+//! Placement is in **world space** from the workpiece's
+//! [`GlobalTransform`], computed in `PostUpdate` after transform
+//! propagation. Parenting the ghost under the turntable used piece-
+//! local `Transform`s but raced with deferred `set_parent` and
+//! stale `GlobalTransform`s in `Update`, which made the ghost stick
+//! to the wrong face after Q/E turns.
+//!
 //! One entity is spawned at startup and reused. The mesh is rebuilt
 //! only when the active tool or its size changes, not every frame.
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
+use bevy::transform::TransformSystem;
 use bevy::window::PrimaryWindow;
 use glam::{Vec2 as GVec2, Vec3 as GVec3};
 
 use sculpt_core::Profile;
 
-use crate::sculpt::{SculptTool, ToolKind};
+use crate::sculpt::{clay_brush_center, SculptTool, ToolKind};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
 /// Marker component for the single preview entity.
@@ -50,7 +58,14 @@ const CIRCLE_SEGMENTS: u32 = 32;
 pub fn plugin(app: &mut App) {
     app.init_resource::<PreviewMeshState>();
     app.add_systems(Startup, spawn_preview);
-    app.add_systems(Update, update_preview);
+    // After TransformPropagate so camera + workpiece GlobalTransforms
+    // match this frame's turntable / orbit — otherwise the ghost ray
+    // is one frame behind the visible clay and drifts off the facing
+    // surface after Q/E.
+    app.add_systems(
+        PostUpdate,
+        update_preview.after(TransformSystem::TransformPropagate),
+    );
 }
 
 fn spawn_preview(
@@ -88,15 +103,15 @@ fn spawn_preview(
 #[allow(clippy::too_many_arguments)]
 fn update_preview(
     buttons: Res<ButtonInput<MouseButton>>,
+    keys: Res<ButtonInput<KeyCode>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
-    q_piece: Query<(Entity, &GlobalTransform), With<WorkpieceRoot>>,
+    q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     q_preview: Query<(Entity, &Mesh3d), With<ToolPreview>>,
     workpiece: Res<SculptWorkpiece>,
     tool: Res<SculptTool>,
     mut state: ResMut<PreviewMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut commands: Commands,
     mut q_transforms: Query<&mut Transform>,
     mut q_visibility: Query<&mut Visibility>,
 ) {
@@ -121,7 +136,8 @@ fn update_preview(
         return;
     }
 
-    // (3) Cursor ray → piece-local → SDF hit.
+    // (3) Cursor ray → piece-local → SDF hit (nearest surface along
+    // the camera ray = front / "top" face from the view).
     let Ok(window) = q_window.get_single() else {
         return;
     };
@@ -131,7 +147,7 @@ fn update_preview(
     let Ok((camera, cam_tf)) = q_camera.get_single() else {
         return;
     };
-    let Ok((piece_entity, piece_tf)) = q_piece.get_single() else {
+    let Ok(piece_tf) = q_piece.get_single() else {
         return;
     };
     let ray_world = match camera.viewport_to_world(cam_tf, cursor) {
@@ -157,47 +173,65 @@ fn update_preview(
             return;
         }
     };
-    // Surface normal from the SDF gradient. For the preview we want
-    // the *outward* normal (positive SDF direction), so no negation.
+    // Surface normal from the SDF gradient. Preview placement for Clay
+    // matches the stamp centre; Smooth / cutters use the outward normal.
     let grad = workpiece.grid.gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
     } else {
         -GVec3::new(dir_local.x, dir_local.y, dir_local.z)
     };
+    let into = -normal;
 
-    // (4) Position and orient the preview.
-    //
-    // The preview lives *under* the workpiece root so it inherits the
-    // turntable rotation automatically — reparent once at startup
-    // when we have piece_entity.
+    // (4) World-space placement — no parent under WorkpieceRoot.
+    // piece_tf already includes the turntable rotation (propagated).
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
-        // Slight bias off the surface so the preview doesn't z-fight
-        // with the workpiece mesh. 0.15 mm ≈ 1/10 voxel.
-        let bias = 0.15;
-        let hit_bevy = Vec3::new(hit.x, hit.y, hit.z);
-        let normal_bevy = Vec3::new(normal.x, normal.y, normal.z);
-        tf.translation = hit_bevy + normal_bevy * bias;
+        let hit_g = hit;
+        let into_g = into;
+        let view_g = GVec3::new(dir_local.x, dir_local.y, dir_local.z);
+        let normal_local = Vec3::new(normal.x, normal.y, normal.z);
 
-        // Radially symmetric tools (finger, smooth, wire-cutter
-        // marker) need no rotation. Cutter prisms and the paddle
-        // disk align their local Y axis with the surface normal.
+        let local_pos = match tool.kind {
+            // Same centre math as the clay stamp so the ghost shows
+            // the bite, not a view-ray ball floating off the surface.
+            ToolKind::Clay => {
+                let adding =
+                    keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                let c = clay_brush_center(
+                    hit_g,
+                    into_g,
+                    view_g,
+                    tool.size,
+                    tool.advance_per_step,
+                    adding,
+                );
+                Vec3::new(c.x, c.y, c.z)
+            }
+            // Smooth stamps at the contact; tiny lift avoids z-fight.
+            ToolKind::Smooth => {
+                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
+            }
+            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
+                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
+            }
+        };
+        tf.translation = piece_tf.transform_point(local_pos);
+
         tf.rotation = match tool.kind {
-            ToolKind::Finger | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
+            ToolKind::Clay | ToolKind::Smooth | ToolKind::WireCutter => Quat::IDENTITY,
             ToolKind::Cutter(_) | ToolKind::Paddle => {
-                Quat::from_rotation_arc(Vec3::Y, normal_bevy)
+                let normal_world = piece_tf.rotation() * normal_local;
+                let n = if normal_world.length_squared() > 1e-8 {
+                    normal_world.normalize()
+                } else {
+                    Vec3::Y
+                };
+                Quat::from_rotation_arc(Vec3::Y, n)
             }
         };
     }
     if let Ok(mut vis) = q_visibility.get_mut(preview_entity) {
         *vis = Visibility::Visible;
-    }
-
-    // (5) Reparent the preview under the workpiece root the first
-    // time we see the workpiece. This lets the turntable transform
-    // reach the preview for free.
-    if state.last.is_some() {
-        commands.entity(preview_entity).set_parent(piece_entity);
     }
 }
 
@@ -210,11 +244,11 @@ fn hide(entity: Entity, q_visibility: &mut Query<&mut Visibility>) {
 /// Build the preview mesh for the given tool state.
 fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
     match kind {
-        // Both finger and smooth are radially-symmetric sphere
+        // Both clay and smooth are radially-symmetric sphere
         // brushes at their `size` radius — the preview mesh is
         // identical. The material tint distinguishes them if we
         // want to later (currently the same emissive blue).
-        ToolKind::Finger | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
+        ToolKind::Clay | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)

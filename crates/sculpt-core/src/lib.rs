@@ -1,12 +1,9 @@
 //! MUD geometry engine.
 //!
-//! Stage 0 scope:
-//! - one dense SDF grid (`Grid`) in a single piece-local frame,
-//! - one brush primitive (`SphereBrush`) with press / pull modes,
-//! - marching-cubes mesh extraction on chunks of that grid.
+//! Dense SDF grid in piece-local space, spherical add/remove brush,
+//! cutters / smooth / paddle, marching-cubes mesh extraction.
 //!
-//! Everything here is deliberately Bevy-independent. The app layer
-//! consumes the mesh output and owns the render side.
+//! Bevy-independent: the app layer owns rendering and input.
 //!
 //! Convention: signed distance is negative inside the workpiece,
 //! positive outside, zero on the surface. Distances are in the

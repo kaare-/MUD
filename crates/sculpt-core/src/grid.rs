@@ -227,31 +227,61 @@ impl Grid {
         Vec3::new(dx, dy, dz) * (0.5 / h)
     }
 
-    /// Sphere-tracing ray march. `origin` and `dir` are in piece-local
-    /// space; `dir` should be unit length. Returns the hit point or `None`
-    /// if the ray does not intersect the surface within `max_dist`.
+    /// Conservative ray march against the SDF. `origin` / `dir` are
+    /// piece-local; `dir` should be unit length. Returns the nearest
+    /// hit along the ray (camera-facing surface) or `None`.
     ///
-    /// The march assumes the ray starts outside the workpiece (φ > 0 at
-    /// origin), which is always true when the camera is outside the
-    /// piece. If it starts inside, the origin is returned as the hit.
+    /// After brush CSG the field is no longer a true Euclidean
+    /// distance — `min` / `max` / soft-min routinely *overestimate*
+    /// outside carved or joined regions. Classic sphere tracing
+    /// (`t += φ(p)`) then skips the near face and latches onto a deeper
+    /// isosurface (often the original starter sphere). We therefore
+    /// never step more than one voxel, and we detect a zero-crossing
+    /// between consecutive samples so thin fronts can't be jumped.
     pub fn ray_march(&self, origin: Vec3, dir: Vec3, max_dist: f32) -> Option<Vec3> {
+        let min_step = self.voxel_size * 0.25;
+        let max_step = self.voxel_size;
+        let hit_eps = self.voxel_size * 0.15;
+
         let mut t = 0.0;
-        // Minimum step: half a voxel. Prevents Zeno-like stalls when the
-        // ray runs parallel to a surface and returns near-zero distances.
-        let min_step = self.voxel_size * 0.5;
-        // Hit epsilon: quarter of a voxel. Tighter than min_step so we
-        // actually latch onto the surface rather than skipping through.
-        let hit_eps = self.voxel_size * 0.25;
-        for _ in 0..256 {
-            let p = origin + dir * t;
-            let d = self.sample(p);
-            if d < hit_eps {
-                return Some(p);
-            }
-            t += d.max(min_step);
-            if t > max_dist {
+        let mut prev_d = self.sample(origin);
+        if prev_d < hit_eps {
+            // Started inside (or on) the surface — treat origin as hit.
+            return Some(origin);
+        }
+
+        // Enough iterations to walk a full Stage-2 domain (~192 mm) at
+        // one voxel per step, with headroom for grazes.
+        for _ in 0..1024 {
+            let step = prev_d.max(min_step).min(max_step);
+            let t_next = t + step;
+            if t_next > max_dist {
                 return None;
             }
+            let d = self.sample(origin + dir * t_next);
+
+            // Latched inside, or crossed from outside → inside between
+            // the previous and current samples.
+            if d < hit_eps || (prev_d > 0.0 && d <= 0.0) {
+                let mut t_out = t;
+                let mut t_in = t_next;
+                // Ensure the outside bracket is actually outside.
+                if self.sample(origin + dir * t_out) <= 0.0 {
+                    t_out = (t - max_step).max(0.0);
+                }
+                for _ in 0..10 {
+                    let tm = 0.5 * (t_out + t_in);
+                    if self.sample(origin + dir * tm) > 0.0 {
+                        t_out = tm;
+                    } else {
+                        t_in = tm;
+                    }
+                }
+                return Some(origin + dir * t_in);
+            }
+
+            t = t_next;
+            prev_d = d;
         }
         None
     }
@@ -372,6 +402,54 @@ mod tests {
         );
         assert!(hit.y > 30.0 && hit.y < 34.0);
         assert!(hit.z > 30.0 && hit.z < 34.0);
+    }
+
+    #[test]
+    fn ray_march_hits_near_face_when_field_overestimates() {
+        // Regression for the ghost sticking to the starter sphere: after
+        // CSG the SDF often *overestimates* distance. Naïve sphere
+        // tracing (`t += φ`) then skips a near slab and latches onto a
+        // deeper body. Plant a solid near wall + a deep sphere, and
+        // inflate the air gap between them so φ lies about the distance.
+        let res = UVec3::new(64, 64, 64);
+        let vs = 1.0;
+        let mut g = Grid::empty(res, vs, Vec3::ZERO);
+        let deep_centre = Vec3::new(48.0, 32.0, 32.0);
+        let deep_r = 8.0;
+        let near_x = 16.0;
+        let near_half = 2.0;
+
+        for iz in 0..res.z {
+            for iy in 0..res.y {
+                for ix in 0..res.x {
+                    let p = g.position(ix, iy, iz);
+                    let deep = (p - deep_centre).length() - deep_r;
+                    // Thin slab around x = near_x.
+                    let near = (p.x - near_x).abs() - near_half;
+                    let mut d = deep.min(near);
+                    // Lie: between the slab and the sphere, claim we are
+                    // much farther from any surface than we really are.
+                    if p.x > near_x + near_half + 1.0 && p.x < deep_centre.x - deep_r - 1.0 {
+                        d = d.max(20.0);
+                    }
+                    g.set(ix, iy, iz, d);
+                }
+            }
+        }
+
+        let hit = g
+            .ray_march(Vec3::new(-5.0, 32.0, 32.0), Vec3::X, 200.0)
+            .expect("ray should hitch the near slab");
+        assert!(
+            (hit.x - (near_x - near_half)).abs() < 1.5,
+            "should hit the camera-facing near slab (~x={}), got {hit:?}",
+            near_x - near_half,
+        );
+        // Must NOT have tunnelled through to the deep sphere (~x=40).
+        assert!(
+            hit.x < 25.0,
+            "ray tunnelled past the near face onto the deep body: {hit:?}"
+        );
     }
 
     #[test]
