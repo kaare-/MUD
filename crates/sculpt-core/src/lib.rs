@@ -16,7 +16,9 @@ pub mod brush;
 pub mod cutter;
 pub mod grid;
 pub mod mesh;
+pub mod paddle;
 pub mod profile;
+pub mod smooth;
 
 pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
@@ -27,4 +29,6 @@ pub use cutter::{
 };
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};
+pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
 pub use profile::{extrude_profile, Profile};
+pub use smooth::{apply_smooth_brush, apply_smooth_brush_with_callback, SmoothBrush};
