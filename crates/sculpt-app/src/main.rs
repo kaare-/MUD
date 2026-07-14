@@ -30,8 +30,10 @@
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+E ........... export the current piece as STL (Z-up, print-ready)
-//!   Ctrl+S ........... save the current piece as a native .mudclay project
-//!   Ctrl+O ........... load the newest .mudclay project from the working directory
+//!   Ctrl+S ........... save the current piece (auto-timestamped filename)
+//!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)
+//!   Ctrl+O ........... open a project via a picker dialog
+//!   Ctrl+Shift+O ..... quick-reopen the most recently modified project
 //!   Esc .............. quit
 
 use bevy::prelude::*;

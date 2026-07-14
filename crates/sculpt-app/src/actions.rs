@@ -11,6 +11,8 @@
 //! only new code is the picker glue that fires
 //! [`AppAction::SaveProject`] — no menu code has to be re-plumbed.
 
+use std::path::PathBuf;
+
 use bevy::prelude::*;
 
 use crate::sculpt::ToolKind;
@@ -26,10 +28,20 @@ pub enum AppAction {
     ToggleSymmetry,
     /// Flip the finger's magic-clay volume-displacement mode.
     ToggleMagicClay,
-    /// Write the current SDF grid to a timestamped `.mudclay` file.
+    /// Write the current SDF grid to a timestamped `.mudclay` file
+    /// in the working directory.
     SaveProject,
+    /// Write the current SDF grid to a specific path (from Save-As).
+    SaveProjectAs(PathBuf),
     /// Load the newest `.mudclay` file in the working directory.
     LoadNewestProject,
+    /// Load a specific `.mudclay` file (from the Open dialog).
+    OpenProject(PathBuf),
+    /// Pop up the Save-As dialog. UI-only affordance; keyboard has
+    /// Ctrl+Shift+S.
+    ShowSaveAsDialog,
+    /// Pop up the Open dialog listing every `.mudclay` file in CWD.
+    ShowOpenDialog,
     /// Extract a mesh from the current SDF and write a binary STL.
     ExportStl,
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).

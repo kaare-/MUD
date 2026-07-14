@@ -19,19 +19,28 @@
 //! The panels also publish an [`UiCapturesInput`] snapshot every
 //! frame so world-input systems know when to yield.
 
+use std::path::PathBuf;
+
 use bevy::app::AppExit;
 use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 use crate::actions::AppAction;
+use crate::export::timestamped_filename;
 use crate::input_gate::UiCapturesInput;
+use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin);
     app.add_systems(
         Update,
-        (draw_ui, publish_ui_capture.after(draw_ui)).chain(),
+        (
+            draw_ui,
+            draw_dialogs.after(draw_ui),
+            publish_ui_capture.after(draw_dialogs),
+        )
+            .chain(),
     );
 }
 
@@ -54,7 +63,16 @@ fn draw_ui(
                     actions.send(AppAction::SaveProject);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Load newest", "Ctrl+O") {
+                if menu_item(ui, "Save As\u{2026}", "Ctrl+Shift+S") {
+                    actions.send(AppAction::ShowSaveAsDialog);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if menu_item(ui, "Open\u{2026}", "Ctrl+O") {
+                    actions.send(AppAction::ShowOpenDialog);
+                    ui.close_menu();
+                }
+                if menu_item(ui, "Reopen most recent", "Ctrl+Shift+O") {
                     actions.send(AppAction::LoadNewestProject);
                     ui.close_menu();
                 }
@@ -143,6 +161,165 @@ fn draw_ui(
     });
 }
 
+/// Save-As and Open modal dialogs, when their state is populated.
+///
+/// Both dialogs are drawn as centred `egui::Window`s. While either
+/// is up, the `publish_ui_capture` snapshot marks pointer + keyboard
+/// as UI-owned so background clicks and Escape don't leak through.
+///
+/// - **Save As** shows a text field pre-filled with a timestamped
+///   filename, plus Save / Cancel. Enter in the field saves. Any
+///   filename without an extension gets `.mudclay` appended.
+/// - **Open** shows the list of `.mudclay` files in the CWD (newest
+///   first by mtime), plus Open / Cancel. Single click selects,
+///   double click opens.
+fn draw_dialogs(
+    mut contexts: EguiContexts,
+    mut state: ResMut<FileDialogState>,
+    mut actions: EventWriter<AppAction>,
+) {
+    let ctx = contexts.ctx_mut();
+
+    // Save-As dialog. Egui doesn't have a first-class modal concept,
+    // so we anchor to the centre, disable resize/collapse, and rely
+    // on `publish_ui_capture` to suppress world input.
+    if state.save_as.is_some() {
+        let mut done = None; // Some(Ok(path)) = save, Some(Err) = cancel
+        if let Some(dialog) = state.save_as.as_mut() {
+            egui::Window::new("Save As")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Filename (blank = timestamped):");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut dialog.name)
+                            .desired_width(280.0)
+                            .hint_text("wolf-head-v3"),
+                    );
+                    // Enter = commit. First frame the dialog opens
+                    // we want focus in the field so the user can
+                    // just type. On subsequent frames the resp keeps
+                    // its own focus; requesting again is a no-op.
+                    let submit_via_enter =
+                        resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if !resp.has_focus() {
+                        resp.request_focus();
+                    }
+                    ui.small(
+                        "Saves into the working directory. Extension\n\
+                         .mudclay is added automatically. Leaving the\n\
+                         field blank saves with a fresh timestamp.",
+                    );
+                    let save_clicked = ui.horizontal(|ui| {
+                        let save = ui.button("Save").clicked();
+                        let cancel = ui.button("Cancel").clicked();
+                        (save, cancel)
+                    });
+                    let (save, cancel) = save_clicked.inner;
+                    if save || submit_via_enter {
+                        done = Some(Ok(finalise_save_path(&dialog.name)));
+                    } else if cancel {
+                        done = Some(Err(()));
+                    }
+                });
+        }
+        match done {
+            Some(Ok(path)) => {
+                actions.send(AppAction::SaveProjectAs(path));
+                state.save_as = None;
+            }
+            Some(Err(())) => {
+                state.save_as = None;
+            }
+            None => {}
+        }
+    }
+
+    // Open dialog.
+    if state.open.is_some() {
+        let mut done: Option<Option<PathBuf>> = None;
+        if let Some(dialog) = state.open.as_mut() {
+            egui::Window::new("Open project")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .default_width(360.0)
+                .show(ctx, |ui| {
+                    if dialog.files.is_empty() {
+                        ui.label("No .mudclay files in this directory.");
+                    } else {
+                        ui.label(format!(
+                            "{} projects (newest first):",
+                            dialog.files.len()
+                        ));
+                        egui::ScrollArea::vertical()
+                            .max_height(300.0)
+                            .show(ui, |ui| {
+                                for (path, _mtime) in &dialog.files {
+                                    let name = path
+                                        .file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("?");
+                                    let selected =
+                                        dialog.selected.as_deref() == Some(path.as_path());
+                                    let resp = ui.selectable_label(selected, name);
+                                    if resp.clicked() {
+                                        dialog.selected = Some(path.clone());
+                                    }
+                                    if resp.double_clicked() {
+                                        done = Some(Some(path.clone()));
+                                    }
+                                }
+                            });
+                    }
+                    ui.horizontal(|ui| {
+                        let can_open = dialog.selected.is_some();
+                        if ui
+                            .add_enabled(can_open, egui::Button::new("Open"))
+                            .clicked()
+                        {
+                            done = Some(dialog.selected.clone());
+                        }
+                        if ui.button("Cancel").clicked() {
+                            done = Some(None);
+                        }
+                    });
+                });
+        }
+        if let Some(result) = done {
+            if let Some(path) = result {
+                actions.send(AppAction::OpenProject(path));
+            }
+            state.open = None;
+        }
+    }
+}
+
+/// Fold "user typed some name" into a canonical PathBuf.
+///
+/// - Empty (or whitespace-only) input falls back to a fresh
+///   timestamped filename, so pressing Enter with nothing typed
+///   still saves.
+/// - Otherwise: trim whitespace, and add `.mudclay` if the path
+///   doesn't already end with `.mudclay`. We check the whole suffix
+///   rather than `path.extension().is_none()` because names like
+///   `wolf.v3` or `mudclayawolf-head` have an "extension" that
+///   isn't `.mudclay`; we want those to save as `wolf.v3.mudclay`
+///   or `mudclayawolf-head.mudclay`, not to silently keep whatever
+///   suffix the user typed and become non-loadable.
+fn finalise_save_path(input: &str) -> PathBuf {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
+    }
+    if trimmed.ends_with(".mudclay") {
+        PathBuf::from(trimmed)
+    } else {
+        PathBuf::from(format!("{trimmed}.mudclay"))
+    }
+}
+
 /// After egui has processed inputs for the frame, snapshot whether
 /// the UI is absorbing pointer or keyboard events. World-input
 /// systems consult this resource before consuming input themselves.
@@ -157,11 +334,20 @@ fn draw_ui(
 ///   We check `memory.any_popup_open()` and treat that as "keyboard
 ///   is in UI-land" too, so Escape (and future menu-navigation keys)
 ///   don't leak through to `esc_quit`.
-fn publish_ui_capture(mut contexts: EguiContexts, mut gate: ResMut<UiCapturesInput>) {
+/// - When a **file-dialog window** is on screen, the whole app should
+///   feel modal: clicks anywhere shouldn't sculpt, and shortcut keys
+///   shouldn't move the turntable while the user's typing a filename.
+///   We check the `FileDialogState` resource directly for this.
+fn publish_ui_capture(
+    mut contexts: EguiContexts,
+    dialogs: Res<FileDialogState>,
+    mut gate: ResMut<UiCapturesInput>,
+) {
     let ctx = contexts.ctx_mut();
-    gate.pointer = ctx.wants_pointer_input() || ctx.is_pointer_over_area();
+    let modal = dialogs.any_open();
+    gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
-        ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
+        modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
 }
 
 /// A single menu item with a right-aligned shortcut hint. Egui's
@@ -204,5 +390,51 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::WireCutter => "Wire cutter",
         ToolKind::Smooth => "Smooth",
         ToolKind::Paddle => "Paddle",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_input_falls_back_to_timestamp() {
+        let p = finalise_save_path("");
+        let name = p.file_name().unwrap().to_string_lossy().into_owned();
+        assert!(name.starts_with("mud-sculpt-"));
+        assert!(name.ends_with(".mudclay"));
+        // Whitespace-only counts as empty.
+        let ws = finalise_save_path("   \t");
+        assert!(ws
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("mud-sculpt-"));
+    }
+
+    #[test]
+    fn extension_is_appended_when_missing() {
+        assert_eq!(finalise_save_path("wolf-head"), PathBuf::from("wolf-head.mudclay"));
+        assert_eq!(finalise_save_path("  spaces  "), PathBuf::from("spaces.mudclay"));
+    }
+
+    #[test]
+    fn extension_is_kept_when_already_correct() {
+        assert_eq!(finalise_save_path("wolf.mudclay"), PathBuf::from("wolf.mudclay"));
+    }
+
+    #[test]
+    fn non_mudclay_extension_is_treated_as_stem_and_appended() {
+        // The pre-fix behaviour let names like "wolf.v3" through
+        // unmodified, producing files unloadable as projects. Now
+        // the whole-suffix check catches them.
+        assert_eq!(
+            finalise_save_path("wolf.v3"),
+            PathBuf::from("wolf.v3.mudclay"),
+        );
+        assert_eq!(
+            finalise_save_path("mud-sculpt-20260714-104649.mudclayawolf-head"),
+            PathBuf::from("mud-sculpt-20260714-104649.mudclayawolf-head.mudclay"),
+        );
     }
 }
