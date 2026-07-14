@@ -172,14 +172,12 @@ fn update_preview(
             return;
         }
     };
-    // Surface normal from the SDF gradient. For the preview we want
-    // the *outward* normal (positive SDF direction), so no negation.
+    // Surface normal from the SDF gradient — used to orient cutters /
+    // paddles. Finger / Smooth ignore it for placement (see below).
     let grad = workpiece.grid.gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
     } else {
-        // Degenerate gradient: aim the contact along the view ray so
-        // the ghost still rests on the camera-facing side.
         -GVec3::new(dir_local.x, dir_local.y, dir_local.z)
     };
 
@@ -188,15 +186,22 @@ fn update_preview(
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
         let hit_local = Vec3::new(hit.x, hit.y, hit.z);
         let normal_local = Vec3::new(normal.x, normal.y, normal.z);
+        let view_local = Vec3::new(dir_local.x, dir_local.y, dir_local.z);
 
-        // Finger / Smooth: rest the ghost sphere *on* the surface
-        // (centre = hit + normal * radius). Cutter / paddle / wire
-        // marker keep a small lift to avoid z-fighting (~1/10 voxel).
-        let offset = match tool.kind {
-            ToolKind::Finger | ToolKind::Smooth => tool.size + 0.15,
-            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => 0.15,
+        // Finger / Smooth: sit the ghost on the *view ray*, just in
+        // front of the hit (`hit - dir * radius`). Offsetting along the
+        // SDF normal instead slides the ball off the cursor toward the
+        // radial "sphere shell" on grazing looks — which reads as the
+        // ghost wanting to stick to the starter sphere. View-aligned
+        // placement keeps the tip on the camera-facing surface under
+        // the cursor. Cutter / paddle / wire keep a tiny lift along
+        // the outward normal to avoid z-fighting.
+        let local_pos = match tool.kind {
+            ToolKind::Finger | ToolKind::Smooth => hit_local - view_local * (tool.size + 0.15),
+            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
+                hit_local + normal_local * 0.15
+            }
         };
-        let local_pos = hit_local + normal_local * offset;
         tf.translation = piece_tf.transform_point(local_pos);
 
         // Radially symmetric tools need no rotation. Cutter / paddle
