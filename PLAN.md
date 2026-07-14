@@ -84,10 +84,23 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    zones union naturally through min-SDF). Journaled as one undo
    stroke via `sculpt_core::rest_components_on_bench`. Rotation to
    a minimum-face rest pose is *not* implemented — components keep
-   their orientation. Continuous "gravity on" mode is deferred: it
-   would fight active sculpting.
+   their orientation. **The shift now moves the full narrow band
+   around each interior**, not just the `φ < 0` cells: the old
+   interior-only shift sheared the SDF at the boundary and made
+   the surface look crumpled after a rest.
 
-7. `[ ]` **Plastic gravity (gradual setting).** *(spike required)*
+7. `[x]` **Move body / primitive.** New `Move` tool (`0`) plus an
+   XYZ mm widget (top-right). Applies a rigid, whole-voxel
+   translation via `sculpt_core::translate_component`, journaled
+   as one undo stroke. Insert Primitive auto-selects the new
+   piece and switches into Move so the widget is one click away.
+
+8. `[x]` **View menu.** `View → Workbench grid` toggles a 400 mm
+   translucent grid on the bench. `View → Perspective / Top /
+   Bottom / Front / Back / Left / Right` snap the orbit camera
+   to a face-on preset; distance and target are preserved.
+
+9. `[ ]` **Plastic gravity (gradual setting).** *(spike required)*
    - Slider 0 → 1 = elastic → yielding clay.
    - Approximation: iterative descent of the SDF surface under a
      stress proxy (e.g. curvature × vertical load), with a plastic
