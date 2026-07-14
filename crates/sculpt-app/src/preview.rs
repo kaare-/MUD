@@ -6,10 +6,11 @@
 //! along the surface normal at the hit point. The orientation is the
 //! implicit "which way the cut goes" indicator you asked for.
 //!
-//! The preview hides when:
-//! - the cursor isn't over the workpiece (no ray-march hit), or
-//! - the user is actively sculpting (LMB held) — the preview would
-//!   otherwise fight the sculpting feedback for attention.
+//! The preview hides when the cursor isn't over the workpiece (no
+//! ray-march hit). While the user is actively sculpting (LMB held)
+//! the ghost stays on screen but switches to a dimmer, less-saturated
+//! material so it doesn't fight the sculpting feedback for attention
+//! — the user still sees where the brush footprint is.
 //!
 //! Placement is in **world space** from the workpiece's
 //! [`GlobalTransform`], computed in `PostUpdate` after transform
@@ -43,6 +44,15 @@ pub struct ToolPreview;
 #[derive(Resource, Default)]
 struct PreviewMeshState {
     last: Option<(ToolKind, i32)>,
+}
+
+/// Pair of preview materials: the bright hover ghost + the dimmer
+/// "you're sculpting through me" variant. Swapping the handle on the
+/// entity is cheaper than mutating the material's alpha every frame.
+#[derive(Resource)]
+struct PreviewMaterials {
+    idle: Handle<StandardMaterial>,
+    active: Handle<StandardMaterial>,
 }
 
 /// Vertical thickness of the cutter preview prism in mm, distributed
@@ -79,13 +89,24 @@ fn spawn_preview(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     ));
-    let material = materials.add(StandardMaterial {
-        // Warm terracotta base with alpha, plus a cool emissive so
-        // the shape reads on any workpiece colour.
+    // Bright hover ghost (used when LMB is up): cool blue tint with
+    // emissive so the shape reads on any workpiece colour.
+    let idle = materials.add(StandardMaterial {
         base_color: Color::srgba(0.35, 0.65, 1.0, 0.32),
         emissive: LinearRgba::new(0.10, 0.22, 0.38, 1.0),
         alpha_mode: AlphaMode::Blend,
-        // Two-sided so the far side of the prism doesn't punch a hole.
+        double_sided: true,
+        cull_mode: None,
+        unlit: false,
+        ..default()
+    });
+    // In-use dim ghost: much fainter alpha and no emissive, so it
+    // reads as "cursor footprint, not primary feedback" while the
+    // user is dragging.
+    let active = materials.add(StandardMaterial {
+        base_color: Color::srgba(0.75, 0.85, 1.0, 0.12),
+        emissive: LinearRgba::new(0.0, 0.0, 0.0, 1.0),
+        alpha_mode: AlphaMode::Blend,
         double_sided: true,
         cull_mode: None,
         unlit: false,
@@ -93,11 +114,12 @@ fn spawn_preview(
     });
     commands.spawn((
         Mesh3d(handle),
-        MeshMaterial3d(material),
+        MeshMaterial3d(idle.clone()),
         Transform::default(),
         Visibility::Hidden,
         ToolPreview,
     ));
+    commands.insert_resource(PreviewMaterials { idle, active });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -110,10 +132,12 @@ fn update_preview(
     q_preview: Query<(Entity, &Mesh3d), With<ToolPreview>>,
     workpiece: Res<SculptWorkpiece>,
     tool: Res<SculptTool>,
+    preview_mats: Res<PreviewMaterials>,
     mut state: ResMut<PreviewMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut q_transforms: Query<&mut Transform>,
     mut q_visibility: Query<&mut Visibility>,
+    mut q_materials: Query<&mut MeshMaterial3d<StandardMaterial>>,
 ) {
     let Ok((preview_entity, mesh3d)) = q_preview.get_single() else {
         return;
@@ -127,13 +151,19 @@ fn update_preview(
         state.last = Some(signature);
     }
 
-    // (2) Hide while the user is actively sculpting; the preview
-    // otherwise doubles up with the ghost of the just-carved crater.
-    if buttons.pressed(MouseButton::Left) {
-        if let Ok(mut vis) = q_visibility.get_mut(preview_entity) {
-            *vis = Visibility::Hidden;
+    // (2) Swap between idle-bright and active-dim materials so the
+    // ghost dims while sculpting (readable footprint, not primary
+    // feedback) instead of vanishing entirely.
+    let sculpting = buttons.pressed(MouseButton::Left);
+    if let Ok(mut mat) = q_materials.get_mut(preview_entity) {
+        let want = if sculpting {
+            preview_mats.active.clone()
+        } else {
+            preview_mats.idle.clone()
+        };
+        if mat.0.id() != want.id() {
+            *mat = MeshMaterial3d(want);
         }
-        return;
     }
 
     // (3) Cursor ray → piece-local → SDF hit (nearest surface along
