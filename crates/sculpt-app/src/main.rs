@@ -30,8 +30,7 @@
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+N ........... clear the worktable (empty grid)
 //!   Shift+N .......... insert a primitive shape via dialog
-//!   Ctrl+E ........... export STL (opens Save-As dialog)
-//!   Ctrl+Shift+E ..... quick STL export with an auto-timestamped filename
+//!   Ctrl+E ........... export STL (opens the Export-As dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
 //!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)
 //!   Ctrl+O ........... open a project via a picker dialog

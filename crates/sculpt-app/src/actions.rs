@@ -52,14 +52,12 @@ pub enum AppAction {
     ShowSaveAsDialog,
     /// Pop up the Open dialog listing every `.mudclay` file in CWD.
     ShowOpenDialog,
-    /// Extract a mesh from the current SDF and write a binary STL to
-    /// a timestamped path in CWD.
-    ExportStl,
     /// Extract a mesh and write a binary STL to a specific path
     /// (from the Export-STL-As dialog).
     ExportStlAs(PathBuf),
-    /// Pop up the Export-STL-As dialog. UI-only affordance; keyboard
-    /// has Ctrl+Shift+E.
+    /// Pop up the Export-STL-As dialog. Fired by both `Ctrl+E` and
+    /// the `File > Export STL…` menu item — the two paths are
+    /// deliberately identical.
     ShowExportStlDialog,
     /// Remove the currently-selected connected component from the
     /// workpiece. No-op when nothing is selected.
