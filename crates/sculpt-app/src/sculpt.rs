@@ -21,6 +21,7 @@ use sculpt_core::{
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::turntable::TurntableState;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
 
@@ -142,7 +143,10 @@ pub fn plugin(app: &mut App) {
             wire_cutter_input,
             adjust_tool,
             handle_tool_actions,
-        ),
+        )
+            // Piece `Transform` is written in TurntableSet; we sample it
+            // directly so Q/E + add stays locked to this frame's angle.
+            .after(crate::turntable::TurntableSet),
     );
 }
 
@@ -203,10 +207,11 @@ fn sculpt_input(
     keys: Res<ButtonInput<KeyCode>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
-    q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
+    q_piece: Query<&Transform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     ui_gate: Res<UiCapturesInput>,
+    turntable: Res<TurntableState>,
     mut workpiece: ResMut<SculptWorkpiece>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
@@ -273,8 +278,10 @@ fn sculpt_input(
     };
 
     // Transform the ray into piece-local space so tool paths are
-    // recorded independent of the turntable rotation.
-    let piece_inv = piece_tf.affine().inverse();
+    // recorded independent of the turntable rotation. Use the
+    // piece `Transform` (not GlobalTransform) so we see this frame's
+    // Q/E write from TurntableSet.
+    let piece_inv = piece_tf.compute_affine().inverse();
     let origin_local = piece_inv.transform_point3(ray_world.origin);
     let dir_local = piece_inv
         .transform_vector3(*ray_world.direction)
@@ -301,17 +308,21 @@ fn sculpt_input(
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
     // Stamp spacing. Face-on add/remove needs a generous gap so holding
-    // still doesn't race toward (or into) the camera. Sideways add
-    // loosens spacing so a held tip can grow a short side column —
-    // then Q/E while holding paints a ring in the air.
+    // still doesn't race toward (or into) the camera. While the
+    // turntable is turning — or when adding sideways — keep spacing
+    // tight relative to brush size so small tools leave a continuous
+    // bead instead of lagging / skipping out of the ring path.
     if is_clay {
         let outward = -into_surface;
         let cam_face = outward.dot(-dir_g).clamp(0.0, 1.0);
         let side = 1.0 - cam_face;
-        let min_spacing = if is_add && side > 0.4 {
-            tool.size * 0.12
+        let turning = turntable.angular_vel.abs() > 1e-4;
+        let min_spacing = if is_add && (turning || side > 0.3) {
+            // Continuous ring/bead: denser for tiny brushes, never so
+            // loose that a slow Q/E frame skips a stamp.
+            (tool.size * 0.18).clamp(0.35, 2.5)
         } else {
-            tool.size * 0.45
+            (tool.size * 0.4).max(0.8)
         };
         if let Some(last) = stroke.last_clay_hit {
             if (hit - last).length_squared() < min_spacing * min_spacing {
@@ -499,7 +510,7 @@ fn wire_cutter_input(
     buttons: Res<ButtonInput<MouseButton>>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
-    q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
+    q_piece: Query<&Transform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     ui_gate: Res<UiCapturesInput>,
@@ -527,7 +538,7 @@ fn wire_cutter_input(
         let (camera, cam_tf) = q_camera.get_single().ok()?;
         let piece_tf = q_piece.get_single().ok()?;
         let ray_world = camera.viewport_to_world(cam_tf, cursor).ok()?;
-        let piece_inv = piece_tf.affine().inverse();
+        let piece_inv = piece_tf.compute_affine().inverse();
         let origin_local = piece_inv.transform_point3(ray_world.origin);
         let dir_local = piece_inv
             .transform_vector3(*ray_world.direction)
