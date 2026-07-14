@@ -42,8 +42,18 @@ fn emit_export_hotkey(
     let super_key =
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    if (ctrl || super_key) && keys.just_pressed(KeyCode::KeyE) && !shift {
-        actions.send(AppAction::ExportStl);
+    if !(ctrl || super_key) {
+        return;
+    }
+    if keys.just_pressed(KeyCode::KeyE) {
+        // Ctrl+E → dialog (matches user expectation that "export STL"
+        // should ask where). Ctrl+Shift+E stays as the quick,
+        // auto-timestamped path for the rare "just dump it" flow.
+        if shift {
+            actions.send(AppAction::ExportStl);
+        } else {
+            actions.send(AppAction::ShowExportStlDialog);
+        }
     }
 }
 

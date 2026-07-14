@@ -92,17 +92,12 @@ fn draw_ui(
                     ui.close_menu();
                 }
                 ui.separator();
-                if menu_item(ui, "Export STL", "Ctrl+E") {
-                    actions.send(AppAction::ExportStl);
-                    ui.close_menu();
-                }
-                if menu_item(ui, "Export STL As\u{2026}", "Ctrl+Shift+E") {
+                if menu_item(ui, "Export STL\u{2026}", "Ctrl+E") {
                     actions.send(AppAction::ShowExportStlDialog);
                     ui.close_menu();
                 }
-                ui.separator();
-                if menu_item(ui, "Rest pieces on bench", "Ctrl+G") {
-                    actions.send(AppAction::RestPiecesOnBench);
+                if menu_item(ui, "Quick STL export (auto-name)", "Ctrl+Shift+E") {
+                    actions.send(AppAction::ExportStl);
                     ui.close_menu();
                 }
                 ui.separator();
@@ -114,6 +109,40 @@ fn draw_ui(
                     // event so log-and-metric consumers see it.
                     app_exit.send(AppExit::Success);
                     actions.send(AppAction::Quit);
+                }
+            });
+            ui.menu_button("Sculpt", |ui| {
+                if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
+                    actions.send(AppAction::ShowInsertPrimitiveDialog);
+                    ui.close_menu();
+                }
+                ui.separator();
+                let has_selection = selection.picked_voxel.is_some();
+                if ui
+                    .add_enabled(
+                        has_selection,
+                        egui::Button::new("Delete selection")
+                            .shortcut_text("Del")
+                            .min_size(egui::vec2(220.0, 0.0)),
+                    )
+                    .clicked()
+                {
+                    actions.send(AppAction::DeleteSelection);
+                    ui.close_menu();
+                }
+                let active_label = if selection.active_only {
+                    "Active-only sculpt ✓"
+                } else {
+                    "Active-only sculpt"
+                };
+                if menu_item(ui, active_label, "A") {
+                    actions.send(AppAction::ToggleActiveOnly);
+                    ui.close_menu();
+                }
+                ui.separator();
+                if menu_item(ui, "Rest pieces on bench", "Ctrl+G") {
+                    actions.send(AppAction::RestPiecesOnBench);
+                    ui.close_menu();
                 }
             });
             ui.separator();
@@ -142,13 +171,7 @@ fn draw_ui(
             ui.add_space(12.0);
             ui.separator();
             ui.add_space(6.0);
-            ui.small(
-                "LMB remove · Shift+LMB add\n\
-                 Shift+LMB on an empty bench builds up.\n\
-                 Shift+scroll or [ / ] resize.\n\
-                 Right-drag orbits · Q / E turntable.\n\
-                 Sideways add + Q/E can draw a ring.",
-            );
+            ui.small(tool_palette_hint(tool.kind));
         });
 
     // Bottom status strip. Size (read-only readout — the number is
@@ -576,6 +599,43 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::Smooth => "Smooth",
         ToolKind::Paddle => "Paddle",
         ToolKind::Select => "Select",
+    }
+}
+
+/// Palette hint text tailored to the current tool. Kept short and
+/// physical — no jargon — so users can learn a tool by using it.
+fn tool_palette_hint(kind: ToolKind) -> &'static str {
+    match kind {
+        ToolKind::Clay => {
+            "LMB remove · Shift+LMB add\n\
+             Shift+LMB on an empty bench builds up.\n\
+             Shift+scroll or [ / ] resize.\n\
+             Right-drag orbits · Q / E turntable.\n\
+             Sideways add + Q/E draws a ring."
+        }
+        ToolKind::Cutter(_) => {
+            "Click punches a hole.\n\
+             Shift+scroll or [ / ] resize.\n\
+             Right-drag orbits · Q / E turntable."
+        }
+        ToolKind::WireCutter => {
+            "Drag through the workpiece to slice.\n\
+             Release completes the cut."
+        }
+        ToolKind::Smooth => {
+            "Hold LMB to polish detail.\n\
+             Shift+scroll or [ / ] resize."
+        }
+        ToolKind::Paddle => {
+            "Hold LMB to press a flat.\n\
+             Shift+scroll or [ / ] resize."
+        }
+        ToolKind::Select => {
+            "LMB picks the piece under the cursor.\n\
+             Del  removes the selected piece.\n\
+             A    active-only sculpt (other pieces stay).\n\
+             Ctrl+G  drop every floating piece."
+        }
     }
 }
 
