@@ -181,6 +181,7 @@ fn handle_undo_redo_input(
     ui_gate: Res<UiCapturesInput>,
     mut history: ResMut<UndoHistory>,
     mut workpiece: ResMut<SculptWorkpiece>,
+    mut selection: ResMut<crate::selection::Selection>,
 ) {
     if ui_gate.keyboard {
         return;
@@ -205,6 +206,7 @@ fn handle_undo_redo_input(
                 workpiece.dirty.insert(*c);
             }
             history.redo.push(entry);
+            selection.invalidate_labels();
         }
     } else if want_redo {
         if let Some(entry) = history.redo.pop() {
@@ -216,6 +218,7 @@ fn handle_undo_redo_input(
             if history.undo.len() > MAX_HISTORY {
                 history.undo.remove(0);
             }
+            selection.invalidate_labels();
         }
     }
 }

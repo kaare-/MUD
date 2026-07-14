@@ -68,6 +68,9 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `6` | Wire cutter (LMB-drag slices along the drag line) |
 | `7` | Smooth (hold LMB to polish high-frequency detail) |
 | `8` | Paddle (hold LMB to press a flat) |
+| `9` | Select (LMB picks a connected piece; HUD shows its size) |
+| `Delete` / `Backspace` | Remove the selected piece |
+| `A` | Toggle **active-only** sculpting (only affects the selected piece) |
 | `Ctrl+E` | Export the current piece to a binary STL file (Z-up, print-ready) |
 | `Ctrl+Shift+E` | Export STL As… — dialog with a filename you choose |
 | `Ctrl+S` | Save the current piece as a native `.mudclay` project file (auto-timestamped) |
