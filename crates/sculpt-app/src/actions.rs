@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
+use crate::primitives::PrimitiveShape;
 use crate::sculpt::ToolKind;
 
 /// A user-triggered command. Emitted by keyboard handlers, UI
@@ -31,6 +32,12 @@ pub enum AppAction {
     /// Reset the workpiece to an empty worktable (no material).
     /// Clears the undo history and any in-flight stroke.
     NewWorkpiece,
+    /// Pop up the Insert Primitive dialog.
+    ShowInsertPrimitiveDialog,
+    /// Union a primitive of the given shape and size (mm) into the
+    /// current grid, resting on the workbench, recorded as one undo
+    /// stroke.
+    InsertPrimitive(PrimitiveShape, f32),
     /// Write the current SDF grid to a timestamped `.mudclay` file
     /// in the working directory.
     SaveProject,

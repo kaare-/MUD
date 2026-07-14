@@ -151,8 +151,12 @@ fn emit_project_hotkeys(
     if !modifier {
         return;
     }
-    if keys.just_pressed(KeyCode::KeyN) && !shift {
-        actions.send(AppAction::NewWorkpiece);
+    if keys.just_pressed(KeyCode::KeyN) {
+        if shift {
+            actions.send(AppAction::ShowInsertPrimitiveDialog);
+        } else {
+            actions.send(AppAction::NewWorkpiece);
+        }
     }
     if keys.just_pressed(KeyCode::KeyS) {
         if shift {

@@ -15,6 +15,7 @@ pub mod export;
 pub mod grid;
 pub mod mesh;
 pub mod paddle;
+pub mod primitives;
 pub mod profile;
 pub mod project;
 pub mod smooth;
@@ -30,6 +31,7 @@ pub use export::{extract_full_mesh, stl_binary_size, write_stl_binary, Orientati
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};
 pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
+pub use primitives::{apply_primitive, apply_primitive_with_callback, Primitive, PrimitiveKind};
 pub use profile::{extrude_profile, Profile};
 pub use project::{project_size, read_project, write_project, ReadError, MAGIC, VERSION};
 pub use smooth::{apply_smooth_brush, apply_smooth_brush_with_callback, SmoothBrush};
