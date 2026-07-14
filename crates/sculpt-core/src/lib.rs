@@ -14,6 +14,7 @@
 
 pub mod brush;
 pub mod cutter;
+pub mod export;
 pub mod grid;
 pub mod mesh;
 pub mod paddle;
@@ -27,6 +28,7 @@ pub use cutter::{
     apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,
     apply_wire_cutter_with_callback, CookieCutter, WireCutter,
 };
+pub use export::{extract_full_mesh, stl_binary_size, write_stl_binary, Orientation};
 pub use grid::{ChunkCoord, Grid, DirtyRegion, CHUNK_SIZE};
 pub use mesh::{extract_chunk, ExtractedMesh};
 pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
