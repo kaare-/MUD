@@ -34,7 +34,7 @@ use crate::project::FileDialogState;
 use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
 use crate::selection::Selection;
 use crate::view::{ViewPreset, WorkbenchGridState};
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
     app.add_plugins(EguiPlugin);
@@ -55,7 +55,7 @@ fn draw_ui(
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     selection: Res<Selection>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
     grid_state: Res<WorkbenchGridState>,
     mut move_state: ResMut<MoveState>,
     mut actions: EventWriter<AppAction>,
@@ -313,10 +313,10 @@ fn draw_move_widget(
 fn draw_selection_hud(
     ui: &mut egui::Ui,
     selection: &Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     actions: &mut EventWriter<AppAction>,
 ) {
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let (text, has_selection) = match selection.labels().and_then(|labels| {
         selection
             .selected_id(labels)

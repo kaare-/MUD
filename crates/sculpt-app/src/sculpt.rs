@@ -24,7 +24,7 @@ use crate::input_gate::UiCapturesInput;
 use crate::selection::Selection;
 use crate::turntable::TurntableState;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
+use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// Which tool the user is currently holding.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -227,7 +227,7 @@ fn sculpt_input(
     symmetry: Res<SculptSymmetry>,
     ui_gate: Res<UiCapturesInput>,
     turntable: Res<TurntableState>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
     mut selection: ResMut<Selection>,
@@ -247,7 +247,7 @@ fn sculpt_input(
     // released on the UI never hits the undo journal.
     if buttons.just_released(MouseButton::Left) {
         if let Some(rec) = stroke.recorder.take() {
-            if let Some(entry) = rec.finish(&workpiece.grid) {
+            if let Some(entry) = rec.finish(workpiece.grid(), workpiece.active_id()) {
                 history.push_stroke(entry);
                 // Any completed stroke reshuffles component labels;
                 // drop the cache so the next selection query
@@ -320,7 +320,7 @@ fn sculpt_input(
     let is_clay_early = matches!(tool.kind, ToolKind::Clay);
     let is_add_early = is_clay_early
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
-    let hit = match workpiece.grid.ray_march(hit_g, dir_g, 4000.0) {
+    let hit = match workpiece.grid().ray_march(hit_g, dir_g, 4000.0) {
         Some(p) => p,
         None => {
             // Empty worktable Add: no surface, but a click on the bench
@@ -343,7 +343,7 @@ fn sculpt_input(
 
     // "Into surface" direction — SDF gradient points outward, so
     // negate. Fall back to the ray direction on a degenerate gradient.
-    let grad = workpiece.grid.gradient_at(hit);
+    let grad = workpiece.grid().gradient_at(hit);
     let into_surface = if grad.length_squared() > 1e-4 {
         -grad.normalize()
     } else {
@@ -450,7 +450,7 @@ pub const CLAY_COLUMN_UNLOCK: f32 = 0.35;
 /// `φ ≈ 0` but voxel labels only exist for solid (`φ < 0`) cells.
 fn stamp_is_on_selected_component(
     selection: &mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     hit: GVec3,
 ) -> bool {
     let Some(picked) = selection.picked_voxel else {
@@ -466,14 +466,14 @@ fn stamp_is_on_selected_component(
     if target == sculpt_core::EMPTY {
         return false;
     }
-    let vs = workpiece.grid.voxel_size();
-    let grad = workpiece.grid.gradient_at(hit);
+    let vs = workpiece.grid().voxel_size();
+    let grad = workpiece.grid().gradient_at(hit);
     let inside_probe = if grad.length_squared() > 1e-4 {
         hit - grad.normalize() * vs * 0.5
     } else {
         hit
     };
-    let origin = workpiece.grid.origin();
+    let origin = workpiece.grid().origin();
     let local = (inside_probe - origin) * (1.0 / vs);
     if local.x < 0.0
         || local.y < 0.0
@@ -496,10 +496,10 @@ fn stamp_is_on_selected_component(
 /// mutable borrow on `Selection`).
 fn ensure_selection_labels<'a>(
     selection: &'a mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> &'a ComponentField {
     if selection.labels().is_none() {
-        let labels = label_components(&workpiece.grid);
+        let labels = label_components(workpiece.grid());
         selection.set_labels(labels);
     }
     selection.labels().expect("just populated")
@@ -547,7 +547,7 @@ pub fn clay_brush_center(
 
 #[allow(clippy::too_many_arguments)]
 fn apply_at(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     mut recorder: Option<&mut StrokeRecorder>,
     kind: ToolKind,
     tool: &SculptTool,
@@ -556,7 +556,7 @@ fn apply_at(
     into_surface: GVec3,
     view_dir: GVec3,
 ) {
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
 
     let region = match kind {
         // These live in their own systems (wire_cutter_input,
@@ -590,18 +590,18 @@ fn apply_at(
                 workbench_y: Some(0.0),
             };
             if let Some(rec) = recorder.as_mut() {
-                apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+                apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |x, y, z, pre| {
                     rec.record_pre_value(x, y, z, pre)
                 })
             } else {
-                apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+                apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
             }
         }
         ToolKind::Cutter(family) => {
             // Cutter cuts along the surface normal, symmetric around
             // the click point. A half-length of half the grid extent
             // is enough to punch through any Stage-2 workpiece.
-            let half_length = workpiece.grid.extent().max_element() * 0.5;
+            let half_length = workpiece.grid().extent().max_element() * 0.5;
             let cutter = CookieCutter {
                 profile: family.profile(tool.size),
                 origin: hit,
@@ -610,11 +610,11 @@ fn apply_at(
                 workbench_y: Some(0.0),
             };
             if let Some(rec) = recorder.as_mut() {
-                apply_cookie_cutter_with_callback(&mut workpiece.grid, &cutter, |x, y, z, pre| {
+                apply_cookie_cutter_with_callback(workpiece.grid_mut(), &cutter, |x, y, z, pre| {
                     rec.record_pre_value(x, y, z, pre)
                 })
             } else {
-                apply_cookie_cutter_with_callback(&mut workpiece.grid, &cutter, |_, _, _, _| {})
+                apply_cookie_cutter_with_callback(workpiece.grid_mut(), &cutter, |_, _, _, _| {})
             }
         }
         ToolKind::Smooth => {
@@ -625,11 +625,11 @@ fn apply_at(
                 workbench_y: Some(0.0),
             };
             if let Some(rec) = recorder.as_mut() {
-                apply_smooth_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+                apply_smooth_brush_with_callback(workpiece.grid_mut(), &brush, |x, y, z, pre| {
                     rec.record_pre_value(x, y, z, pre)
                 })
             } else {
-                apply_smooth_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+                apply_smooth_brush_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
             }
         }
         ToolKind::Paddle => {
@@ -645,11 +645,11 @@ fn apply_at(
                 workbench_y: Some(0.0),
             };
             if let Some(rec) = recorder.as_mut() {
-                apply_paddle_with_callback(&mut workpiece.grid, &paddle, |x, y, z, pre| {
+                apply_paddle_with_callback(workpiece.grid_mut(), &paddle, |x, y, z, pre| {
                     rec.record_pre_value(x, y, z, pre)
                 })
             } else {
-                apply_paddle_with_callback(&mut workpiece.grid, &paddle, |_, _, _, _| {})
+                apply_paddle_with_callback(workpiece.grid_mut(), &paddle, |_, _, _, _| {})
             }
         }
     };
@@ -659,7 +659,7 @@ fn apply_at(
             rec.record_dirty_region(region, grid_res);
         }
         for c in region.touched_chunks(grid_res) {
-            workpiece.dirty.insert((c.x, c.y, c.z));
+            workpiece.mark_dirty((c.x, c.y, c.z));
         }
     }
 }
@@ -687,7 +687,7 @@ fn ray_bench_intersection(origin: GVec3, dir: GVec3) -> Option<GVec3> {
 /// tools require an existing surface.
 #[allow(clippy::too_many_arguments)]
 fn empty_bench_add(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     stroke: &mut SculptStroke,
     tool: &SculptTool,
     angular_vel: f32,
@@ -729,12 +729,12 @@ fn empty_bench_add(
 /// (x, 0, z). Splits out the actual sculpt-core call so the mirrored
 /// stamp reuses it.
 fn stamp_bench_blob(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     mut recorder: Option<&mut StrokeRecorder>,
     tool: &SculptTool,
     bench: GVec3,
 ) {
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     let center = GVec3::new(bench.x, tool.size, bench.z);
     let brush = SphereBrush {
         center,
@@ -745,18 +745,18 @@ fn stamp_bench_blob(
         workbench_y: Some(0.0),
     };
     let region = if let Some(rec) = recorder.as_mut() {
-        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |x, y, z, pre| {
+        apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |x, y, z, pre| {
             rec.record_pre_value(x, y, z, pre)
         })
     } else {
-        apply_sphere_brush_with_callback(&mut workpiece.grid, &brush, |_, _, _, _| {})
+        apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
     };
     if let Some(region) = region {
         if let Some(rec) = recorder.as_mut() {
             rec.record_dirty_region(region, grid_res);
         }
         for c in region.touched_chunks(grid_res) {
-            workpiece.dirty.insert((c.x, c.y, c.z));
+            workpiece.mark_dirty((c.x, c.y, c.z));
         }
     }
 }
@@ -785,7 +785,7 @@ fn wire_cutter_input(
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     ui_gate: Res<UiCapturesInput>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut stroke: ResMut<SculptStroke>,
     mut history: ResMut<UndoHistory>,
     mut state: ResMut<WireCutState>,
@@ -809,7 +809,7 @@ fn wire_cutter_input(
         let dir_local = piece_inv
             .transform_vector3(*ray_world.direction)
             .normalize();
-        let hit = workpiece.grid.ray_march(
+        let hit = workpiece.grid().ray_march(
             GVec3::new(origin_local.x, origin_local.y, origin_local.z),
             GVec3::new(dir_local.x, dir_local.y, dir_local.z),
             4000.0,
@@ -841,7 +841,7 @@ fn wire_cutter_input(
                     symmetry.enabled,
                 );
             }
-            if let Some(entry) = rec.finish(&workpiece.grid) {
+            if let Some(entry) = rec.finish(workpiece.grid(), workpiece.active_id()) {
                 history.push_stroke(entry);
             }
         }
@@ -864,7 +864,7 @@ fn wire_cutter_input(
 /// Apply a wire-cutter slab between anchors `a` and `b`, plus its
 /// mirror if `symmetric` is set. All inputs are in piece-local mm.
 fn apply_wire_cut(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     recorder: &mut Option<&mut StrokeRecorder>,
     a: GVec3,
     b: GVec3,
@@ -905,12 +905,12 @@ fn apply_wire_cut(
 }
 
 fn stamp_wire(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     recorder: &mut Option<&mut StrokeRecorder>,
     anchor: GVec3,
     normal: GVec3,
 ) {
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     let cutter = WireCutter {
         anchor,
         normal,
@@ -918,7 +918,7 @@ fn stamp_wire(
         workbench_y: Some(0.0),
     };
     let region = if let Some(rec) = recorder.as_deref_mut() {
-        let r = apply_wire_cutter_with_callback(&mut workpiece.grid, &cutter, |x, y, z, pre| {
+        let r = apply_wire_cutter_with_callback(workpiece.grid_mut(), &cutter, |x, y, z, pre| {
             rec.record_pre_value(x, y, z, pre)
         });
         if let Some(region) = r {
@@ -926,11 +926,11 @@ fn stamp_wire(
         }
         r
     } else {
-        apply_wire_cutter_with_callback(&mut workpiece.grid, &cutter, |_, _, _, _| {})
+        apply_wire_cutter_with_callback(workpiece.grid_mut(), &cutter, |_, _, _, _| {})
     };
     if let Some(region) = region {
         for c in region.touched_chunks(grid_res) {
-            workpiece.dirty.insert((c.x, c.y, c.z));
+            workpiece.mark_dirty((c.x, c.y, c.z));
         }
     }
 }

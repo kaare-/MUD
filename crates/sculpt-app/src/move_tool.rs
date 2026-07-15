@@ -46,7 +46,7 @@ use crate::sculpt::{SculptTool, ToolKind};
 use crate::selection::Selection;
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
+use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// User-editable pending delta (mm along each axis) that the Move
 /// HUD widget in `ui.rs` binds to. Cleared to zero after each
@@ -325,7 +325,7 @@ fn spawn_axis_gizmo(
 fn update_gizmo_visibility_and_transform(
     tool: Res<SculptTool>,
     mut selection: ResMut<Selection>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
     drag: Res<MoveGizmoDrag>,
     state: Res<MoveState>,
     mut q_arrows: Query<(&MoveArrow, &mut Transform, &mut Visibility)>,
@@ -372,12 +372,12 @@ fn update_gizmo_visibility_and_transform(
 /// the current voxel-snapped pending delta.
 fn centre_from_drag(
     active: &ActiveDrag,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     pending_mm: &Vec3,
 ) -> Option<GVec3> {
     let (mn, mx) = active.labels.bounds_of(active.component_id)?;
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     // Snap the mm delta to voxels so we track the *actual*
     // translation, not the widget's raw millimetre value.
     let dx = (pending_mm.x / vs).round() * vs;
@@ -392,7 +392,7 @@ fn centre_from_drag(
 
 fn piece_local_centroid_of_selection(
     selection: &mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> Option<GVec3> {
     // Same "temporarily own the labels" pattern used elsewhere.
     let labels = ensure_labels_owned(selection, workpiece)?;
@@ -401,8 +401,8 @@ fn piece_local_centroid_of_selection(
     // Put the labels back before returning.
     selection.set_labels(labels);
     let (mn, mx) = bounds?;
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     let cx = origin.x + (mn.x + mx.x) as f32 * 0.5 * vs;
     let cy = origin.y + (mn.y + mx.y) as f32 * 0.5 * vs;
     let cz = origin.z + (mn.z + mx.z) as f32 * 0.5 * vs;
@@ -414,10 +414,10 @@ fn piece_local_centroid_of_selection(
 /// before another selection-consumer sees the resource.
 fn ensure_labels_owned(
     selection: &mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> Option<ComponentField> {
     if selection.labels().is_none() {
-        let fresh = label_components(&workpiece.grid);
+        let fresh = label_components(workpiece.grid());
         selection.set_labels(fresh);
     }
     selection.take_labels()
@@ -439,7 +439,7 @@ fn gizmo_pointer_input(
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
     mut selection: ResMut<Selection>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut history: ResMut<UndoHistory>,
     mut state: ResMut<MoveState>,
     mut drag: ResMut<MoveGizmoDrag>,
@@ -569,7 +569,7 @@ fn gizmo_pointer_input(
     };
 
     // Kick off a drag.
-    let labels = label_components(&workpiece.grid);
+    let labels = label_components(workpiece.grid());
     let Some(component_id) = selection.selected_id(&labels) else {
         // Bail: nothing to move.
         return;
@@ -581,13 +581,13 @@ fn gizmo_pointer_input(
         &labels,
         component_id,
         IVec3::ZERO,
-        workpiece.grid.res(),
+        workpiece.grid().res(),
     ) else {
         // No bounds for the selected component — shouldn't happen
         // given `selected_id` just succeeded, but bail cleanly.
         return;
     };
-    let snapshot = workpiece.grid.snapshot_region(region_min, region_max);
+    let snapshot = workpiece.grid().snapshot_region(region_min, region_max);
     let active = ActiveDrag {
         axis,
         t_start,
@@ -595,7 +595,7 @@ fn gizmo_pointer_input(
         grid_snapshot: snapshot,
         labels,
         component_id,
-        voxel_size: workpiece.grid.voxel_size(),
+        voxel_size: workpiece.grid().voxel_size(),
         dirty_chunks: HashSet::new(),
         last_applied_vox: IVec3::ZERO,
     };
@@ -609,7 +609,7 @@ fn update_drag(
     q_window: &Query<&Window, With<PrimaryWindow>>,
     q_camera: &Query<(&Camera, &GlobalTransform)>,
     q_piece: &Query<&Transform, With<WorkpieceRoot>>,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     state: &mut MoveState,
 ) {
     let Some(active) = drag.active.as_ref() else {
@@ -642,8 +642,8 @@ fn update_drag(
         .labels
         .bounds_of(active.component_id)
         .expect("component has bounds; captured at drag start");
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     let centre = GVec3::new(
         origin.x + (mn.x + mx.x) as f32 * 0.5 * vs,
         origin.y + (mn.y + mx.y) as f32 * 0.5 * vs,
@@ -703,13 +703,13 @@ fn ensure_region_covers(active: &mut ActiveDrag, grid: &mut Grid, delta: IVec3) 
 
 fn apply_preview(
     drag: &mut MoveGizmoDrag,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     state: &MoveState,
 ) {
     let Some(active) = drag.active.as_mut() else {
         return;
     };
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let target_delta_vox = IVec3::new(
         (state.pending_mm.x / vs).round() as i32,
         (state.pending_mm.y / vs).round() as i32,
@@ -718,16 +718,16 @@ fn apply_preview(
     // Reset the grid from the snapshot every frame; then translate
     // by the total offset. That way we don't accumulate rounding
     // error and undo doesn't need to record intermediate states.
-    ensure_region_covers(active, &mut workpiece.grid, target_delta_vox);
-    workpiece.grid.restore_region(&active.grid_snapshot);
+    ensure_region_covers(active, workpiece.grid_mut(), target_delta_vox);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &active.labels,
         active.component_id,
         target_delta_vox,
         |_, _, _, _| {},
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         for c in region.touched_chunks(grid_res) {
             active.dirty_chunks.insert((c.x, c.y, c.z));
@@ -736,7 +736,7 @@ fn apply_preview(
     // Also dirty everything we've ever touched during this drag,
     // so chunks we vacated get re-meshed to their reset state.
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
     active.last_applied_vox = target_delta_vox;
 }
@@ -744,11 +744,11 @@ fn apply_preview(
 fn commit_drag(
     mut active: ActiveDrag,
     final_pending_mm: &Vec3,
-    workpiece: &mut ResMut<SculptWorkpiece>,
+    workpiece: &mut ResMut<LayersState>,
     selection: &mut ResMut<Selection>,
     history: &mut ResMut<UndoHistory>,
 ) {
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let final_delta_vox = IVec3::new(
         (final_pending_mm.x / vs).round() as i32,
         (final_pending_mm.y / vs).round() as i32,
@@ -758,13 +758,13 @@ fn commit_drag(
     // true pre-drag state, not the intermediate preview. The region
     // should already cover this delta from the last preview frame,
     // but re-check defensively — cheap when it's already covered.
-    ensure_region_covers(&mut active, &mut workpiece.grid, final_delta_vox);
-    workpiece.grid.restore_region(&active.grid_snapshot);
+    ensure_region_covers(&mut active, workpiece.grid_mut(), final_delta_vox);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     if final_delta_vox == IVec3::ZERO {
         info!("move: drag ended with zero-voxel offset — nothing to commit");
         // Ensure the reset chunks get re-meshed.
         for &(x, y, z) in &active.dirty_chunks {
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
         selection.invalidate_labels();
         return;
@@ -772,26 +772,26 @@ fn commit_drag(
 
     let mut recorder = StrokeRecorder::default();
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &active.labels,
         active.component_id,
         final_delta_vox,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
             let ChunkCoord { x, y, z } = c;
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
     }
     // Also re-mesh every chunk we vacated during the preview so
     // the reset from the snapshot actually shows up.
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
 
@@ -823,12 +823,12 @@ fn commit_drag(
 
 fn cancel_drag(
     active: ActiveDrag,
-    workpiece: &mut ResMut<SculptWorkpiece>,
+    workpiece: &mut ResMut<LayersState>,
     state: &mut ResMut<MoveState>,
 ) {
-    workpiece.grid.restore_region(&active.grid_snapshot);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
     state.pending_mm = active.initial_widget_mm;
     info!("move: drag cancelled — grid reset");
@@ -869,7 +869,7 @@ fn ray_line_closest(
 /// on Apply while an axis is being dragged doesn't double-apply.
 fn handle_move_action(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut selection: ResMut<Selection>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
@@ -901,7 +901,7 @@ fn clear_frame_flags(mut drag: ResMut<MoveGizmoDrag>) {
 
 fn apply_move(
     delta_mm: Vec3,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     selection: &mut Selection,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
@@ -915,7 +915,7 @@ fn apply_move(
     }
     stroke.discard_live();
 
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let delta_vox = IVec3::new(
         (delta_mm.x / vs).round() as i32,
         (delta_mm.y / vs).round() as i32,
@@ -929,7 +929,7 @@ fn apply_move(
         return false;
     }
 
-    let labels = label_components(&workpiece.grid);
+    let labels = label_components(workpiece.grid());
     let id = match selection.selected_id(&labels) {
         Some(id) => id,
         None => {
@@ -941,21 +941,21 @@ fn apply_move(
 
     let mut recorder = StrokeRecorder::default();
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &labels,
         id,
         delta_vox,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
             let ChunkCoord { x, y, z } = c;
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
     selection.invalidate_labels();

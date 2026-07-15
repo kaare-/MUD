@@ -17,7 +17,7 @@ use sculpt_core::{apply_primitive_with_callback, ChunkCoord, Primitive, Primitiv
 use crate::actions::AppAction;
 use crate::sculpt::{tool_label, SculptTool, ToolKind};
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<PrimitiveDialogState>();
@@ -86,7 +86,7 @@ fn open_primitive_dialog(
 
 fn handle_insert_action(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<crate::selection::Selection>,
@@ -129,7 +129,7 @@ fn handle_insert_action(
 fn insert_primitive_centered_on_bench(
     shape: PrimitiveShape,
     size_mm: f32,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
 ) -> Option<(u32, u32, u32)> {
@@ -167,29 +167,29 @@ fn insert_primitive_centered_on_bench(
 
     let mut recorder = StrokeRecorder::default();
     let region = apply_primitive_with_callback(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &prim,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
 
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = region {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
             let ChunkCoord { x, y, z } = c;
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
         info!("inserted {} ({:.1} mm)", shape.label().to_lowercase(), size);
         // Voxel index of the primitive's centre. Clamped so we
         // never hand out an out-of-range index — the primitive is
         // always at least partly in-bounds because we clipped it
         // to the bench.
-        let grid_res = workpiece.grid.res();
-        let vs = workpiece.grid.voxel_size();
-        let origin = workpiece.grid.origin();
+        let grid_res = workpiece.grid().res();
+        let vs = workpiece.grid().voxel_size();
+        let origin = workpiece.grid().origin();
         let cx = ((prim.center.x - origin.x) / vs).round() as i32;
         let cy = ((prim.center.y - origin.y) / vs).round() as i32;
         let cz = ((prim.center.z - origin.z) / vs).round() as i32;

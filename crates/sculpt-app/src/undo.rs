@@ -24,7 +24,7 @@ use glam::UVec3;
 use sculpt_core::{ChunkCoord, DirtyRegion, Grid, CHUNK_SIZE};
 
 use crate::input_gate::UiCapturesInput;
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::{LayerId, LayersState};
 
 /// Cap on how many strokes we remember. Prevents runaway memory growth
 /// during long sessions. `Ctrl+Z` past this point simply stops.
@@ -32,6 +32,12 @@ const MAX_HISTORY: usize = 64;
 
 /// One completed stroke, ready to be undone or redone.
 pub struct UndoEntry {
+    /// Which layer this stroke was recorded against (`PLAN.md` Track
+    /// B1). Tagged by stable id, not index, so the entry still
+    /// resolves correctly even if the active layer changes between
+    /// recording and undo — apply_pre/apply_post always target this
+    /// layer, never "whichever is active right now".
+    layer_id: LayerId,
     /// Voxel indices touched during the stroke (deduplicated).
     voxels: Vec<(u32, u32, u32)>,
     /// Pre-stroke SDF values, parallel to `voxels`.
@@ -88,8 +94,9 @@ impl StrokeRecorder {
 
     /// Wrap up the stroke, reading back the post-stroke values from
     /// the (now-modified) grid. Returns `None` if the stroke didn't
-    /// actually touch anything (e.g. a click in empty air).
-    pub fn finish(self, grid: &Grid) -> Option<UndoEntry> {
+    /// actually touch anything (e.g. a click in empty air). `layer_id`
+    /// tags the entry so undo/redo applies it to the right layer.
+    pub fn finish(self, grid: &Grid, layer_id: LayerId) -> Option<UndoEntry> {
         if self.voxels.is_empty() {
             return None;
         }
@@ -99,6 +106,7 @@ impl StrokeRecorder {
             .map(|&(x, y, z)| grid.get(x, y, z))
             .collect();
         Some(UndoEntry {
+            layer_id,
             voxels: self.voxels,
             pre: self.pre,
             post,
@@ -180,7 +188,7 @@ fn handle_undo_redo_input(
     keys: Res<ButtonInput<KeyCode>>,
     ui_gate: Res<UiCapturesInput>,
     mut history: ResMut<UndoHistory>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut selection: ResMut<crate::selection::Selection>,
 ) {
     if ui_gate.keyboard {
@@ -201,18 +209,27 @@ fn handle_undo_redo_input(
 
     if want_undo {
         if let Some(entry) = history.undo.pop() {
-            entry.apply_pre(&mut workpiece.grid);
-            for c in &entry.dirty_chunks {
-                workpiece.dirty.insert(*c);
+            // Apply to the layer the entry was recorded against, not
+            // necessarily the currently-active one (Track B1). In B1
+            // there's only ever one layer so this always hits; a
+            // future layer-delete dropping the id first would just
+            // skip here rather than panic — nothing left to undo.
+            if let Some(layer) = workpiece.layer_by_id_mut(entry.layer_id) {
+                entry.apply_pre(&mut layer.grid);
+                for c in &entry.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
             }
             history.redo.push(entry);
             selection.invalidate_labels();
         }
     } else if want_redo {
         if let Some(entry) = history.redo.pop() {
-            entry.apply_post(&mut workpiece.grid);
-            for c in &entry.dirty_chunks {
-                workpiece.dirty.insert(*c);
+            if let Some(layer) = workpiece.layer_by_id_mut(entry.layer_id) {
+                entry.apply_post(&mut layer.grid);
+                for c in &entry.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
             }
             history.undo.push(entry);
             if history.undo.len() > MAX_HISTORY {
