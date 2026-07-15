@@ -22,15 +22,19 @@ convincing lump of clay, quickly*.
 
 ## Shipped so far (Stages 0–3 + Add/Remove pass)
 
-- `[x]` Dense SDF grid at 128³, 1.5 mm voxel, chunked meshing.
+- `[x]` Dense SDF grid at 192³, 1.5 mm voxel, chunked meshing
+  (288 mm work volume — one bump up from 128³, sparse SDF still
+  on the roadmap for going larger).
 - `[x]` Orbit / pan / zoom camera, Q / E turntable.
 - `[x]` Workbench floor (y = 0) as a hard clip.
 - `[x]` Clay tool (Add / Remove) with soft CSG (magic clay).
 - `[x]` Cookie cutters (circle, square, hex, star).
-- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG now
-  runs over the whole grid so cells several voxels into the
-  remaining piece get their SDF properly lifted toward the cut
-  plane — no more jagged half-cut.
+- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG runs
+  over the whole grid and uses a **soft-max at the corner** where
+  the cut plane meets the outer surface: the resulting SDF is C¹
+  around the ring instead of kinked, so surface-nets can't
+  average a saw-tooth edge across the cut. Slab is 3 mm (two
+  voxels) so the mesher sees a real gradient across the gap.
 - `[x]` Smooth brush, paddle.
 - `[x]` Mirror symmetry (piece-local X = 0).
 - `[x]` Undo / redo (stroke-granular, `Shift+Ctrl+Z` per-op reserved).
