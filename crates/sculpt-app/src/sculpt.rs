@@ -257,6 +257,7 @@ fn sculpt_input(
         }
         stroke.last_clay_hit = None;
         stroke.paint_plane = None;
+        stroke.bench_paint = false;
     }
 
     // Menus and panels absorb new presses / continued stamping.
@@ -268,6 +269,7 @@ fn sculpt_input(
         stroke.recorder = Some(StrokeRecorder::default());
         stroke.last_clay_hit = None;
         stroke.paint_plane = None;
+        stroke.bench_paint = false;
     }
 
     // Continuous tools (clay, smooth, paddle) engage every frame
@@ -320,6 +322,27 @@ fn sculpt_input(
     let is_clay_early = matches!(tool.kind, ToolKind::Clay);
     let is_add_early = is_clay_early
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
+
+    // Bench-coil lock: once this stroke has deposited on an empty
+    // workbench, keep stamping at bench height for the rest of the
+    // stroke. Dense Q/E spacing lands the next ray on the previous
+    // bead; without this latch, control would switch to the surface
+    // Clay path and tip-chase toward the camera (~advance per stamp).
+    // Closing the coil onto the first bead then thickens by soft
+    // overlap of same-height spheres — one layer, not a spiral climb.
+    if is_add_early && stroke.bench_paint {
+        empty_bench_add(
+            &mut workpiece,
+            &mut stroke,
+            &tool,
+            turntable.angular_vel,
+            symmetry.enabled,
+            hit_g,
+            dir_g,
+        );
+        return;
+    }
+
     let hit = match workpiece.grid().ray_march(hit_g, dir_g, 4000.0) {
         Some(p) => p,
         None => {
@@ -716,7 +739,10 @@ fn empty_bench_add(
 
     // Face-on paint is not meaningful with no surface; skip the plane
     // lock and drop a sphere sitting on the bench (`center.y = size`).
+    // Latch so later frames in this stroke stay on the bench even if
+    // the ray hits this stroke's clay (top-view turntable coils).
     stroke.paint_plane = None;
+    stroke.bench_paint = true;
     stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, bench);
     if symmetric {
         let mirrored = GVec3::new(-bench.x, 0.0, bench.z);
@@ -1044,5 +1070,147 @@ fn adjust_tool(
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
     if keys.just_pressed(KeyCode::KeyS) && !ctrl && !super_key {
         actions.send(AppAction::ToggleSymmetry);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sculpt_core::{apply_sphere_brush_with_callback, Grid};
+
+    fn empty_bench_workpiece() -> LayersState {
+        // Small domain is enough for a few 8 mm stamps on y = 0.
+        let grid = Grid::empty(
+            glam::UVec3::new(64, 64, 64),
+            1.0,
+            GVec3::new(-32.0, 0.0, -32.0),
+        );
+        LayersState::new_for_test(grid)
+    }
+
+    fn tool_sized(size: f32) -> SculptTool {
+        SculptTool {
+            size,
+            ..SculptTool::default()
+        }
+    }
+
+    /// Highest world-Y of any solid (φ < 0) voxel in allocated tiles.
+    fn solid_peak_y(grid: &Grid) -> f32 {
+        let origin = grid.origin();
+        let vs = grid.voxel_size();
+        let mut peak = f32::NEG_INFINITY;
+        for coord in grid.allocated_chunk_coords() {
+            let base = coord.voxel_min();
+            let max = coord.voxel_max(grid.res());
+            for iz in base.z..max.z {
+                for iy in base.y..max.y {
+                    for ix in base.x..max.x {
+                        if grid.get(ix, iy, iz) < 0.0 {
+                            let y = origin.y + (iy as f32 + 0.5) * vs;
+                            peak = peak.max(y);
+                        }
+                    }
+                }
+            }
+        }
+        peak
+    }
+
+    #[test]
+    fn empty_bench_add_latches_bench_paint() {
+        let mut workpiece = empty_bench_workpiece();
+        let mut stroke = SculptStroke::default();
+        let tool = tool_sized(8.0);
+        // Ray from above the bench toward (10, 0, 0).
+        empty_bench_add(
+            &mut workpiece,
+            &mut stroke,
+            &tool,
+            0.0,
+            false,
+            GVec3::new(10.0, 40.0, 0.0),
+            GVec3::new(0.0, -1.0, 0.0),
+        );
+        assert!(stroke.bench_paint, "first empty-bench stamp must latch");
+        assert!(stroke.last_clay_hit.is_some());
+        let peak = solid_peak_y(workpiece.grid());
+        assert!(
+            (peak - 2.0 * tool.size).abs() < 1.5,
+            "blob sitting on the bench should peak near 2*size, got {peak}"
+        );
+    }
+
+    #[test]
+    fn bench_coil_stamps_stay_level_while_overlapping() {
+        // Simulate top-view turntable coil: many overlapping bench
+        // stamps along an arc. Peak Y must stay at one bead thickness
+        // even where stamps overlap — not creep toward the camera.
+        let mut workpiece = empty_bench_workpiece();
+        let mut stroke = SculptStroke::default();
+        let tool = tool_sized(8.0);
+        let radius = 14.0;
+        for i in 0..24 {
+            let a = (i as f32) * std::f32::consts::TAU / 24.0;
+            let x = radius * a.cos();
+            let z = radius * a.sin();
+            empty_bench_add(
+                &mut workpiece,
+                &mut stroke,
+                &tool,
+                1.0, // turning → denser spacing path
+                false,
+                GVec3::new(x, 40.0, z),
+                GVec3::new(0.0, -1.0, 0.0),
+            );
+            assert!(stroke.bench_paint);
+        }
+        let peak = solid_peak_y(workpiece.grid());
+        let expected = 2.0 * tool.size;
+        assert!(
+            (peak - expected).abs() < 2.0,
+            "coil on the bench must stay one bead thick (≈{expected}), got peak={peak}"
+        );
+    }
+
+    #[test]
+    fn surface_path_after_bench_blob_creeps_upward() {
+        // Documents the bug the bench_paint latch prevents: once the
+        // ray hits the previous bead, face-on Clay placement protrudes
+        // ~advance per stamp and the peak climbs toward the camera.
+        let mut workpiece = empty_bench_workpiece();
+        let tool = tool_sized(8.0);
+        let bench = GVec3::new(0.0, 0.0, 0.0);
+        stamp_bench_blob(&mut workpiece, None, &tool, bench);
+        let after_bench = solid_peak_y(workpiece.grid());
+
+        let into = GVec3::new(0.0, -1.0, 0.0);
+        let view = GVec3::new(0.0, -1.0, 0.0);
+        for _ in 0..12 {
+            let hit = GVec3::new(0.0, solid_peak_y(workpiece.grid()), 0.0);
+            let center = clay_brush_center(
+                hit,
+                into,
+                view,
+                tool.size,
+                tool.advance_per_step,
+                true,
+            );
+            let brush = SphereBrush {
+                center,
+                radius: tool.size,
+                mode: BrushMode::Pull,
+                direction: into,
+                displace: tool.displace,
+                workbench_y: Some(0.0),
+            };
+            let _ = apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {});
+        }
+        let after_surface = solid_peak_y(workpiece.grid());
+        assert!(
+            after_surface > after_bench + 2.0,
+            "surface tip-chase should climb (bench peak {after_bench}, after {after_surface}); \
+             if this fails, the creep regress may need a different latch"
+        );
     }
 }

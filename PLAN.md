@@ -68,6 +68,9 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 3. `[x]` **Add material on an empty worktable.** — Shift+LMB on the
    empty bench projects the ray onto y = 0 and deposits a blob
    sitting on the bench. Every other tool still bails on a miss.
+   Top-view turntable coils latch `bench_paint` for the stroke so
+   later stamps stay at bench height instead of tip-chasing toward
+   the camera once the ray hits the previous bead.
    *(Domain still 288 mm — worktable-scale Add is Track A in
    `SPARSE_THEN_LAYERS.md`.)*
 

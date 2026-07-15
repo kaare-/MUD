@@ -170,6 +170,12 @@ pub struct SculptStroke {
     /// Stamps project onto this plane so screen strokes don't
     /// tip-chase toward the camera. Cleared for side-column / ring.
     pub paint_plane: Option<(glam::Vec3, glam::Vec3)>,
+    /// Latched when this stroke deposits on an empty workbench
+    /// (`Shift+LMB` miss → `y = 0`). While set, later stamps in the
+    /// same stroke stay on the bench even if the ray hits this
+    /// stroke's clay — otherwise top-view Q/E coils tip-chase toward
+    /// the camera once the previous bead is under the cursor.
+    pub bench_paint: bool,
 }
 
 impl SculptStroke {
@@ -180,6 +186,7 @@ impl SculptStroke {
         self.recorder = None;
         self.last_clay_hit = None;
         self.paint_plane = None;
+        self.bench_paint = false;
     }
 }
 
