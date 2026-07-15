@@ -156,18 +156,22 @@ pub fn apply_wire_cutter_with_callback<F>(
 where
     F: FnMut(u32, u32, u32, f32),
 {
-    let vs = grid.voxel_size();
     let res = grid.res();
     let half_thick = cutter.thickness * 0.5;
-    // One voxel of margin so surface-nets sees a continuous field
-    // across the slab boundary and doesn't emit zig-zag artefacts
-    // along the cut edge.
-    let margin = vs;
 
-    // The slab is infinite in two directions, so we iterate every
-    // voxel but early-exit for voxels far from the plane. At 128^3
-    // that's ~2M ops per stroke — comfortably under 30 ms.
-    // Dirty AABB is grown dynamically as we go.
+    // The slab is infinite in two directions. Iterating the full
+    // grid is ~2 M ops at 128³ — comfortably under 30 ms even in
+    // debug — and it lets us apply the CSG subtract everywhere it
+    // could raise `old`, not just near the slab.
+    //
+    // Previous versions had a `d_slab > margin` early exit at
+    // `margin = voxel_size`. That skipped cells only 2-3 voxels
+    // from the plane whose SDF *should* have been lifted by the
+    // subtract (their nearest surface is now the cut plane, not
+    // the original piece boundary). The result was a small SDF
+    // "shelf" one voxel out from the cut — marching cubes then
+    // meshed a jagged, half-cut boundary instead of a clean
+    // planar slice. The fix is to just do the work.
     let mut dirty_min = UVec3::MAX;
     let mut dirty_max = UVec3::ZERO;
     let mut touched = false;
@@ -179,17 +183,10 @@ where
         for iy in 0..res.y {
             for ix in 0..res.x {
                 let p = grid.position(ix, iy, iz);
-                // Signed distance to the cut plane. Slab SDF is
-                // |signed_dist| - half_thick: negative inside the
-                // slab, positive outside.
                 let signed = (p - a).dot(n);
                 let d_slab = signed.abs() - half_thick;
-                if d_slab > margin {
-                    continue;
-                }
 
                 let old = grid.get(ix, iy, iz);
-                // CSG subtract the slab.
                 let mut new = old.max(-d_slab);
                 if let Some(wb_y) = cutter.workbench_y {
                     let below = wb_y - p.y;
@@ -297,6 +294,56 @@ mod tests {
         assert!(g.sample(Vec3::new(25.0, 32.0, 32.0)) < 0.0);
         // Right half at x ≈ 39.
         assert!(g.sample(Vec3::new(39.0, 32.0, 32.0)) < 0.0);
+    }
+
+    /// Regression: cells 2-3 voxels inside the piece and behind the
+    /// cut plane must have their SDF *raised* so the nearest
+    /// surface is the cut, not the original outer boundary.
+    ///
+    /// Before the fix, a `d_slab > margin` early exit skipped
+    /// these cells; the SDF then had a "shelf" one voxel deep and
+    /// marching cubes read the shelf as a jagged, half-cut edge.
+    #[test]
+    fn wire_cutter_reshapes_sdf_deep_into_the_remaining_piece() {
+        let g_res = UVec3::new(64, 64, 64);
+        let mut g = Grid::from_sphere(
+            g_res,
+            1.5,
+            Vec3::new(-48.0, 0.0, -48.0),
+            Vec3::new(0.0, 30.0, 0.0),
+            25.0,
+        );
+        // Pre-cut: SDF deep in the sphere (well inside, and
+        // several voxels behind where the cut will be) is very
+        // negative — its nearest surface is the outer boundary,
+        // ~15 mm away.
+        let probe = Vec3::new(-9.0, 30.0, 0.0);
+        let pre = g.sample(probe);
+        assert!(pre < -10.0, "probe should be deep interior, got {pre}");
+
+        let cutter = WireCutter {
+            anchor: Vec3::new(0.0, 30.0, 0.0),
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            thickness: 2.0,
+            workbench_y: None,
+        };
+        let _ = apply_wire_cutter(&mut g, &cutter);
+
+        // Same probe after the cut: the cut plane at x = 0 is
+        // now the nearest surface. The probe sits at x = -9, so
+        // its distance-to-cut is ~9 mm; account for slab half
+        // thickness (1 mm). SDF should be around -8 mm, i.e.
+        // *much* less negative than the -10ish pre-cut value.
+        // If the old margin cutoff were still in place the value
+        // would be identical to pre.
+        let post = g.sample(probe);
+        assert!(
+            post > pre + 4.0,
+            "wire cut should raise deep-interior SDF near the cut plane: \
+             pre = {pre:.2}, post = {post:.2}",
+        );
+        // Sanity: the probe is still solid (negative), just less so.
+        assert!(post < 0.0, "probe should still be inside, got {post}");
     }
 
     #[test]
