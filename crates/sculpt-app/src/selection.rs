@@ -21,7 +21,7 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::window::PrimaryWindow;
-use glam::{UVec3, Vec3 as GVec3};
+use glam::{IVec3, UVec3, Vec3 as GVec3};
 use sculpt_core::{label_components, ChunkCoord, ComponentField, ComponentId, EMPTY};
 
 use crate::actions::AppAction;
@@ -415,10 +415,18 @@ fn spawn_selection_highlight(
 ///
 /// A tiny padding is added so the wire sits *just outside* the
 /// meshed surface rather than z-fighting the marching-cubes shell.
+///
+/// During a Move-gizmo drag the box follows the previewed piece
+/// via the drag snapshot's bounds + this frame's voxel-snapped
+/// delta — the label cache would otherwise be stale for the
+/// entire drag and leave the highlight pinned to the pre-drag
+/// pose.
 #[allow(clippy::too_many_arguments)]
 fn update_selection_highlight(
     mut selection: ResMut<Selection>,
     workpiece: Res<SculptWorkpiece>,
+    move_drag: Res<crate::move_tool::MoveGizmoDrag>,
+    move_state: Res<crate::move_tool::MoveState>,
     mut q_highlight: Query<
         (&mut Transform, &mut Visibility),
         With<SelectionHighlight>,
@@ -434,11 +442,13 @@ fn update_selection_highlight(
         return;
     }
 
-    // Only run the labeller when it's stale; keep the reference
-    // shape short so we don't fight the borrow checker with the
-    // grid probe below. Same "temporarily own the labels" trick
-    // as `delete_selected_component`.
-    let bounds = {
+    let bounds = if let Some(active) = move_drag.active_drag_bounds_and_delta(&move_state) {
+        Some(active)
+    } else {
+        // Only run the labeller when it's stale; keep the reference
+        // shape short so we don't fight the borrow checker with the
+        // grid probe below. Same "temporarily own the labels" trick
+        // as `delete_selected_component`.
         ensure_labels_fresh(&mut selection, &workpiece);
         let labels = selection
             .labels
@@ -446,12 +456,13 @@ fn update_selection_highlight(
             .expect("labels populated just above");
         let bounds = selection
             .selected_id(&labels)
-            .and_then(|id| labels.bounds_of(id));
+            .and_then(|id| labels.bounds_of(id))
+            .map(|(mn, mx)| (mn, mx, IVec3::ZERO));
         selection.labels = Some(labels);
         bounds
     };
 
-    let Some((min, max)) = bounds else {
+    let Some((min, max, delta_vox)) = bounds else {
         *vis = Visibility::Hidden;
         return;
     };
@@ -459,15 +470,16 @@ fn update_selection_highlight(
     let vs = workpiece.grid.voxel_size();
     let origin = workpiece.grid.origin();
     let pad = vs * 0.35;
+    let d = delta_vox.as_vec3() * vs;
     let local_min = glam::Vec3::new(
-        origin.x + min.x as f32 * vs - pad,
-        origin.y + min.y as f32 * vs - pad,
-        origin.z + min.z as f32 * vs - pad,
+        origin.x + min.x as f32 * vs - pad + d.x,
+        origin.y + min.y as f32 * vs - pad + d.y,
+        origin.z + min.z as f32 * vs - pad + d.z,
     );
     let local_max = glam::Vec3::new(
-        origin.x + max.x as f32 * vs + pad,
-        origin.y + max.y as f32 * vs + pad,
-        origin.z + max.z as f32 * vs + pad,
+        origin.x + max.x as f32 * vs + pad + d.x,
+        origin.y + max.y as f32 * vs + pad + d.y,
+        origin.z + max.z as f32 * vs + pad + d.z,
     );
     let centre = (local_min + local_max) * 0.5;
     let size = local_max - local_min;

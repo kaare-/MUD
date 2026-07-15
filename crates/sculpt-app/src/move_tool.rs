@@ -106,6 +106,29 @@ impl MoveGizmoDrag {
     pub fn is_active(&self) -> bool {
         self.active.is_some()
     }
+
+    /// If a drag is in flight, return the pre-drag AABB of the
+    /// piece plus this frame's voxel-snapped delta. Consumers
+    /// (selection highlight, arrows) use this to render the
+    /// piece's *previewed* pose while the labels cached on
+    /// [`Selection`] are still pinned to its pre-drag pose.
+    pub fn active_drag_bounds_and_delta(
+        &self,
+        state: &MoveState,
+    ) -> Option<(glam::UVec3, glam::UVec3, glam::IVec3)> {
+        let active = self.active.as_ref()?;
+        let (mn, mx) = active.labels.bounds_of(active.component_id)?;
+        // Round `pending_mm` to voxels: that's the exact integer
+        // offset `apply_preview` writes into the grid each frame,
+        // so the highlight lines up with the visible piece.
+        let vs = active.voxel_size;
+        let delta = IVec3::new(
+            (state.pending_mm.x / vs).round() as i32,
+            (state.pending_mm.y / vs).round() as i32,
+            (state.pending_mm.z / vs).round() as i32,
+        );
+        Some((mn, mx, delta))
+    }
 }
 
 struct ActiveDrag {
@@ -128,6 +151,10 @@ struct ActiveDrag {
     /// stays valid for the whole drag.
     labels: ComponentField,
     component_id: ComponentId,
+    /// Voxel size of the grid at drag start (constant during a
+    /// drag). Cached so consumers outside the plugin can convert
+    /// `pending_mm` to a voxel delta without a live grid handle.
+    voxel_size: f32,
     /// Union of every chunk we've dirtied since drag start, so we
     /// keep re-meshing the "old-position" chunks even after the
     /// piece has moved on and their apparent SDF has reset.
@@ -282,10 +309,19 @@ fn spawn_axis_gizmo(
 /// them at the selected component's AABB centroid. Piece-local
 /// coordinates only — the arrows are children of `WorkpieceRoot`,
 /// so the turntable rotation applies automatically.
+///
+/// When a gizmo drag is in flight, the arrows follow the *live*
+/// preview position: the pre-drag centroid plus this frame's
+/// voxel-snapped delta. Using stale cached labels here caused the
+/// "arrows sometimes don't follow the sphere" bug — the piece had
+/// moved but the arrows stayed pinned to its pre-drag pose.
+#[allow(clippy::too_many_arguments)]
 fn update_gizmo_visibility_and_transform(
     tool: Res<SculptTool>,
     mut selection: ResMut<Selection>,
     workpiece: Res<SculptWorkpiece>,
+    drag: Res<MoveGizmoDrag>,
+    state: Res<MoveState>,
     mut q_arrows: Query<(&MoveArrow, &mut Transform, &mut Visibility)>,
 ) {
     let should_show = matches!(tool.kind, ToolKind::Move) && selection.picked_voxel.is_some();
@@ -298,11 +334,16 @@ fn update_gizmo_visibility_and_transform(
         return;
     }
 
-    // Compute centroid from the selected component's AABB, in
-    // piece-local mm. Uses the same lazy-labels dance as the
-    // selection highlight so we don't relabel on every frame.
-    let centroid = piece_local_centroid_of_selection(&mut selection, &workpiece);
-    let Some(centre_local) = centroid else {
+    let centre_local = if let Some(active) = drag.active.as_ref() {
+        // During a drag: use the snapshot's bounds + the actual
+        // (voxel-snapped) delta being previewed this frame, so
+        // the arrows sit exactly on the moving piece.
+        centre_from_drag(active, &workpiece, &state.pending_mm)
+    } else {
+        piece_local_centroid_of_selection(&mut selection, &workpiece)
+    };
+
+    let Some(centre_local) = centre_local else {
         // Selection points at nothing (piece was carved away since
         // the last label refresh); hide the gizmo until the user
         // repicks.
@@ -318,6 +359,29 @@ fn update_gizmo_visibility_and_transform(
             *vis = Visibility::Visible;
         }
     }
+}
+
+/// Compute the piece-local centroid of the piece as it appears on
+/// this frame, given the active drag: snapshot bounds shifted by
+/// the current voxel-snapped pending delta.
+fn centre_from_drag(
+    active: &ActiveDrag,
+    workpiece: &SculptWorkpiece,
+    pending_mm: &Vec3,
+) -> Option<GVec3> {
+    let (mn, mx) = active.labels.bounds_of(active.component_id)?;
+    let vs = workpiece.grid.voxel_size();
+    let origin = workpiece.grid.origin();
+    // Snap the mm delta to voxels so we track the *actual*
+    // translation, not the widget's raw millimetre value.
+    let dx = (pending_mm.x / vs).round() * vs;
+    let dy = (pending_mm.y / vs).round() * vs;
+    let dz = (pending_mm.z / vs).round() * vs;
+    Some(GVec3::new(
+        origin.x + (mn.x + mx.x) as f32 * 0.5 * vs + dx,
+        origin.y + (mn.y + mx.y) as f32 * 0.5 * vs + dy,
+        origin.z + (mn.z + mx.z) as f32 * 0.5 * vs + dz,
+    ))
 }
 
 fn piece_local_centroid_of_selection(
@@ -388,11 +452,20 @@ fn gizmo_pointer_input(
     // LMB release: commit whatever's showing right now.
     if buttons.just_released(MouseButton::Left) {
         if let Some(active) = drag.active.take() {
-            commit_drag(active, &state.pending_mm, &mut workpiece, &mut selection, &mut history);
-            // pending_mm intentionally left as-is: it now reads
-            // "how far the user pushed the piece from its
-            // pre-drag position", which is the intuitive
-            // interpretation. Widget-Reset clears it manually.
+            commit_drag(
+                active,
+                &state.pending_mm,
+                &mut workpiece,
+                &mut selection,
+                &mut history,
+            );
+            // Zero the widget: the piece is now at its new
+            // position, so "pending nudge" is 0. Leaving the last
+            // drag's mm value in the widget would cause the next
+            // Apply / arrow-tap to re-apply it — the source of
+            // the "drag 10 mm then click and it moves another 10
+            // mm" bug.
+            state.pending_mm = Vec3::ZERO;
         }
         return;
     }
@@ -503,6 +576,7 @@ fn gizmo_pointer_input(
         grid_snapshot: snapshot,
         labels,
         component_id,
+        voxel_size: workpiece.grid.voxel_size(),
         dirty_chunks: HashSet::new(),
         last_applied_vox: IVec3::ZERO,
     };
