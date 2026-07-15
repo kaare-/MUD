@@ -27,7 +27,10 @@ convincing lump of clay, quickly*.
 - `[x]` Workbench floor (y = 0) as a hard clip.
 - `[x]` Clay tool (Add / Remove) with soft CSG (magic clay).
 - `[x]` Cookie cutters (circle, square, hex, star).
-- `[x]` Wire cutter (LMB drag → planar slab cut).
+- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG now
+  runs over the whole grid so cells several voxels into the
+  remaining piece get their SDF properly lifted toward the cut
+  plane — no more jagged half-cut.
 - `[x]` Smooth brush, paddle.
 - `[x]` Mirror symmetry (piece-local X = 0).
 - `[x]` Undo / redo (stroke-granular, `Shift+Ctrl+Z` per-op reserved).
@@ -90,10 +93,15 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    the surface look crumpled after a rest.
 
 7. `[x]` **Move body / primitive.** New `Move` tool (`0`) plus an
-   XYZ mm widget (top-right). Applies a rigid, whole-voxel
-   translation via `sculpt_core::translate_component`, journaled
-   as one undo stroke. Insert Primitive auto-selects the new
-   piece and switches into Move so the widget is one click away.
+   XYZ mm widget (top-right) **and a 3D axis gizmo**: three
+   arrows (red X, green Y, blue Z) anchored on the selected
+   piece. Drag an arrow for a live-preview translation along
+   that axis; the widget numbers update in real time; the
+   piece commits on mouse release as a single undo entry. Users
+   who prefer typing can enter numbers into the widget and
+   click Apply. All moves snap to whole voxels via
+   `sculpt_core::translate_component`. Insert Primitive
+   auto-selects the new piece and switches into Move.
 
 8. `[x]` **View menu.** `View → Workbench grid` toggles a 400 mm
    translucent grid on the bench. `View → Perspective / Top /

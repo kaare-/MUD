@@ -21,11 +21,12 @@ use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use bevy::window::PrimaryWindow;
-use glam::{UVec3, Vec3 as GVec3};
+use glam::{IVec3, UVec3, Vec3 as GVec3};
 use sculpt_core::{label_components, ChunkCoord, ComponentField, ComponentId, EMPTY};
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::move_tool::{MoveGizmoDrag, MoveGizmoInputSet};
 use crate::sculpt::{SculptTool, ToolKind};
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
@@ -45,7 +46,10 @@ pub fn plugin(app: &mut App) {
             delete_hotkey,
             update_selection_highlight,
         )
-            .after(TurntableSet),
+            .after(TurntableSet)
+            // Gizmo runs first: if it consumed the click, selection
+            // yields via its `move_drag.started_this_frame` check.
+            .after(MoveGizmoInputSet),
     );
 }
 
@@ -108,6 +112,15 @@ impl Selection {
         self.labels = Some(labels);
     }
 
+    /// Take ownership of the cached label field, leaving `None`
+    /// behind. Pairs with [`Self::set_labels`] for callers that
+    /// need to read the labels without keeping a live borrow.
+    /// The delete / highlight / move-gizmo paths all use this to
+    /// dodge the "cannot borrow `selection` as immutable while
+    /// mutable" pattern.
+    pub fn take_labels(&mut self) -> Option<ComponentField> {
+        self.labels.take()
+    }
 }
 
 /// Ensure [`Selection::labels`] is populated for the current grid,
@@ -133,6 +146,7 @@ fn selection_input(
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
     workpiece: Res<SculptWorkpiece>,
+    move_drag: Res<MoveGizmoDrag>,
     mut selection: ResMut<Selection>,
 ) {
     // Both Select and Move accept LMB-picks so the user can jump
@@ -141,6 +155,13 @@ fn selection_input(
         return;
     }
     if ui_gate.pointer {
+        return;
+    }
+    // The Move gizmo runs before us in the same frame; if it
+    // already grabbed the click (drag starting) or is holding an
+    // in-flight drag, the click belongs to the gizmo, not to
+    // "pick a different piece".
+    if move_drag.started_this_frame || move_drag.is_active() {
         return;
     }
     if !buttons.just_pressed(MouseButton::Left) {
@@ -394,10 +415,18 @@ fn spawn_selection_highlight(
 ///
 /// A tiny padding is added so the wire sits *just outside* the
 /// meshed surface rather than z-fighting the marching-cubes shell.
+///
+/// During a Move-gizmo drag the box follows the previewed piece
+/// via the drag snapshot's bounds + this frame's voxel-snapped
+/// delta — the label cache would otherwise be stale for the
+/// entire drag and leave the highlight pinned to the pre-drag
+/// pose.
 #[allow(clippy::too_many_arguments)]
 fn update_selection_highlight(
     mut selection: ResMut<Selection>,
     workpiece: Res<SculptWorkpiece>,
+    move_drag: Res<crate::move_tool::MoveGizmoDrag>,
+    move_state: Res<crate::move_tool::MoveState>,
     mut q_highlight: Query<
         (&mut Transform, &mut Visibility),
         With<SelectionHighlight>,
@@ -413,11 +442,13 @@ fn update_selection_highlight(
         return;
     }
 
-    // Only run the labeller when it's stale; keep the reference
-    // shape short so we don't fight the borrow checker with the
-    // grid probe below. Same "temporarily own the labels" trick
-    // as `delete_selected_component`.
-    let bounds = {
+    let bounds = if let Some(active) = move_drag.active_drag_bounds_and_delta(&move_state) {
+        Some(active)
+    } else {
+        // Only run the labeller when it's stale; keep the reference
+        // shape short so we don't fight the borrow checker with the
+        // grid probe below. Same "temporarily own the labels" trick
+        // as `delete_selected_component`.
         ensure_labels_fresh(&mut selection, &workpiece);
         let labels = selection
             .labels
@@ -425,12 +456,13 @@ fn update_selection_highlight(
             .expect("labels populated just above");
         let bounds = selection
             .selected_id(&labels)
-            .and_then(|id| labels.bounds_of(id));
+            .and_then(|id| labels.bounds_of(id))
+            .map(|(mn, mx)| (mn, mx, IVec3::ZERO));
         selection.labels = Some(labels);
         bounds
     };
 
-    let Some((min, max)) = bounds else {
+    let Some((min, max, delta_vox)) = bounds else {
         *vis = Visibility::Hidden;
         return;
     };
@@ -438,15 +470,16 @@ fn update_selection_highlight(
     let vs = workpiece.grid.voxel_size();
     let origin = workpiece.grid.origin();
     let pad = vs * 0.35;
+    let d = delta_vox.as_vec3() * vs;
     let local_min = glam::Vec3::new(
-        origin.x + min.x as f32 * vs - pad,
-        origin.y + min.y as f32 * vs - pad,
-        origin.z + min.z as f32 * vs - pad,
+        origin.x + min.x as f32 * vs - pad + d.x,
+        origin.y + min.y as f32 * vs - pad + d.y,
+        origin.z + min.z as f32 * vs - pad + d.z,
     );
     let local_max = glam::Vec3::new(
-        origin.x + max.x as f32 * vs + pad,
-        origin.y + max.y as f32 * vs + pad,
-        origin.z + max.z as f32 * vs + pad,
+        origin.x + max.x as f32 * vs + pad + d.x,
+        origin.y + max.y as f32 * vs + pad + d.y,
+        origin.z + max.z as f32 * vs + pad + d.z,
     );
     let centre = (local_min + local_max) * 0.5;
     let size = local_max - local_min;

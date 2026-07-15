@@ -57,6 +57,19 @@ impl Grid {
         &self.data
     }
 
+    /// Overwrite every sample in the grid with values from `data`.
+    /// Length must match `res.x * res.y * res.z`; the method returns
+    /// `false` and leaves the grid untouched if it doesn't. Used by
+    /// the Move-tool live preview to reset to a snapshot each frame
+    /// before applying a fresh translation.
+    pub fn restore_samples(&mut self, data: &[f32]) -> bool {
+        if data.len() != self.data.len() {
+            return false;
+        }
+        self.data.copy_from_slice(data);
+        true
+    }
+
     /// Create a grid initialised to the SDF of a solid sphere. Everything
     /// outside the sphere has a *bounded* positive distance (still exact
     /// for gradient purposes near the surface).

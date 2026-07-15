@@ -737,9 +737,11 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
              Ctrl+G  drop every floating piece."
         }
         ToolKind::Move => {
-            "Pick a piece (LMB) or use the current selection,\n\
-             then type the X / Y / Z nudge (mm) and Apply.\n\
-             Values snap to whole voxels."
+            "Pick a piece (LMB) or use the current selection.\n\
+             Grab a red / green / blue arrow and drag along it\n\
+             for a live preview; release to commit.\n\
+             Or type X / Y / Z nudges (mm) and Apply.\n\
+             All moves snap to whole voxels."
         }
     }
 }
