@@ -10,6 +10,7 @@
 
 use glam::{UVec3, Vec3};
 
+use crate::brush::soft_max;
 use crate::grid::{DirtyRegion, Grid};
 use crate::profile::{extrude_profile, Profile};
 
@@ -157,21 +158,21 @@ where
     F: FnMut(u32, u32, u32, f32),
 {
     let res = grid.res();
+    let vs = grid.voxel_size();
     let half_thick = cutter.thickness * 0.5;
 
-    // The slab is infinite in two directions. Iterating the full
-    // grid is ~2 M ops at 128³ — comfortably under 30 ms even in
-    // debug — and it lets us apply the CSG subtract everywhere it
-    // could raise `old`, not just near the slab.
-    //
-    // Previous versions had a `d_slab > margin` early exit at
-    // `margin = voxel_size`. That skipped cells only 2-3 voxels
-    // from the plane whose SDF *should* have been lifted by the
-    // subtract (their nearest surface is now the cut plane, not
-    // the original piece boundary). The result was a small SDF
-    // "shelf" one voxel out from the cut — marching cubes then
-    // meshed a jagged, half-cut boundary instead of a clean
-    // planar slice. The fix is to just do the work.
+    // Soft-max blend radius used at the corner where the cut plane
+    // meets the piece's outer surface. Without softening, the CSG
+    // `max(old, -d_slab)` has a sharp gradient discontinuity along
+    // that ring — surface nets averages the discontinuity across a
+    // cell and produces a saw-tooth edge one voxel wide. A `k` of
+    // ~1 voxel rounds the corner just enough to hide the teeth
+    // without visibly bevelling the cut.
+    let corner_k = vs;
+
+    // Iterate the full grid so cells several voxels into the
+    // remaining piece get their SDF properly lifted toward the cut
+    // plane. See the previous regression test for the details.
     let mut dirty_min = UVec3::MAX;
     let mut dirty_max = UVec3::ZERO;
     let mut touched = false;
@@ -187,7 +188,11 @@ where
                 let d_slab = signed.abs() - half_thick;
 
                 let old = grid.get(ix, iy, iz);
-                let mut new = old.max(-d_slab);
+                // Soft CSG subtract — rounds the intersection ring
+                // between the slab and the piece so surface-nets
+                // doesn't emit voxel-scale teeth along the boundary
+                // where two sharp SDFs meet.
+                let mut new = soft_max(old, -d_slab, corner_k);
                 if let Some(wb_y) = cutter.workbench_y {
                     let below = wb_y - p.y;
                     if below > new {
