@@ -170,9 +170,20 @@ where
     // without visibly bevelling the cut.
     let corner_k = vs;
 
-    // Iterate the full grid so cells several voxels into the
-    // remaining piece get their SDF properly lifted toward the cut
-    // plane. See the previous regression test for the details.
+    // Visit only currently-allocated tiles instead of the whole
+    // domain (`PLAN.md` Track A3 — this loop used to be the worst
+    // sparse blocker in the codebase). This is exact, not an
+    // approximation: a CSG subtract can only push the field *more*
+    // positive, never less, so a voxel that starts at the sparse
+    // "far outside" sentinel (every voxel in an unallocated tile)
+    // is provably unaffected — `soft_max(FAR_POSITIVE, -d_slab, k)`
+    // degenerates to `FAR_POSITIVE` because `corner_k` is a couple of
+    // voxels while the sentinel is astronomically larger than any
+    // real `-d_slab`. Cells several voxels into the remaining piece
+    // still get visited and properly lifted toward the cut plane —
+    // that's just "cells inside an allocated tile" now, not "cells
+    // inside the whole 288 mm domain". See the deep-reshape
+    // regression test below for the property this preserves.
     let mut dirty_min = UVec3::MAX;
     let mut dirty_max = UVec3::ZERO;
     let mut touched = false;
@@ -180,36 +191,40 @@ where
     let n = cutter.normal;
     let a = cutter.anchor;
 
-    for iz in 0..res.z {
-        for iy in 0..res.y {
-            for ix in 0..res.x {
-                let p = grid.position(ix, iy, iz);
-                let signed = (p - a).dot(n);
-                let d_slab = signed.abs() - half_thick;
+    for coord in grid.allocated_chunk_coords() {
+        let base = coord.voxel_min();
+        let max = coord.voxel_max(res);
+        for iz in base.z..max.z {
+            for iy in base.y..max.y {
+                for ix in base.x..max.x {
+                    let p = grid.position(ix, iy, iz);
+                    let signed = (p - a).dot(n);
+                    let d_slab = signed.abs() - half_thick;
 
-                let old = grid.get(ix, iy, iz);
-                // Soft CSG subtract — rounds the intersection ring
-                // between the slab and the piece so surface-nets
-                // doesn't emit voxel-scale teeth along the boundary
-                // where two sharp SDFs meet.
-                let mut new = soft_max(old, -d_slab, corner_k);
-                if let Some(wb_y) = cutter.workbench_y {
-                    let below = wb_y - p.y;
-                    if below > new {
-                        new = below;
+                    let old = grid.get(ix, iy, iz);
+                    // Soft CSG subtract — rounds the intersection ring
+                    // between the slab and the piece so surface-nets
+                    // doesn't emit voxel-scale teeth along the boundary
+                    // where two sharp SDFs meet.
+                    let mut new = soft_max(old, -d_slab, corner_k);
+                    if let Some(wb_y) = cutter.workbench_y {
+                        let below = wb_y - p.y;
+                        if below > new {
+                            new = below;
+                        }
                     }
-                }
-                if new != old {
-                    on_pre_mutation(ix, iy, iz, old);
-                    grid.set(ix, iy, iz, new);
-                    let v = UVec3::new(ix, iy, iz);
-                    if !touched {
-                        dirty_min = v;
-                        dirty_max = v + UVec3::ONE;
-                        touched = true;
-                    } else {
-                        dirty_min = dirty_min.min(v);
-                        dirty_max = dirty_max.max(v + UVec3::ONE);
+                    if new != old {
+                        on_pre_mutation(ix, iy, iz, old);
+                        grid.set(ix, iy, iz, new);
+                        let v = UVec3::new(ix, iy, iz);
+                        if !touched {
+                            dirty_min = v;
+                            dirty_max = v + UVec3::ONE;
+                            touched = true;
+                        } else {
+                            dirty_min = dirty_min.min(v);
+                            dirty_max = dirty_max.max(v + UVec3::ONE);
+                        }
                     }
                 }
             }
@@ -364,6 +379,59 @@ mod tests {
         let _ = apply_wire_cutter(&mut g, &cutter);
         let below = g.sample(Vec3::new(16.0, 3.0, 16.0));
         assert!(below > 0.0, "voxel below workbench should be outside, got {below}");
+    }
+
+    /// Regression for the Track A3 sparsification: a wire cut on a
+    /// small sparse object (built with `Grid::empty` + a brush, not
+    /// `from_sphere`'s full-domain fill) must neither miss any real
+    /// geometry nor spuriously allocate tiles far from the object.
+    #[test]
+    fn wire_cutter_on_a_sparse_grid_stays_sparse_and_still_splits() {
+        use crate::brush::{apply_sphere_brush, BrushMode, SphereBrush};
+
+        let g_res = UVec3::new(192, 192, 192);
+        let mut g = Grid::empty(g_res, 1.5, Vec3::ZERO);
+        let centre = Vec3::new(48.0, 48.0, 48.0);
+        let add = SphereBrush {
+            center: centre,
+            radius: 15.0,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(0.0, -1.0, 0.0),
+            displace: false,
+            workbench_y: None,
+        };
+        let _ = apply_sphere_brush(&mut g, &add);
+        let tiles_before = g.allocated_tile_count();
+        // A 192³ / 32-tile grid has 6³ = 216 possible tiles; a 15 mm
+        // sphere should touch only a handful of them.
+        assert!(
+            tiles_before < 20,
+            "sparse sphere should only allocate a handful of tiles, got {tiles_before}"
+        );
+
+        let cutter = WireCutter {
+            anchor: centre,
+            normal: Vec3::new(1.0, 0.0, 0.0),
+            thickness: 2.0,
+            workbench_y: None,
+        };
+        let region = apply_wire_cutter(&mut g, &cutter);
+        assert!(region.is_some());
+
+        // Still splits into two solid halves, same as the dense test.
+        assert!(g.sample(centre) > 0.0);
+        assert!(g.sample(Vec3::new(centre.x - 7.0, centre.y, centre.z)) < 0.0);
+        assert!(g.sample(Vec3::new(centre.x + 7.0, centre.y, centre.z)) < 0.0);
+
+        // The cut must not have allocated tiles all over the empty
+        // domain — only the handful the sphere already touched (the
+        // cut can only push material outward, never grow into
+        // previously-empty tiles).
+        let tiles_after = g.allocated_tile_count();
+        assert_eq!(
+            tiles_after, tiles_before,
+            "wire cut on a sparse grid must not allocate new tiles"
+        );
     }
 
     #[test]

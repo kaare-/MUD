@@ -30,7 +30,7 @@ use crate::move_tool::{MoveGizmoDrag, MoveGizmoInputSet};
 use crate::sculpt::{SculptTool, ToolKind};
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
+use crate::workpiece::{LayersState, WorkpieceRoot};
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<Selection>();
@@ -129,10 +129,10 @@ impl Selection {
 /// stale-cache call; free on a hit.
 fn ensure_labels_fresh<'a>(
     selection: &'a mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> &'a ComponentField {
     if selection.labels.is_none() {
-        selection.labels = Some(label_components(&workpiece.grid));
+        selection.labels = Some(label_components(workpiece.grid()));
     }
     selection.labels.as_ref().expect("just populated")
 }
@@ -145,7 +145,7 @@ fn selection_input(
     q_piece: Query<&Transform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
-    workpiece: Res<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     move_drag: Res<MoveGizmoDrag>,
     mut selection: ResMut<Selection>,
 ) {
@@ -188,18 +188,31 @@ fn selection_input(
     let dir_local = piece_inv
         .transform_vector3(*ray_world.direction)
         .normalize();
-    let Some(hit) = workpiece.grid.ray_march(
+    // Ray-march every *visible* layer, not just the active one, so a
+    // click naturally reaches — and activates — whatever piece the
+    // user is actually pointing at (`PLAN.md` Track B2). Without
+    // this, inserting a primitive (which activates its new layer)
+    // would leave every previously-placed piece unreachable by any
+    // tool until a future Layers panel adds another way to switch.
+    let Some((hit_layer, hit)) = workpiece.ray_march_visible(
         GVec3::new(origin_local.x, origin_local.y, origin_local.z),
         GVec3::new(dir_local.x, dir_local.y, dir_local.z),
         4000.0,
     ) else {
         return;
     };
+    if hit_layer != workpiece.active_index() {
+        workpiece.set_active_index(hit_layer);
+        // The cached labels (if any) belong to whichever layer was
+        // active before this click — drop them so the lookup below
+        // recomputes against the newly-active one.
+        selection.invalidate_labels();
+    }
 
     // Step a tiny bit *into* the surface along the view ray so we
     // land on a solid voxel rather than the outside face — the SDF
     // is only ≤ 0 inside.
-    let step = workpiece.grid.voxel_size() * 0.5;
+    let step = workpiece.grid().voxel_size() * 0.5;
     let inside = hit
         + GVec3::new(dir_local.x, dir_local.y, dir_local.z) * step;
     let Some(voxel) = grid_voxel_of(&workpiece, inside) else {
@@ -213,7 +226,7 @@ fn selection_input(
         return;
     }
     let voxel_count = labels.voxel_count(id);
-    let volume_mm3 = labels.volume_mm3(id, workpiece.grid.voxel_size());
+    let volume_mm3 = labels.volume_mm3(id, workpiece.grid().voxel_size());
     selection.picked_voxel = Some(voxel);
     info!(
         "selected component #{id} — {voxel_count} voxels, {volume_mm3:.0} mm³",
@@ -222,11 +235,11 @@ fn selection_input(
 
 /// Map a piece-local point to the grid voxel it lies in, or `None`
 /// when the point falls outside the grid AABB.
-fn grid_voxel_of(workpiece: &SculptWorkpiece, p: GVec3) -> Option<(u32, u32, u32)> {
-    let vs = workpiece.grid.voxel_size();
+fn grid_voxel_of(workpiece: &LayersState, p: GVec3) -> Option<(u32, u32, u32)> {
+    let vs = workpiece.grid().voxel_size();
     let inv_vs = 1.0 / vs;
-    let res = workpiece.grid.res();
-    let origin = workpiece.grid.origin();
+    let res = workpiece.grid().res();
+    let origin = workpiece.grid().origin();
     let local = (p - origin) * inv_vs;
     if local.x < 0.0
         || local.y < 0.0
@@ -247,7 +260,7 @@ fn grid_voxel_of(workpiece: &SculptWorkpiece, p: GVec3) -> Option<(u32, u32, u32
 /// through the Select-tool pointer path.
 fn handle_selection_actions(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut selection: ResMut<Selection>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
@@ -299,7 +312,7 @@ fn delete_hotkey(
 /// them to "far positive" (empty), journal every change as a single
 /// undo stroke, dirty the touched chunks, and clear the selection.
 fn delete_selected_component(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     selection: &mut Selection,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
@@ -322,23 +335,30 @@ fn delete_selected_component(
     };
 
     let res = labels.res();
-    let empty_value = workpiece.grid.voxel_size() * 32.0;
+    let empty_value = workpiece.grid().voxel_size() * 32.0;
     let mut recorder = StrokeRecorder::default();
     let mut removed = 0u32;
     let mut min = UVec3::new(u32::MAX, u32::MAX, u32::MAX);
     let mut max = UVec3::ZERO;
-    let ids = labels.ids();
 
-    for iz in 0..res.z {
-        for iy in 0..res.y {
-            for ix in 0..res.x {
-                let idx = (ix + iy * res.x + iz * res.x * res.y) as usize;
-                if ids[idx] != target {
+    // `bounds_of` already gives the exact AABB of `target`'s voxels —
+    // no need to raster-scan the whole domain (`PLAN.md` Track A3;
+    // `ComponentField` no longer even exposes a dense array to scan).
+    let Some((scan_min, scan_max)) = labels.bounds_of(target) else {
+        info!("delete: selected component has no bounds — nothing to do");
+        selection.picked_voxel = None;
+        return;
+    };
+
+    for iz in scan_min.z..scan_max.z {
+        for iy in scan_min.y..scan_max.y {
+            for ix in scan_min.x..scan_max.x {
+                if labels.id_at(ix, iy, iz) != target {
                     continue;
                 }
-                let pre = workpiece.grid.get(ix, iy, iz);
+                let pre = workpiece.grid().get(ix, iy, iz);
                 recorder.record_pre_value(ix, iy, iz, pre);
-                workpiece.grid.set(ix, iy, iz, empty_value);
+                workpiece.grid_mut().set(ix, iy, iz, empty_value);
                 removed += 1;
                 min.x = min.x.min(ix);
                 min.y = min.y.min(iy);
@@ -360,9 +380,9 @@ fn delete_selected_component(
     recorder.record_dirty_region(region, res);
     for c in region.touched_chunks(res) {
         let ChunkCoord { x, y, z } = c;
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
     selection.picked_voxel = None;
@@ -424,7 +444,7 @@ fn spawn_selection_highlight(
 #[allow(clippy::too_many_arguments)]
 fn update_selection_highlight(
     mut selection: ResMut<Selection>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
     move_drag: Res<crate::move_tool::MoveGizmoDrag>,
     move_state: Res<crate::move_tool::MoveState>,
     mut q_highlight: Query<
@@ -467,8 +487,8 @@ fn update_selection_highlight(
         return;
     };
 
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     let pad = vs * 0.35;
     let d = delta_vox.as_vec3() * vs;
     let local_min = glam::Vec3::new(

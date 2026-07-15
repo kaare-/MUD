@@ -1,7 +1,10 @@
 # MUD
 
 A digital clay modeller. See [`DESIGN.md`](DESIGN.md) for the design
-notes; this file is just how to build and run.
+notes, [`PLAN.md`](PLAN.md) for the backlog, and
+[`SPARSE_THEN_LAYERS.md`](SPARSE_THEN_LAYERS.md) for the next
+architecture track (sparse SDF, then layers). This file is just how
+to build and run.
 
 ## Requirements
 

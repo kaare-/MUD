@@ -16,11 +16,11 @@
 //! (only when the selection resource asks for it), never on every
 //! frame.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 
 use glam::UVec3;
 
-use crate::grid::Grid;
+use crate::grid::{ChunkCoord, Grid, CHUNK_SIZE};
 
 /// Component identifier. `0` is reserved for "empty" (φ ≥ 0). Valid
 /// solid components start at `1`.
@@ -29,12 +29,35 @@ pub type ComponentId = u32;
 /// Sentinel for the "no component" cells.
 pub const EMPTY: ComponentId = 0;
 
+const TILE_DIM: usize = CHUNK_SIZE as usize;
+const TILE_LEN: usize = TILE_DIM * TILE_DIM * TILE_DIM;
+type IdTile = Box<[ComponentId; TILE_LEN]>;
+
+#[inline]
+fn tile_key(ix: u32, iy: u32, iz: u32) -> ChunkCoord {
+    ChunkCoord::new(ix / CHUNK_SIZE, iy / CHUNK_SIZE, iz / CHUNK_SIZE)
+}
+
+#[inline]
+fn local_index(ix: u32, iy: u32, iz: u32) -> usize {
+    let lx = (ix % CHUNK_SIZE) as usize;
+    let ly = (iy % CHUNK_SIZE) as usize;
+    let lz = (iz % CHUNK_SIZE) as usize;
+    lx + ly * TILE_DIM + lz * TILE_DIM * TILE_DIM
+}
+
 /// A per-voxel component label plus size statistics.
 ///
-/// Sparse queries (`id_at`, `voxel_count`) are O(1); the label array
-/// is publicly readable for callers that need to iterate.
+/// Storage mirrors `Grid`'s sparse tiles (`PLAN.md` Track A3): a
+/// component can only ever occupy voxels inside an *allocated* `Grid`
+/// tile (an unallocated one is guaranteed `φ >= 0` = empty), so the
+/// label field only allocates a tile where labelling actually wrote
+/// a non-[`EMPTY`] id into it. `id_at` is the only way to read a
+/// label — there's no dense-array escape hatch — so every consumer
+/// pays a cost proportional to the region it actually visits, not to
+/// `res`.
 pub struct ComponentField {
-    ids: Vec<ComponentId>,
+    ids: HashMap<ChunkCoord, IdTile>,
     res: UVec3,
     /// `voxel_count[i]` is the number of voxels with `ComponentId == i`.
     /// `voxel_count[0]` counts empty voxels.
@@ -54,16 +77,26 @@ impl ComponentField {
         self.res
     }
 
-    /// Raw component id at a voxel (`0` = empty).
+    /// Raw component id at a voxel (`0` = empty). The only accessor
+    /// for label data — callers that need to visit many voxels
+    /// should bound themselves with `bounds_of` first (as
+    /// `translate_components` and the app's delete-selection path
+    /// both do) rather than raster-scanning `res`.
     #[inline]
     pub fn id_at(&self, x: u32, y: u32, z: u32) -> ComponentId {
-        self.ids[(x + y * self.res.x + z * self.res.x * self.res.y) as usize]
+        match self.ids.get(&tile_key(x, y, z)) {
+            Some(tile) => tile[local_index(x, y, z)],
+            None => EMPTY,
+        }
     }
 
-    /// Read-only view of the packed id array (x-major, matching
-    /// `Grid::samples`).
-    pub fn ids(&self) -> &[ComponentId] {
-        &self.ids
+    #[inline]
+    fn set_id(&mut self, x: u32, y: u32, z: u32, id: ComponentId) {
+        let tile = self
+            .ids
+            .entry(tile_key(x, y, z))
+            .or_insert_with(|| Box::new([EMPTY; TILE_LEN]));
+        tile[local_index(x, y, z)] = id;
     }
 
     /// Voxel count for a component. Returns `0` for out-of-range ids.
@@ -111,106 +144,119 @@ impl ComponentField {
 /// Assign a component id to every solid (`φ < 0`) voxel via a
 /// breadth-first flood-fill over 6-connected neighbours.
 ///
-/// Runs in O(N) grid voxels. Uses a single reusable `VecDeque`
-/// queue and a bit-per-voxel visited mask, so allocation is bounded
-/// even on the 128³ Stage-1 grid.
+/// Both the label storage and the seed-scan are sparse (`PLAN.md`
+/// Track A3), mirroring `Grid`'s own tiles: a voxel in an
+/// unallocated `Grid` tile is guaranteed `φ >= 0` (empty), so it can
+/// never seed or extend a component, doesn't need visiting during
+/// the scan, and never needs a label tile allocated for it. The
+/// flood-fill itself is unchanged in spirit — neighbour lookups
+/// still call `grid.get` / `field.id_at`, which already return the
+/// correct "empty" answer for unallocated regions, so a flood
+/// correctly stops at a tile boundary with no special-casing.
+///
+/// Uses a single reusable `VecDeque` queue and a bit-per-voxel
+/// visited mask, so allocation is bounded even on a fully-occupied
+/// grid.
 pub fn label_components(grid: &Grid) -> ComponentField {
     let res = grid.res();
-    let n = (res.x * res.y * res.z) as usize;
-    let stride_y = res.x as usize;
-    let stride_z = (res.x * res.y) as usize;
+    let n = (res.x as usize) * (res.y as usize) * (res.z as usize);
 
-    let mut ids = vec![EMPTY; n];
-    // voxel_count[0] = empty voxel count.
-    let mut voxel_count: Vec<u32> = vec![0];
-    // bounds[0] is a placeholder; the fill fields it in for id >= 1.
-    let mut bounds: Vec<(UVec3, UVec3)> = vec![(UVec3::ZERO, UVec3::ZERO)];
+    let mut field = ComponentField {
+        ids: HashMap::new(),
+        res,
+        // voxel_count[0] = empty voxel count.
+        voxel_count: vec![0],
+        // bounds[0] is a placeholder; the fill fields it in for id >= 1.
+        bounds: vec![(UVec3::ZERO, UVec3::ZERO)],
+    };
     let mut next_id: ComponentId = 1;
     let mut queue: VecDeque<(u32, u32, u32)> = VecDeque::new();
+    let mut visited_voxels: usize = 0;
 
-    for iz in 0..res.z {
-        for iy in 0..res.y {
-            for ix in 0..res.x {
-                let idx = ix as usize + iy as usize * stride_y + iz as usize * stride_z;
-                if grid.get(ix, iy, iz) >= 0.0 {
-                    voxel_count[0] += 1;
-                    continue;
-                }
-                if ids[idx] != EMPTY {
-                    continue;
-                }
-
-                let comp_id = next_id;
-                next_id += 1;
-                voxel_count.push(0);
-                // Seed the AABB with the first voxel. min = start,
-                // max = start + 1 (half-open). Grows as the flood
-                // finds more voxels.
-                let mut c_min = UVec3::new(ix, iy, iz);
-                let mut c_max = UVec3::new(ix + 1, iy + 1, iz + 1);
-
-                queue.clear();
-                queue.push_back((ix, iy, iz));
-                ids[idx] = comp_id;
-
-                while let Some((x, y, z)) = queue.pop_front() {
-                    voxel_count[comp_id as usize] += 1;
-                    c_min.x = c_min.x.min(x);
-                    c_min.y = c_min.y.min(y);
-                    c_min.z = c_min.z.min(z);
-                    c_max.x = c_max.x.max(x + 1);
-                    c_max.y = c_max.y.max(y + 1);
-                    c_max.z = c_max.z.max(z + 1);
-
-                    // 6-connected neighbours. Inline the loop for
-                    // faster iteration on the 128³ grid.
-                    let neighbours: [(i32, i32, i32); 6] = [
-                        (1, 0, 0),
-                        (-1, 0, 0),
-                        (0, 1, 0),
-                        (0, -1, 0),
-                        (0, 0, 1),
-                        (0, 0, -1),
-                    ];
-                    for (dx, dy, dz) in neighbours {
-                        let nx = x as i32 + dx;
-                        let ny = y as i32 + dy;
-                        let nz = z as i32 + dz;
-                        if nx < 0
-                            || ny < 0
-                            || nz < 0
-                            || nx >= res.x as i32
-                            || ny >= res.y as i32
-                            || nz >= res.z as i32
-                        {
-                            continue;
-                        }
-                        let (nx, ny, nz) = (nx as u32, ny as u32, nz as u32);
-                        let nidx = nx as usize
-                            + ny as usize * stride_y
-                            + nz as usize * stride_z;
-                        if ids[nidx] != EMPTY {
-                            continue;
-                        }
-                        if grid.get(nx, ny, nz) >= 0.0 {
-                            continue;
-                        }
-                        ids[nidx] = comp_id;
-                        queue.push_back((nx, ny, nz));
+    for coord in grid.allocated_chunk_coords() {
+        let base = coord.voxel_min();
+        let tile_max = coord.voxel_max(res);
+        for iz in base.z..tile_max.z {
+            for iy in base.y..tile_max.y {
+                for ix in base.x..tile_max.x {
+                    visited_voxels += 1;
+                    if grid.get(ix, iy, iz) >= 0.0 {
+                        field.voxel_count[0] += 1;
+                        continue;
                     }
-                }
+                    if field.id_at(ix, iy, iz) != EMPTY {
+                        continue;
+                    }
 
-                bounds.push((c_min, c_max));
+                    let comp_id = next_id;
+                    next_id += 1;
+                    field.voxel_count.push(0);
+                    // Seed the AABB with the first voxel. min = start,
+                    // max = start + 1 (half-open). Grows as the flood
+                    // finds more voxels.
+                    let mut c_min = UVec3::new(ix, iy, iz);
+                    let mut c_max = UVec3::new(ix + 1, iy + 1, iz + 1);
+
+                    queue.clear();
+                    queue.push_back((ix, iy, iz));
+                    field.set_id(ix, iy, iz, comp_id);
+
+                    while let Some((x, y, z)) = queue.pop_front() {
+                        field.voxel_count[comp_id as usize] += 1;
+                        c_min.x = c_min.x.min(x);
+                        c_min.y = c_min.y.min(y);
+                        c_min.z = c_min.z.min(z);
+                        c_max.x = c_max.x.max(x + 1);
+                        c_max.y = c_max.y.max(y + 1);
+                        c_max.z = c_max.z.max(z + 1);
+
+                        // 6-connected neighbours. Inline the loop for
+                        // faster iteration.
+                        let neighbours: [(i32, i32, i32); 6] = [
+                            (1, 0, 0),
+                            (-1, 0, 0),
+                            (0, 1, 0),
+                            (0, -1, 0),
+                            (0, 0, 1),
+                            (0, 0, -1),
+                        ];
+                        for (dx, dy, dz) in neighbours {
+                            let nx = x as i32 + dx;
+                            let ny = y as i32 + dy;
+                            let nz = z as i32 + dz;
+                            if nx < 0
+                                || ny < 0
+                                || nz < 0
+                                || nx >= res.x as i32
+                                || ny >= res.y as i32
+                                || nz >= res.z as i32
+                            {
+                                continue;
+                            }
+                            let (nx, ny, nz) = (nx as u32, ny as u32, nz as u32);
+                            if field.id_at(nx, ny, nz) != EMPTY {
+                                continue;
+                            }
+                            if grid.get(nx, ny, nz) >= 0.0 {
+                                continue;
+                            }
+                            field.set_id(nx, ny, nz, comp_id);
+                            queue.push_back((nx, ny, nz));
+                        }
+                    }
+
+                    field.bounds.push((c_min, c_max));
+                }
             }
         }
     }
 
-    ComponentField {
-        ids,
-        res,
-        voxel_count,
-        bounds,
-    }
+    // Every voxel we never visited belongs to an unallocated tile,
+    // which is guaranteed empty (`φ >= 0`) by the sparse `Grid`
+    // contract — count them in bulk instead of visiting each one.
+    field.voxel_count[0] += (n - visited_voxels) as u32;
+
+    field
 }
 
 #[cfg(test)]
@@ -359,6 +405,67 @@ mod tests {
         let f = label_components(&g);
         assert!(f.bounds_of(EMPTY).is_none());
         assert!(f.bounds_of(9999).is_none());
+    }
+
+    /// Regression for the Track A3 sparsification: the bulk
+    /// "everything unvisited is empty" accounting must agree with a
+    /// full per-voxel count, and must correctly include every voxel
+    /// belonging to tiles that never got allocated at all (not just
+    /// empty voxels *within* allocated tiles).
+    #[test]
+    fn empty_voxel_count_accounts_for_every_voxel_including_unallocated_tiles() {
+        let res = UVec3::new(96, 96, 96);
+        let mut g = Grid::empty(res, 1.0, Vec3::ZERO);
+        let add = SphereBrush {
+            center: Vec3::new(16.0, 16.0, 16.0),
+            radius: 6.0,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            displace: false,
+            workbench_y: None,
+        };
+        let _ = apply_sphere_brush(&mut g, &add);
+        // Most of this 96³ grid is untouched — well under the full
+        // 3³ = 27 tiles a 96³/32 grid could allocate.
+        assert!(g.allocated_tile_count() < 27);
+
+        let f = label_components(&g);
+        let total = (res.x as u64) * (res.y as u64) * (res.z as u64);
+        let solid: u64 = f
+            .ids_by_size_desc()
+            .iter()
+            .map(|&id| f.voxel_count(id) as u64)
+            .sum();
+        assert_eq!(
+            f.voxel_count(EMPTY) as u64 + solid,
+            total,
+            "empty + solid voxel counts must cover every voxel in the domain"
+        );
+    }
+
+    /// Regression for the Track A3 label-storage sparsification: a
+    /// small component on a large grid must only allocate a handful
+    /// of label tiles, not one dense buffer covering the whole
+    /// domain.
+    #[test]
+    fn label_field_stays_sparse_for_a_small_component_on_a_large_grid() {
+        let mut g = Grid::empty(UVec3::new(192, 192, 192), 1.0, Vec3::ZERO);
+        let add = SphereBrush {
+            center: Vec3::new(16.0, 16.0, 16.0),
+            radius: 5.0,
+            mode: BrushMode::Pull,
+            direction: Vec3::new(0.0, 0.0, -1.0),
+            displace: false,
+            workbench_y: None,
+        };
+        let _ = apply_sphere_brush(&mut g, &add);
+        let f = label_components(&g);
+        assert_eq!(f.component_count(), 1);
+        // A 5 mm sphere spans well under one 32-voxel tile; a couple
+        // of label tiles (interior + any neighbouring band spillover)
+        // is the right ballpark, nowhere near the 6³ = 216 a dense
+        // `res³` scan would have touched.
+        assert!(f.ids.len() <= 4, "label field allocated {} tiles, expected only a few", f.ids.len());
     }
 
     #[test]

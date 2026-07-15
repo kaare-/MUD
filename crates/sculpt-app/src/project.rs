@@ -31,7 +31,7 @@ use crate::actions::AppAction;
 use crate::export::timestamped_filename;
 use crate::input_gate::UiCapturesInput;
 use crate::undo::{SculptStroke, UndoHistory};
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<FileDialogState>();
@@ -177,7 +177,7 @@ fn emit_project_hotkeys(
 #[allow(clippy::too_many_arguments)]
 fn handle_project_actions(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<crate::selection::Selection>,
@@ -216,16 +216,16 @@ fn handle_project_actions(
 /// Clears undo history and any in-flight stroke — the journal held
 /// pre/post values against the old grid and would misapply otherwise.
 pub fn clear_worktable(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
 ) {
     let empty = Grid::empty(
-        workpiece.grid.res(),
-        workpiece.grid.voxel_size(),
-        workpiece.grid.origin(),
+        workpiece.grid().res(),
+        workpiece.grid().voxel_size(),
+        workpiece.grid().origin(),
     );
-    match workpiece.swap_grid(empty) {
+    match workpiece.swap_active_grid(empty) {
         Ok(()) => {
             history.clear();
             stroke.discard_live();
@@ -237,11 +237,19 @@ pub fn clear_worktable(
     }
 }
 
-/// Write the workpiece's grid to `path`. Wraps every failure in a
+/// Write the workpiece to `path`. Wraps every failure in a
 /// user-facing log message rather than propagating — we're being
 /// called from a fire-and-forget event handler and there's nowhere
 /// useful for the Result to go.
-pub fn save_to_path(workpiece: &SculptWorkpiece, path: &Path) {
+///
+/// `.mudclay` v1 has no way to represent more than one layer (Track
+/// B4 — the v3 format — will fix that). Until then, save flattens
+/// every *visible* layer into one grid via min-union so switching to
+/// layers can never silently drop a whole piece on save; loading the
+/// file back always gets one merged layer, which is a real (if
+/// temporary) loss of the layer boundary, but never a loss of the
+/// material itself.
+pub fn save_to_path(workpiece: &LayersState, path: &Path) {
     info!("saving project to {}", path.display());
     let file = match File::create(path) {
         Ok(f) => f,
@@ -251,11 +259,12 @@ pub fn save_to_path(workpiece: &SculptWorkpiece, path: &Path) {
         }
     };
     let mut writer = BufWriter::new(file);
-    if let Err(e) = write_project(&workpiece.grid, &mut writer) {
+    let flattened = workpiece.visible_union_grid();
+    if let Err(e) = write_project(&flattened, &mut writer) {
         error!("failed to write project: {e}");
         return;
     }
-    let bytes = project_size(&workpiece.grid);
+    let bytes = project_size(&flattened);
     info!("wrote {} bytes to {}", bytes, path.display());
 }
 
@@ -265,7 +274,7 @@ pub fn save_to_path(workpiece: &SculptWorkpiece, path: &Path) {
 /// grid.
 pub fn load_from_path(
     path: &Path,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
 ) {
@@ -285,7 +294,7 @@ pub fn load_from_path(
             return;
         }
     };
-    match workpiece.swap_grid(new_grid) {
+    match workpiece.swap_active_grid(new_grid) {
         Ok(()) => {
             history.clear();
             stroke.discard_live();

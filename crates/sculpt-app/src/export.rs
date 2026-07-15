@@ -24,7 +24,7 @@ use sculpt_core::{extract_full_mesh, stl_binary_size, write_stl_binary, Orientat
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(Update, (emit_export_hotkey, handle_export_action));
@@ -55,7 +55,7 @@ fn emit_export_hotkey(
 
 fn handle_export_action(
     mut events: EventReader<AppAction>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
 ) {
     for a in events.read() {
         if let AppAction::ExportStlAs(path) = a {
@@ -64,13 +64,17 @@ fn handle_export_action(
     }
 }
 
-/// Extract the current SDF as a mesh and write a binary STL to `path`.
-/// Logs every failure rather than propagating — like `save_to_path`,
-/// we're called from a fire-and-forget event handler.
-pub fn export_stl_to(workpiece: &SculptWorkpiece, path: &Path) {
+/// Extract every *visible* layer as one mesh (min-union flattened —
+/// same rationale as `project::save_to_path`: "what I see is what I
+/// print", and a single-mesh STL has no way to keep layers separate
+/// anyway) and write a binary STL to `path`. Logs every failure
+/// rather than propagating — like `save_to_path`, we're called from
+/// a fire-and-forget event handler.
+pub fn export_stl_to(workpiece: &LayersState, path: &Path) {
     info!("exporting STL to {}", path.display());
 
-    let mesh = extract_full_mesh(&workpiece.grid);
+    let flattened = workpiece.visible_union_grid();
+    let mesh = extract_full_mesh(&flattened);
     if mesh.is_empty() {
         warn!("no material to export — grid is empty");
         return;

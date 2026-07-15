@@ -32,7 +32,7 @@ use glam::{Vec2 as GVec2, Vec3 as GVec3};
 use sculpt_core::Profile;
 
 use crate::sculpt::{clay_brush_center, SculptTool, ToolKind};
-use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
+use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// Marker component for the single preview entity.
 #[derive(Component)]
@@ -130,7 +130,7 @@ fn update_preview(
     q_camera: Query<(&Camera, &GlobalTransform)>,
     q_piece: Query<&GlobalTransform, With<WorkpieceRoot>>,
     q_preview: Query<(Entity, &Mesh3d), With<ToolPreview>>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
     tool: Res<SculptTool>,
     preview_mats: Res<PreviewMaterials>,
     mut state: ResMut<PreviewMeshState>,
@@ -192,7 +192,7 @@ fn update_preview(
     let dir_local = piece_inv
         .transform_vector3(*ray_world.direction)
         .normalize();
-    let hit = match workpiece.grid.ray_march(
+    let hit = match workpiece.grid().ray_march(
         GVec3::new(origin_local.x, origin_local.y, origin_local.z),
         GVec3::new(dir_local.x, dir_local.y, dir_local.z),
         4000.0,
@@ -205,7 +205,7 @@ fn update_preview(
     };
     // Surface normal from the SDF gradient. Preview placement for Clay
     // matches the stamp centre; Smooth / cutters use the outward normal.
-    let grad = workpiece.grid.gradient_at(hit);
+    let grad = workpiece.grid().gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
     } else {

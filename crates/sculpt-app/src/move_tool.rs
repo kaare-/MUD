@@ -17,13 +17,15 @@
 //! translations would resample the SDF and blur the surface; every
 //! DCC move here is lossless.
 //!
-//! Live preview strategy: at drag start, the whole SDF is
-//! snapshotted (`Vec<f32>`, ~27 MB at 192³) and the component
-//! labels are frozen. Each drag frame resets the grid from the
-//! snapshot and re-applies `translate_component` with the *total*
-//! delta, so undo doesn't need to record intermediate states. On
-//! release, the final delta is applied one last time via a
-//! journalling recorder → one clean undo entry.
+//! Live preview strategy: at drag start, a region-scoped snapshot
+//! covering just the selected component's own (widened) bounds is
+//! taken, and the component labels are frozen. `ensure_region_covers`
+//! grows that snapshot on demand as the drag reaches farther (Track
+//! A3, `PLAN.md`) — never a whole-domain copy. Each drag frame resets
+//! the grid from the snapshot and re-applies `translate_component`
+//! with the *total* delta, so undo doesn't need to record
+//! intermediate states. On release, the final delta is applied one
+//! last time via a journalling recorder → one clean undo entry.
 //!
 //! The heavy lifting — shifting voxel values along with their
 //! narrow band — lives in `sculpt_core::translate_component`.
@@ -34,7 +36,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use glam::{IVec3, Vec3 as GVec3};
 use sculpt_core::{
-    label_components, translate_component, ChunkCoord, ComponentField, ComponentId,
+    label_components, touched_region_for_translate, translate_component, ChunkCoord,
+    ComponentField, ComponentId, Grid, RegionSnapshot,
 };
 
 use crate::actions::AppAction;
@@ -43,7 +46,7 @@ use crate::sculpt::{SculptTool, ToolKind};
 use crate::selection::Selection;
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::{SculptWorkpiece, WorkpieceRoot};
+use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// User-editable pending delta (mm along each axis) that the Move
 /// HUD widget in `ui.rs` binds to. Cleared to zero after each
@@ -142,10 +145,13 @@ struct ActiveDrag {
     /// nudge can be followed by a gizmo tweak without losing the
     /// typed part.
     initial_widget_mm: Vec3,
-    /// Full pre-drag SDF, used to rewind before each frame's
-    /// re-application. ~27 MB at 192³ — a fine trade for accurate
-    /// live preview + single-entry undo.
-    grid_snapshot: Vec<f32>,
+    /// Region-scoped snapshot covering everywhere this drag has
+    /// reached so far, used to rewind before each frame's
+    /// re-application (so repeated `translate_component` calls with
+    /// a varying total delta don't compound). Grows on demand via
+    /// [`ensure_region_covers`] instead of paying a full-domain
+    /// `to_dense()` / `restore_samples()` every frame.
+    grid_snapshot: RegionSnapshot,
     /// Labels captured at drag start. Since we always start each
     /// frame's translate from `grid_snapshot`, the label field
     /// stays valid for the whole drag.
@@ -319,7 +325,7 @@ fn spawn_axis_gizmo(
 fn update_gizmo_visibility_and_transform(
     tool: Res<SculptTool>,
     mut selection: ResMut<Selection>,
-    workpiece: Res<SculptWorkpiece>,
+    workpiece: Res<LayersState>,
     drag: Res<MoveGizmoDrag>,
     state: Res<MoveState>,
     mut q_arrows: Query<(&MoveArrow, &mut Transform, &mut Visibility)>,
@@ -366,12 +372,12 @@ fn update_gizmo_visibility_and_transform(
 /// the current voxel-snapped pending delta.
 fn centre_from_drag(
     active: &ActiveDrag,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     pending_mm: &Vec3,
 ) -> Option<GVec3> {
     let (mn, mx) = active.labels.bounds_of(active.component_id)?;
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     // Snap the mm delta to voxels so we track the *actual*
     // translation, not the widget's raw millimetre value.
     let dx = (pending_mm.x / vs).round() * vs;
@@ -386,7 +392,7 @@ fn centre_from_drag(
 
 fn piece_local_centroid_of_selection(
     selection: &mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> Option<GVec3> {
     // Same "temporarily own the labels" pattern used elsewhere.
     let labels = ensure_labels_owned(selection, workpiece)?;
@@ -395,8 +401,8 @@ fn piece_local_centroid_of_selection(
     // Put the labels back before returning.
     selection.set_labels(labels);
     let (mn, mx) = bounds?;
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     let cx = origin.x + (mn.x + mx.x) as f32 * 0.5 * vs;
     let cy = origin.y + (mn.y + mx.y) as f32 * 0.5 * vs;
     let cz = origin.z + (mn.z + mx.z) as f32 * 0.5 * vs;
@@ -408,10 +414,10 @@ fn piece_local_centroid_of_selection(
 /// before another selection-consumer sees the resource.
 fn ensure_labels_owned(
     selection: &mut Selection,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
 ) -> Option<ComponentField> {
     if selection.labels().is_none() {
-        let fresh = label_components(&workpiece.grid);
+        let fresh = label_components(workpiece.grid());
         selection.set_labels(fresh);
     }
     selection.take_labels()
@@ -433,7 +439,7 @@ fn gizmo_pointer_input(
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
     mut selection: ResMut<Selection>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut history: ResMut<UndoHistory>,
     mut state: ResMut<MoveState>,
     mut drag: ResMut<MoveGizmoDrag>,
@@ -563,12 +569,25 @@ fn gizmo_pointer_input(
     };
 
     // Kick off a drag.
-    let labels = label_components(&workpiece.grid);
+    let labels = label_components(workpiece.grid());
     let Some(component_id) = selection.selected_id(&labels) else {
         // Bail: nothing to move.
         return;
     };
-    let snapshot: Vec<f32> = workpiece.grid.samples().to_vec();
+    // Region-scoped snapshot of just the component's own (widened)
+    // bounds at zero delta; `ensure_region_covers` grows this as the
+    // drag reaches farther, so we never pay a full-domain copy here.
+    let Some((region_min, region_max)) = touched_region_for_translate(
+        &labels,
+        component_id,
+        IVec3::ZERO,
+        workpiece.grid().res(),
+    ) else {
+        // No bounds for the selected component — shouldn't happen
+        // given `selected_id` just succeeded, but bail cleanly.
+        return;
+    };
+    let snapshot = workpiece.grid().snapshot_region(region_min, region_max);
     let active = ActiveDrag {
         axis,
         t_start,
@@ -576,7 +595,7 @@ fn gizmo_pointer_input(
         grid_snapshot: snapshot,
         labels,
         component_id,
-        voxel_size: workpiece.grid.voxel_size(),
+        voxel_size: workpiece.grid().voxel_size(),
         dirty_chunks: HashSet::new(),
         last_applied_vox: IVec3::ZERO,
     };
@@ -590,7 +609,7 @@ fn update_drag(
     q_window: &Query<&Window, With<PrimaryWindow>>,
     q_camera: &Query<(&Camera, &GlobalTransform)>,
     q_piece: &Query<&Transform, With<WorkpieceRoot>>,
-    workpiece: &SculptWorkpiece,
+    workpiece: &LayersState,
     state: &mut MoveState,
 ) {
     let Some(active) = drag.active.as_ref() else {
@@ -623,8 +642,8 @@ fn update_drag(
         .labels
         .bounds_of(active.component_id)
         .expect("component has bounds; captured at drag start");
-    let vs = workpiece.grid.voxel_size();
-    let origin = workpiece.grid.origin();
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
     let centre = GVec3::new(
         origin.x + (mn.x + mx.x) as f32 * 0.5 * vs,
         origin.y + (mn.y + mx.y) as f32 * 0.5 * vs,
@@ -648,15 +667,49 @@ fn update_drag(
     state.pending_mm = new_mm;
 }
 
+/// Ensure `active.grid_snapshot` covers everywhere a translate by
+/// `delta` could read from or write to.
+///
+/// The common case (the drag hasn't grown past its current reach) is
+/// a cheap bounds check and nothing else. Growing is still O(region),
+/// never O(domain): the *currently* snapshotted box is first restored
+/// to pristine (undoing whatever this drag has previewed there so
+/// far), which — since nothing outside that box has ever been
+/// written to during this drag — leaves the *entire* grid pristine.
+/// A fresh, bigger snapshot covering the union of the old box and the
+/// newly-required one is then safe to take straight from the live
+/// grid.
+fn ensure_region_covers(active: &mut ActiveDrag, grid: &mut Grid, delta: IVec3) {
+    let Some((need_min, need_max)) =
+        touched_region_for_translate(&active.labels, active.component_id, delta, grid.res())
+    else {
+        return;
+    };
+    let (cur_min, cur_max) = active.grid_snapshot.bounds();
+    let already_covered = need_min.x >= cur_min.x
+        && need_min.y >= cur_min.y
+        && need_min.z >= cur_min.z
+        && need_max.x <= cur_max.x
+        && need_max.y <= cur_max.y
+        && need_max.z <= cur_max.z;
+    if already_covered {
+        return;
+    }
+    grid.restore_region(&active.grid_snapshot);
+    let new_min = cur_min.min(need_min);
+    let new_max = cur_max.max(need_max);
+    active.grid_snapshot = grid.snapshot_region(new_min, new_max);
+}
+
 fn apply_preview(
     drag: &mut MoveGizmoDrag,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     state: &MoveState,
 ) {
     let Some(active) = drag.active.as_mut() else {
         return;
     };
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let target_delta_vox = IVec3::new(
         (state.pending_mm.x / vs).round() as i32,
         (state.pending_mm.y / vs).round() as i32,
@@ -665,17 +718,16 @@ fn apply_preview(
     // Reset the grid from the snapshot every frame; then translate
     // by the total offset. That way we don't accumulate rounding
     // error and undo doesn't need to record intermediate states.
-    if !workpiece.grid.restore_samples(&active.grid_snapshot) {
-        return;
-    }
+    ensure_region_covers(active, workpiece.grid_mut(), target_delta_vox);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &active.labels,
         active.component_id,
         target_delta_vox,
         |_, _, _, _| {},
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         for c in region.touched_chunks(grid_res) {
             active.dirty_chunks.insert((c.x, c.y, c.z));
@@ -684,34 +736,35 @@ fn apply_preview(
     // Also dirty everything we've ever touched during this drag,
     // so chunks we vacated get re-meshed to their reset state.
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
     active.last_applied_vox = target_delta_vox;
 }
 
 fn commit_drag(
-    active: ActiveDrag,
+    mut active: ActiveDrag,
     final_pending_mm: &Vec3,
-    workpiece: &mut ResMut<SculptWorkpiece>,
+    workpiece: &mut ResMut<LayersState>,
     selection: &mut ResMut<Selection>,
     history: &mut ResMut<UndoHistory>,
 ) {
-    // Reset one last time so the recorder sees pre-values from
-    // the true pre-drag state, not the intermediate preview.
-    if !workpiece.grid.restore_samples(&active.grid_snapshot) {
-        return;
-    }
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let final_delta_vox = IVec3::new(
         (final_pending_mm.x / vs).round() as i32,
         (final_pending_mm.y / vs).round() as i32,
         (final_pending_mm.z / vs).round() as i32,
     );
+    // Reset one last time so the recorder sees pre-values from the
+    // true pre-drag state, not the intermediate preview. The region
+    // should already cover this delta from the last preview frame,
+    // but re-check defensively — cheap when it's already covered.
+    ensure_region_covers(&mut active, workpiece.grid_mut(), final_delta_vox);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     if final_delta_vox == IVec3::ZERO {
         info!("move: drag ended with zero-voxel offset — nothing to commit");
         // Ensure the reset chunks get re-meshed.
         for &(x, y, z) in &active.dirty_chunks {
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
         selection.invalidate_labels();
         return;
@@ -719,26 +772,26 @@ fn commit_drag(
 
     let mut recorder = StrokeRecorder::default();
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &active.labels,
         active.component_id,
         final_delta_vox,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
             let ChunkCoord { x, y, z } = c;
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
     }
     // Also re-mesh every chunk we vacated during the preview so
     // the reset from the snapshot actually shows up.
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
 
@@ -770,12 +823,12 @@ fn commit_drag(
 
 fn cancel_drag(
     active: ActiveDrag,
-    workpiece: &mut ResMut<SculptWorkpiece>,
+    workpiece: &mut ResMut<LayersState>,
     state: &mut ResMut<MoveState>,
 ) {
-    let _ = workpiece.grid.restore_samples(&active.grid_snapshot);
+    workpiece.grid_mut().restore_region(&active.grid_snapshot);
     for &(x, y, z) in &active.dirty_chunks {
-        workpiece.dirty.insert((x, y, z));
+        workpiece.mark_dirty((x, y, z));
     }
     state.pending_mm = active.initial_widget_mm;
     info!("move: drag cancelled — grid reset");
@@ -816,7 +869,7 @@ fn ray_line_closest(
 /// on Apply while an axis is being dragged doesn't double-apply.
 fn handle_move_action(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut selection: ResMut<Selection>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
@@ -848,7 +901,7 @@ fn clear_frame_flags(mut drag: ResMut<MoveGizmoDrag>) {
 
 fn apply_move(
     delta_mm: Vec3,
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     selection: &mut Selection,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
@@ -862,7 +915,7 @@ fn apply_move(
     }
     stroke.discard_live();
 
-    let vs = workpiece.grid.voxel_size();
+    let vs = workpiece.grid().voxel_size();
     let delta_vox = IVec3::new(
         (delta_mm.x / vs).round() as i32,
         (delta_mm.y / vs).round() as i32,
@@ -876,7 +929,7 @@ fn apply_move(
         return false;
     }
 
-    let labels = label_components(&workpiece.grid);
+    let labels = label_components(workpiece.grid());
     let id = match selection.selected_id(&labels) {
         Some(id) => id,
         None => {
@@ -888,21 +941,21 @@ fn apply_move(
 
     let mut recorder = StrokeRecorder::default();
     let dirty = translate_component(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &labels,
         id,
         delta_vox,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = dirty {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
             let ChunkCoord { x, y, z } = c;
-            workpiece.dirty.insert((x, y, z));
+            workpiece.mark_dirty((x, y, z));
         }
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
     selection.invalidate_labels();
@@ -927,4 +980,186 @@ fn apply_move(
         delta_mm.x, delta_mm.y, delta_mm.z, delta_vox
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::UVec3;
+    use sculpt_core::Grid;
+
+    /// End-to-end test of the typed-widget Move path (`apply_move`,
+    /// which the Move HUD's Apply button and Enter-to-commit both
+    /// call), driven directly at the Rust level rather than through
+    /// GUI input. Manual GUI verification of this exact path was
+    /// inconclusive in this sandbox (an egui `DragValue` needs a
+    /// precise single-click-no-drag to enter edit mode, which
+    /// synthetic input struggles to reproduce reliably here) — this
+    /// test exists to give an unambiguous answer independent of that.
+    #[test]
+    fn apply_move_translates_the_selected_component() {
+        let mut workpiece =
+            LayersState::new_for_test(Grid::from_sphere(
+                UVec3::new(64, 64, 64),
+                1.0,
+                glam::Vec3::ZERO,
+                glam::Vec3::new(16.0, 16.0, 16.0),
+                6.0,
+            ));
+        let mut selection = Selection::default();
+        // Simulate "just clicked the sphere with the Select tool".
+        selection.picked_voxel = Some((16, 16, 16));
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+
+        let before = workpiece.grid().to_dense();
+        let applied = apply_move(
+            Vec3::new(20.0, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(applied, "apply_move should report success");
+
+        // The grid actually changed...
+        assert_ne!(workpiece.grid().to_dense(), before, "grid must change after a move");
+        // ...specifically, material moved from x=16 to roughly x=36.
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0,
+            "old position should now be empty"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(36.0, 16.0, 16.0)) < 0.0,
+            "sphere should now be solid at the shifted position"
+        );
+        // Selection follows the piece.
+        assert_eq!(selection.picked_voxel, Some((36, 16, 16)));
+        // One undo entry was journalled.
+        assert_eq!(history.undo_len_for_test(), 1);
+    }
+
+    #[test]
+    fn apply_move_is_a_noop_with_nothing_selected() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(32, 32, 32),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let mut selection = Selection::default();
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+        let applied = apply_move(
+            Vec3::new(20.0, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(!applied);
+        assert_eq!(history.undo_len_for_test(), 0);
+    }
+
+    /// End-to-end test of the gizmo-drag preview loop (`apply_preview`,
+    /// what dragging one of the axis arrows calls every frame), also
+    /// driven directly rather than through GUI mouse-drag input
+    /// (unreliable in this sandbox for the same reasons noted above).
+    /// Specifically exercises the Track A3 growable-region behaviour:
+    /// a second, larger delta must not leave stray material at the
+    /// first delta's intermediate position — the reset-from-snapshot
+    /// step must have grown to cover it.
+    #[test]
+    fn gizmo_drag_preview_moves_the_piece_without_leaving_intermediate_residue() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(64, 64, 64),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let labels = label_components(workpiece.grid());
+        let component_id = labels.id_at(16, 16, 16);
+        let (region_min, region_max) = touched_region_for_translate(
+            &labels,
+            component_id,
+            IVec3::ZERO,
+            workpiece.grid().res(),
+        )
+        .unwrap();
+        let snapshot = workpiece.grid().snapshot_region(region_min, region_max);
+
+        let mut drag = MoveGizmoDrag {
+            active: Some(ActiveDrag {
+                axis: Axis::X,
+                t_start: 0.0,
+                initial_widget_mm: Vec3::ZERO,
+                grid_snapshot: snapshot,
+                labels,
+                component_id,
+                voxel_size: workpiece.grid().voxel_size(),
+                dirty_chunks: HashSet::new(),
+                last_applied_vox: IVec3::ZERO,
+            }),
+            started_this_frame: false,
+        };
+
+        // First frame: drag to +10 mm.
+        let mut state = MoveState {
+            pending_mm: Vec3::new(10.0, 0.0, 0.0),
+        };
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(workpiece.grid().sample(glam::Vec3::new(26.0, 16.0, 16.0)) < 0.0);
+        assert!(workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0);
+
+        // Second frame: drag further, to +25 mm — beyond the region
+        // the first frame's snapshot covered, forcing a grow.
+        state.pending_mm = Vec3::new(25.0, 0.0, 0.0);
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(41.0, 16.0, 16.0)) < 0.0,
+            "sphere should now be solid at the +25mm position"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(26.0, 16.0, 16.0)) > 0.0,
+            "the +10mm intermediate position must be cleared, not left behind"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0,
+            "the original position must still be cleared"
+        );
+
+        // Third frame: drag back to a smaller delta — must still
+        // reset correctly (region only ever grows, never shrinks,
+        // but the reset-then-translate must still land exactly).
+        state.pending_mm = Vec3::new(5.0, 0.0, 0.0);
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(workpiece.grid().sample(glam::Vec3::new(21.0, 16.0, 16.0)) < 0.0);
+        assert!(workpiece.grid().sample(glam::Vec3::new(41.0, 16.0, 16.0)) > 0.0, "the +25mm position must be cleared after dragging back");
+    }
+
+    #[test]
+    fn apply_move_is_a_noop_when_delta_rounds_to_zero_voxels() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(32, 32, 32),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let mut selection = Selection::default();
+        selection.picked_voxel = Some((16, 16, 16));
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+        // 0.1 mm at 1 mm/voxel rounds to 0 voxels.
+        let applied = apply_move(
+            Vec3::new(0.1, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(!applied);
+    }
 }

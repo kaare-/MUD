@@ -1,17 +1,68 @@
+use std::collections::HashMap;
+
 use glam::{UVec3, Vec3};
 
-/// Marching-cubes chunk size in voxels. Chunks share a one-voxel halo at
-/// their positive boundaries, so a chunk of size N covers `N` cells and
-/// samples `N+1` voxels along each axis.
+/// Marching-cubes chunk size in voxels, **and** the sparse tile size
+/// (`PLAN.md` decision D7 — one tile store, shared by storage and
+/// meshing). Chunks share a one-voxel halo at their positive
+/// boundaries, so a chunk of size N covers `N` cells and samples
+/// `N+1` voxels along each axis.
 pub const CHUNK_SIZE: u32 = 32;
 
-/// Dense scalar field. Layout is x-major: index = `x + y*res.x + z*res.x*res.y`.
+const TILE_DIM: usize = CHUNK_SIZE as usize;
+const TILE_LEN: usize = TILE_DIM * TILE_DIM * TILE_DIM;
+
+/// Value reported for any voxel inside a tile that was never
+/// written, and for any voxel whose tile was never allocated at all.
+/// Matches the historical dense-grid default ("far outside any
+/// surface") so unallocated regions behave exactly like the old
+/// all-positive buffer — ray-marching, meshing and CSG all already
+/// treat this as empty air.
+const FAR_POSITIVE: f32 = f32::MAX / 4.0;
+
+/// One 32³ block of samples. Boxed so the `HashMap` only stores a
+/// pointer per allocated tile, not 128 KiB inline.
+type Tile = Box<[f32; TILE_LEN]>;
+
+fn new_tile() -> Tile {
+    Box::new([FAR_POSITIVE; TILE_LEN])
+}
+
+#[inline]
+fn tile_key(ix: u32, iy: u32, iz: u32) -> ChunkCoord {
+    ChunkCoord::new(ix / CHUNK_SIZE, iy / CHUNK_SIZE, iz / CHUNK_SIZE)
+}
+
+#[inline]
+fn local_index(ix: u32, iy: u32, iz: u32) -> usize {
+    let lx = (ix % CHUNK_SIZE) as usize;
+    let ly = (iy % CHUNK_SIZE) as usize;
+    let lz = (iz % CHUNK_SIZE) as usize;
+    lx + ly * TILE_DIM + lz * TILE_DIM * TILE_DIM
+}
+
+/// Sparse scalar field, stored as a `HashMap` of 32³ tiles keyed by
+/// [`ChunkCoord`]. A tile is allocated lazily the first time any of
+/// its voxels is written; reading an unallocated tile (or any voxel
+/// outside `res`) returns [`FAR_POSITIVE`] — "far outside any
+/// surface" — so the public behaviour matches the original dense
+/// `Vec<f32>` grid exactly.
 ///
 /// The field stores signed distance in mm. Sign convention: negative
 /// inside the workpiece, positive outside.
+///
+/// This is the `PLAN.md` Track A1 storage swap: everything above
+/// this file (brushes, cutters, ray-march, meshing) keeps using
+/// `get` / `set` / `sample` / `gradient` / `ray_march` unchanged.
+/// The one contract that *did* change from the dense grid is
+/// `samples()` → [`Grid::to_dense`]: a sparse store has no single
+/// contiguous buffer to borrow, so callers that need one now pay for
+/// materialising it explicitly. Some call sites still do this on a
+/// hot path (Move-tool live preview, rest-on-bench) — sparsifying
+/// those is `PLAN.md` Track A3, not this pass.
 #[derive(Clone)]
 pub struct Grid {
-    data: Vec<f32>,
+    tiles: HashMap<ChunkCoord, Tile>,
     res: UVec3,
     voxel_size: f32,
     origin: Vec3,
@@ -19,23 +70,27 @@ pub struct Grid {
 
 impl Grid {
     /// Create a grid entirely outside the surface (all far-positive).
+    /// Allocates zero tiles — this is the cheap case sparse storage
+    /// exists for for(empty worktable, `File > New`, deferred layers).
     pub fn empty(res: UVec3, voxel_size: f32, origin: Vec3) -> Self {
-        let count = (res.x * res.y * res.z) as usize;
         Self {
-            data: vec![f32::MAX / 4.0; count],
+            tiles: HashMap::new(),
             res,
             voxel_size,
             origin,
         }
     }
 
-    /// Build a grid from an existing `data` buffer. The buffer must
-    /// have length `res.x * res.y * res.z`; otherwise this returns
-    /// `None`. Layout must match [`Grid::idx`] (x-major).
+    /// Build a grid from an existing dense `data` buffer. The buffer
+    /// must have length `res.x * res.y * res.z`; otherwise this
+    /// returns `None`. Layout must be x-major:
+    /// `index = x + y*res.x + z*res.x*res.y`.
     ///
-    /// Used by the project-file loader — round-tripping the raw f32
-    /// samples is the cheapest way to preserve an exact sculpt state
-    /// across sessions.
+    /// Used by the project-file loader. Voxels whose value equals
+    /// [`FAR_POSITIVE`] are not materialised into a tile, so loading
+    /// a mostly-empty `.mudclay` (or a v1 file with sparse content)
+    /// stays sparse in memory even though the on-disk format is
+    /// still a flat blob.
     pub fn from_samples(res: UVec3, voxel_size: f32, origin: Vec3, data: Vec<f32>) -> Option<Self> {
         let expected = (res.x as usize)
             .checked_mul(res.y as usize)?
@@ -43,36 +98,106 @@ impl Grid {
         if data.len() != expected {
             return None;
         }
-        Some(Self {
-            data,
-            res,
-            voxel_size,
-            origin,
-        })
+        let mut grid = Self::empty(res, voxel_size, origin);
+        grid.fill_from_dense(&data);
+        Some(grid)
     }
 
-    /// Raw sample buffer. Read-only. Provided so the project-file
-    /// writer can emit the SDF bytes without going voxel-by-voxel.
-    pub fn samples(&self) -> &[f32] {
-        &self.data
+    /// Materialise the full dense sample buffer, x-major (matching
+    /// the on-disk `.mudclay` layout and the pre-sparse in-memory
+    /// layout). Unallocated voxels read back as [`FAR_POSITIVE`].
+    ///
+    /// This allocates and fills a full `res.x*res.y*res.z` buffer —
+    /// exactly the cost the dense grid always paid, just deferred to
+    /// call sites that actually need a contiguous snapshot (the
+    /// project writer, and — until Track A3 — Move-tool preview and
+    /// rigid-translate).
+    pub fn to_dense(&self) -> Vec<f32> {
+        let n = (self.res.x as usize) * (self.res.y as usize) * (self.res.z as usize);
+        let mut out = vec![FAR_POSITIVE; n];
+        let stride_y = self.res.x as usize;
+        let stride_z = stride_y * self.res.y as usize;
+        for (&coord, tile) in &self.tiles {
+            let base = coord.voxel_min();
+            if base.x >= self.res.x || base.y >= self.res.y || base.z >= self.res.z {
+                continue;
+            }
+            let max = coord.voxel_max(self.res);
+            for gz in base.z..max.z {
+                for gy in base.y..max.y {
+                    for gx in base.x..max.x {
+                        let gi = gx as usize + gy as usize * stride_y + gz as usize * stride_z;
+                        out[gi] = tile[local_index(gx, gy, gz)];
+                    }
+                }
+            }
+        }
+        out
     }
 
-    /// Overwrite every sample in the grid with values from `data`.
-    /// Length must match `res.x * res.y * res.z`; the method returns
-    /// `false` and leaves the grid untouched if it doesn't. Used by
-    /// the Move-tool live preview to reset to a snapshot each frame
-    /// before applying a fresh translation.
+    /// Rebuild the tile map from a dense buffer, allocating only the
+    /// tiles that actually contain a non-[`FAR_POSITIVE`] value.
+    /// Drops every previously-allocated tile first, so this also
+    /// re-sparsifies: a tile that was touched-then-emptied (e.g. by
+    /// undo, or a Move-preview reset) doesn't stay allocated forever.
+    fn fill_from_dense(&mut self, data: &[f32]) {
+        self.tiles.clear();
+        let stride_y = self.res.x as usize;
+        let stride_z = stride_y * self.res.y as usize;
+        let num = self.num_chunks();
+        for cz in 0..num.z {
+            for cy in 0..num.y {
+                for cx in 0..num.x {
+                    let coord = ChunkCoord::new(cx, cy, cz);
+                    let base = coord.voxel_min();
+                    let max = coord.voxel_max(self.res);
+                    let mut tile: Option<Tile> = None;
+                    for gz in base.z..max.z {
+                        for gy in base.y..max.y {
+                            for gx in base.x..max.x {
+                                let gi =
+                                    gx as usize + gy as usize * stride_y + gz as usize * stride_z;
+                                let v = data[gi];
+                                if v != FAR_POSITIVE {
+                                    let t = tile.get_or_insert_with(new_tile);
+                                    t[local_index(gx, gy, gz)] = v;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(t) = tile {
+                        self.tiles.insert(coord, t);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Overwrite every sample in the grid with values from a dense
+    /// `data` buffer, x-major. Length must match
+    /// `res.x * res.y * res.z`; the method returns `false` and leaves
+    /// the grid untouched if it doesn't. Used by the Move-tool live
+    /// preview to reset to a snapshot each frame before applying a
+    /// fresh translation.
     pub fn restore_samples(&mut self, data: &[f32]) -> bool {
-        if data.len() != self.data.len() {
+        let expected = (self.res.x as usize) * (self.res.y as usize) * (self.res.z as usize);
+        if data.len() != expected {
             return false;
         }
-        self.data.copy_from_slice(data);
+        self.fill_from_dense(data);
         true
     }
 
     /// Create a grid initialised to the SDF of a solid sphere. Everything
     /// outside the sphere has a *bounded* positive distance (still exact
     /// for gradient purposes near the surface).
+    ///
+    /// Every voxel gets a distinct exact-Euclidean value here (no
+    /// capping), so this allocates every tile in the domain — the
+    /// same memory footprint as the old dense grid. That's expected:
+    /// sparsity pays off once the domain is larger than any single
+    /// starter shape (`PLAN.md` Track A4), not for a full-domain
+    /// analytic fill like this one.
     pub fn from_sphere(
         res: UVec3,
         voxel_size: f32,
@@ -80,23 +205,16 @@ impl Grid {
         center: Vec3,
         radius: f32,
     ) -> Self {
-        let count = (res.x * res.y * res.z) as usize;
-        let mut data = Vec::with_capacity(count);
+        let mut grid = Self::empty(res, voxel_size, origin);
         for iz in 0..res.z {
             for iy in 0..res.y {
                 for ix in 0..res.x {
-                    let p = origin
-                        + Vec3::new(ix as f32, iy as f32, iz as f32) * voxel_size;
-                    data.push((p - center).length() - radius);
+                    let p = origin + Vec3::new(ix as f32, iy as f32, iz as f32) * voxel_size;
+                    grid.set(ix, iy, iz, (p - center).length() - radius);
                 }
             }
         }
-        Self {
-            data,
-            res,
-            voxel_size,
-            origin,
-        }
+        grid
     }
 
     #[inline]
@@ -112,6 +230,105 @@ impl Grid {
     #[inline]
     pub fn origin(&self) -> Vec3 {
         self.origin
+    }
+
+    /// Number of tiles currently allocated. Exposed for tests and
+    /// diagnostics (e.g. a future HUD memory readout) — not part of
+    /// the sculpting hot path.
+    pub fn allocated_tile_count(&self) -> usize {
+        self.tiles.len()
+    }
+
+    /// Coordinates of every currently-allocated tile. Cheap: copies
+    /// the key set, touches no sample data.
+    ///
+    /// Track A3 sparse walkers (wire cutter, component labelling) use
+    /// this to skip regions that are provably all far-positive
+    /// instead of visiting every voxel in `res`. Returned as an owned
+    /// `Vec` (not a borrowing iterator) so callers can still mutate
+    /// the grid — e.g. via `set` — while iterating.
+    pub fn allocated_chunk_coords(&self) -> Vec<ChunkCoord> {
+        self.tiles.keys().copied().collect()
+    }
+
+    /// Snapshot the sub-region `[min, max)` (voxel indices, clipped
+    /// to `res`) into a dense buffer callers can re-read at the
+    /// *pre-mutation* value while they overwrite the live grid.
+    ///
+    /// This is the region-scoped alternative to [`Grid::to_dense`]
+    /// for algorithms (rigid translate / rest-on-bench) that already
+    /// know a tight bounding box of everything they might touch —
+    /// letting them avoid an O(domain) copy in favour of an
+    /// O(region) one.
+    pub fn snapshot_region(&self, min: UVec3, max: UVec3) -> RegionSnapshot {
+        let min = min.min(self.res);
+        let max = max.min(self.res);
+        let size = UVec3::new(
+            max.x.saturating_sub(min.x),
+            max.y.saturating_sub(min.y),
+            max.z.saturating_sub(min.z),
+        );
+        let n = (size.x as usize) * (size.y as usize) * (size.z as usize);
+        let mut data = vec![FAR_POSITIVE; n];
+        let stride_y = size.x as usize;
+        let stride_z = stride_y * size.y as usize;
+        for gz in min.z..max.z {
+            for gy in min.y..max.y {
+                for gx in min.x..max.x {
+                    let li = (gx - min.x) as usize
+                        + (gy - min.y) as usize * stride_y
+                        + (gz - min.z) as usize * stride_z;
+                    data[li] = self.get(gx, gy, gz);
+                }
+            }
+        }
+        RegionSnapshot { data, min, size }
+    }
+
+    /// Overwrite every voxel `snap` covers with its snapshotted
+    /// value. The inverse of [`Grid::snapshot_region`] — restores a
+    /// bounded region to a prior state without touching anything
+    /// outside it, unlike the full-domain [`Grid::restore_samples`].
+    pub fn restore_region(&mut self, snap: &RegionSnapshot) {
+        let (min, max) = snap.bounds();
+        for gz in min.z..max.z {
+            for gy in min.y..max.y {
+                for gx in min.x..max.x {
+                    self.set(gx, gy, gz, snap.get(gx, gy, gz));
+                }
+            }
+        }
+    }
+
+    /// Union `other`'s material into `self` via a per-voxel `min` —
+    /// the SDF equivalent of a boolean union, and the whole of what
+    /// "merge two layers" and "flatten every visible layer for
+    /// export" both reduce to (`PLAN.md` Track B). Only visits
+    /// `other`'s allocated tiles; an unallocated one is guaranteed
+    /// far-positive there and so can never lower `self`'s value by
+    /// definition of `min` — nothing to do, safe to skip.
+    ///
+    /// Both grids must share the same domain (resolution, voxel
+    /// size, origin) — true by construction for every layer in a
+    /// `LayersState`, since they're all carved from the same shared
+    /// domain. Voxels outside `self`'s bounds (only possible if the
+    /// domains actually differ) are silently skipped rather than
+    /// panicking.
+    pub fn union_from(&mut self, other: &Grid) {
+        for coord in other.allocated_chunk_coords() {
+            let base = coord.voxel_min();
+            let max = coord.voxel_max(other.res());
+            for gz in base.z..max.z.min(self.res.z) {
+                for gy in base.y..max.y.min(self.res.y) {
+                    for gx in base.x..max.x.min(self.res.x) {
+                        let v = other.get(gx, gy, gz);
+                        if v < self.get(gx, gy, gz) {
+                            self.set(gx, gy, gz, v);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     /// Piece-local physical extent of the grid.
@@ -131,19 +348,18 @@ impl Grid {
     }
 
     #[inline]
-    pub fn idx(&self, ix: u32, iy: u32, iz: u32) -> usize {
-        (ix + iy * self.res.x + iz * self.res.x * self.res.y) as usize
-    }
-
-    #[inline]
     pub fn get(&self, ix: u32, iy: u32, iz: u32) -> f32 {
-        self.data[self.idx(ix, iy, iz)]
+        match self.tiles.get(&tile_key(ix, iy, iz)) {
+            Some(tile) => tile[local_index(ix, iy, iz)],
+            None => FAR_POSITIVE,
+        }
     }
 
     #[inline]
     pub fn set(&mut self, ix: u32, iy: u32, iz: u32, v: f32) {
-        let i = self.idx(ix, iy, iz);
-        self.data[i] = v;
+        let key = tile_key(ix, iy, iz);
+        let tile = self.tiles.entry(key).or_insert_with(new_tile);
+        tile[local_index(ix, iy, iz)] = v;
     }
 
     /// Sample without a bounds check.
@@ -151,12 +367,13 @@ impl Grid {
     /// # Safety
     /// The caller must guarantee that `(ix, iy, iz)` is a valid voxel
     /// index inside this grid (i.e. `ix < res.x` and equivalently for
-    /// `iy`, `iz`). Passing out-of-range indices is undefined behaviour.
+    /// `iy`, `iz`). Passing out-of-range indices is undefined behaviour
+    /// for API-compatibility purposes only — the sparse backend has no
+    /// unchecked fast path (a `HashMap` lookup already has to check
+    /// occupancy), so this is a thin wrapper around [`Grid::get`].
     #[inline]
     pub unsafe fn get_unchecked(&self, ix: u32, iy: u32, iz: u32) -> f32 {
-        *self
-            .data
-            .get_unchecked((ix + iy * self.res.x + iz * self.res.x * self.res.y) as usize)
+        self.get(ix, iy, iz)
     }
 
     /// Central-differences gradient. Clamps at the borders so that
@@ -263,9 +480,18 @@ impl Grid {
             return Some(origin);
         }
 
-        // Enough iterations to walk a full Stage-2 domain (~192 mm) at
-        // one voxel per step, with headroom for grazes.
-        for _ in 0..1024 {
+        // Enough iterations to walk the full `max_dist` the caller
+        // asked for at one voxel per step (the common case away from
+        // any surface — see the comment above on why we never take a
+        // bigger step), with headroom for grazes near the hit. Sized
+        // from `max_dist` / `max_step` rather than a fixed constant
+        // so this scales automatically with both the domain (Track
+        // A4, `PLAN.md`) and how far a caller's camera can zoom out —
+        // a fixed cap tied to one specific domain size is exactly
+        // the kind of assumption that silently truncates ray reach
+        // once either one grows.
+        let max_iters = ((max_dist / max_step).ceil() as u32).saturating_add(64);
+        for _ in 0..max_iters {
             let step = prev_d.max(min_step).min(max_step);
             let t_next = t + step;
             if t_next > max_dist {
@@ -300,7 +526,52 @@ impl Grid {
     }
 }
 
-/// Chunk coordinates (in units of `CHUNK_SIZE` voxels).
+/// A dense snapshot of a sub-region of a [`Grid`], taken by
+/// [`Grid::snapshot_region`]. Indexed with the same *global* voxel
+/// coordinates as the grid it was taken from — [`RegionSnapshot::get`]
+/// does the min-offset translation internally, so call sites don't
+/// need to juggle local vs. global indices.
+///
+/// Reading outside the snapshotted region returns [`FAR_POSITIVE`],
+/// matching an unallocated `Grid` tile — the same "far outside any
+/// surface" convention everywhere else in this module.
+pub struct RegionSnapshot {
+    data: Vec<f32>,
+    min: UVec3,
+    size: UVec3,
+}
+
+impl RegionSnapshot {
+    /// The `[min, max)` global voxel bounds this snapshot covers.
+    #[inline]
+    pub fn bounds(&self) -> (UVec3, UVec3) {
+        (self.min, self.min + self.size)
+    }
+
+    /// Read the pre-snapshot value at global voxel `(ix, iy, iz)`.
+    #[inline]
+    pub fn get(&self, ix: u32, iy: u32, iz: u32) -> f32 {
+        if ix < self.min.x
+            || iy < self.min.y
+            || iz < self.min.z
+            || ix >= self.min.x + self.size.x
+            || iy >= self.min.y + self.size.y
+            || iz >= self.min.z + self.size.z
+        {
+            return FAR_POSITIVE;
+        }
+        let lx = (ix - self.min.x) as usize;
+        let ly = (iy - self.min.y) as usize;
+        let lz = (iz - self.min.z) as usize;
+        let stride_y = self.size.x as usize;
+        let stride_z = stride_y * self.size.y as usize;
+        self.data[lx + ly * stride_y + lz * stride_z]
+    }
+}
+
+/// Chunk coordinates (in units of `CHUNK_SIZE` voxels). Doubles as
+/// the sparse-tile key: a tile and the chunk that meshes it always
+/// share the same coordinate space.
 #[derive(Copy, Clone, Debug, Hash, PartialEq, Eq)]
 pub struct ChunkCoord {
     pub x: u32,
@@ -465,6 +736,26 @@ mod tests {
         );
     }
 
+    /// Regression for Track A4: the iteration budget used to be a
+    /// fixed constant sized for the old ~192 mm domain (1024 steps at
+    /// 1 voxel each ≈ 1536 mm max reach for a 1.5 mm grid, less for a
+    /// finer one). A camera zoomed out to see a bigger domain — or
+    /// just a bigger `max_dist` — must still be able to find a hit
+    /// well past that old ceiling.
+    #[test]
+    fn ray_march_reaches_hits_far_beyond_the_old_fixed_iteration_cap() {
+        let res = UVec3::new(32, 32, 32);
+        let vs = 1.0;
+        // Grid sits at x in [0, 32); the ray starts 3000 units to its
+        // left, so most of the march happens in "outside the domain"
+        // space before the sphere is ever reached.
+        let g = Grid::from_sphere(res, vs, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 8.0);
+        let hit = g
+            .ray_march(Vec3::new(-3000.0, 16.0, 16.0), Vec3::X, 4000.0)
+            .expect("ray should reach the sphere despite the long empty run-up");
+        assert!((hit.x - 8.0).abs() < 1.5, "unexpected hit x = {}", hit.x);
+    }
+
     #[test]
     fn ray_march_misses_when_no_intersection() {
         let res = UVec3::new(64, 64, 64);
@@ -472,5 +763,206 @@ mod tests {
         // Aim way off to one side.
         let hit = g.ray_march(Vec3::new(-10.0, 60.0, 32.0), Vec3::X, 200.0);
         assert!(hit.is_none());
+    }
+
+    // --- Sparse-storage-specific tests (Track A1) ---
+
+    #[test]
+    fn empty_grid_allocates_zero_tiles() {
+        let g = Grid::empty(UVec3::new(192, 192, 192), 1.5, Vec3::ZERO);
+        assert_eq!(g.allocated_tile_count(), 0);
+        assert!(g.get(50, 50, 50) > 0.0, "unallocated voxel should read as far-positive");
+    }
+
+    #[test]
+    fn setting_one_voxel_allocates_only_its_tile() {
+        let mut g = Grid::empty(UVec3::new(192, 192, 192), 1.5, Vec3::ZERO);
+        g.set(10, 10, 10, -1.0);
+        assert_eq!(g.allocated_tile_count(), 1, "one write should allocate exactly one tile");
+        assert_eq!(g.get(10, 10, 10), -1.0);
+        // A voxel in a neighbouring tile is untouched.
+        assert!(g.get(40, 10, 10) > 0.0);
+
+        g.set(40, 10, 10, -2.0);
+        assert_eq!(g.allocated_tile_count(), 2, "a write in a different tile allocates a second one");
+    }
+
+    #[test]
+    fn tiles_spanning_the_grid_boundary_only_touch_valid_voxels() {
+        // Resolution not a multiple of CHUNK_SIZE: the last tile along
+        // each axis is partially outside `res`.
+        let res = UVec3::new(48, 48, 48);
+        let mut g = Grid::empty(res, 1.0, Vec3::ZERO);
+        for iz in 0..48 {
+            for iy in 0..48 {
+                for ix in 0..48 {
+                    g.set(ix, iy, iz, -1.0);
+                }
+            }
+        }
+        let dense = g.to_dense();
+        assert_eq!(dense.len(), 48 * 48 * 48);
+        assert!(dense.iter().all(|&v| v == -1.0));
+    }
+
+    #[test]
+    fn to_dense_round_trips_through_from_samples() {
+        let res = UVec3::new(40, 24, 16);
+        let mut g = Grid::empty(res, 1.0, Vec3::ZERO);
+        // A handful of scattered writes across multiple tiles.
+        for (ix, iy, iz, v) in [
+            (0u32, 0u32, 0u32, -3.5f32),
+            (33, 0, 0, 4.25),
+            (10, 20, 10, -0.5),
+            (39, 23, 15, 1.75),
+        ] {
+            g.set(ix, iy, iz, v);
+        }
+        let dense = g.to_dense();
+        let reloaded =
+            Grid::from_samples(res, g.voxel_size(), g.origin(), dense.clone()).expect("valid dims");
+        assert_eq!(reloaded.to_dense(), dense);
+        for (ix, iy, iz, v) in [
+            (0u32, 0u32, 0u32, -3.5f32),
+            (33, 0, 0, 4.25),
+            (10, 20, 10, -0.5),
+            (39, 23, 15, 1.75),
+        ] {
+            assert_eq!(reloaded.get(ix, iy, iz), v);
+        }
+    }
+
+    #[test]
+    fn from_samples_stays_sparse_for_mostly_empty_data() {
+        let res = UVec3::new(64, 64, 64);
+        let n = (res.x * res.y * res.z) as usize;
+        let mut data = vec![FAR_POSITIVE; n];
+        // Touch a single voxel deep inside one tile.
+        let stride_y = res.x as usize;
+        let stride_z = stride_y * res.y as usize;
+        let gi = 5 + 5 * stride_y + 5 * stride_z;
+        data[gi] = -1.0;
+
+        let g = Grid::from_samples(res, 1.0, Vec3::ZERO, data).expect("valid dims");
+        assert_eq!(
+            g.allocated_tile_count(),
+            1,
+            "loading mostly-far-positive data should allocate only the touched tile"
+        );
+        assert_eq!(g.get(5, 5, 5), -1.0);
+    }
+
+    #[test]
+    fn restore_samples_re_sparsifies_emptied_tiles() {
+        let res = UVec3::new(64, 64, 64);
+        let mut g = Grid::empty(res, 1.0, Vec3::ZERO);
+        g.set(5, 5, 5, -1.0);
+        assert_eq!(g.allocated_tile_count(), 1);
+
+        // Snapshot the empty state, then restore it — the tile that
+        // was allocated (and then reverted to far-positive) should be
+        // dropped again.
+        let empty_dense = Grid::empty(res, 1.0, Vec3::ZERO).to_dense();
+        assert!(g.restore_samples(&empty_dense));
+        assert_eq!(
+            g.allocated_tile_count(),
+            0,
+            "restoring an all-far-positive snapshot should free every tile"
+        );
+    }
+
+    #[test]
+    fn restore_samples_rejects_mismatched_length() {
+        let mut g = Grid::empty(UVec3::new(8, 8, 8), 1.0, Vec3::ZERO);
+        let bad = vec![0.0f32; 10];
+        assert!(!g.restore_samples(&bad));
+    }
+
+    #[test]
+    fn allocated_chunk_coords_matches_tile_count() {
+        let mut g = Grid::empty(UVec3::new(96, 96, 96), 1.0, Vec3::ZERO);
+        g.set(5, 5, 5, -1.0);
+        g.set(40, 5, 5, -1.0);
+        g.set(80, 80, 80, -1.0);
+        let coords = g.allocated_chunk_coords();
+        assert_eq!(coords.len(), 3);
+        assert_eq!(coords.len(), g.allocated_tile_count());
+    }
+
+    #[test]
+    fn snapshot_region_matches_get_inside_and_far_positive_outside() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        for (ix, iy, iz, v) in [(10u32, 10u32, 10u32, -2.5f32), (15, 12, 11, 3.0)] {
+            g.set(ix, iy, iz, v);
+        }
+        let snap = g.snapshot_region(UVec3::new(8, 8, 8), UVec3::new(20, 20, 20));
+        for iz in 8..20u32 {
+            for iy in 8..20u32 {
+                for ix in 8..20u32 {
+                    assert_eq!(snap.get(ix, iy, iz), g.get(ix, iy, iz));
+                }
+            }
+        }
+        // Outside the snapshotted box reads as far-positive, matching
+        // an unallocated tile's convention.
+        assert!(snap.get(30, 30, 30) > 1e30);
+        assert!(snap.get(0, 0, 0) > 1e30);
+    }
+
+    #[test]
+    fn restore_region_reverts_only_the_snapshotted_box() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        g.set(10, 10, 10, -5.0);
+        g.set(50, 50, 50, -9.0);
+        let snap = g.snapshot_region(UVec3::new(0, 0, 0), UVec3::new(20, 20, 20));
+        g.set(10, 10, 10, 5.0);
+        g.set(50, 50, 50, 1.0);
+        g.restore_region(&snap);
+        assert_eq!(g.get(10, 10, 10), -5.0, "inside the box: reverted");
+        assert_eq!(g.get(50, 50, 50), 1.0, "outside the box: untouched by restore");
+    }
+
+    #[test]
+    fn union_from_merges_two_disjoint_spheres() {
+        let res = UVec3::new(64, 64, 64);
+        let a = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 6.0);
+        let b = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(48.0, 48.0, 48.0), 6.0);
+        let mut merged = a.clone();
+        merged.union_from(&b);
+        assert!(merged.sample(Vec3::new(16.0, 16.0, 16.0)) < 0.0, "sphere A still solid");
+        assert!(merged.sample(Vec3::new(48.0, 48.0, 48.0)) < 0.0, "sphere B now solid too");
+        assert!(merged.sample(Vec3::new(32.0, 32.0, 32.0)) > 0.0, "gap between them stays empty");
+    }
+
+    #[test]
+    fn union_from_only_lowers_never_raises() {
+        // Union must never remove material `self` already had.
+        let res = UVec3::new(32, 32, 32);
+        let mut base = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 10.0);
+        let empty = Grid::empty(res, 1.0, Vec3::ZERO);
+        let before = base.to_dense();
+        base.union_from(&empty);
+        assert_eq!(base.to_dense(), before, "unioning with nothing must be a no-op");
+    }
+
+    #[test]
+    fn union_from_skips_far_positive_tiles_and_stays_sparse() {
+        let res = UVec3::new(96, 96, 96);
+        let mut a = Grid::empty(res, 1.0, Vec3::ZERO);
+        a.set(5, 5, 5, -1.0);
+        let b = Grid::empty(res, 1.0, Vec3::ZERO); // nothing allocated
+        a.union_from(&b);
+        assert_eq!(a.allocated_tile_count(), 1, "unioning with an empty grid must not allocate anything new");
+    }
+
+    #[test]
+    fn snapshot_region_reflects_pre_mutation_state_after_the_grid_changes() {
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        g.set(10, 10, 10, -5.0);
+        let snap = g.snapshot_region(UVec3::new(0, 0, 0), UVec3::new(32, 32, 32));
+        g.set(10, 10, 10, 5.0);
+        // The live grid changed; the snapshot still reports the old value.
+        assert_eq!(snap.get(10, 10, 10), -5.0);
+        assert_eq!(g.get(10, 10, 10), 5.0);
     }
 }

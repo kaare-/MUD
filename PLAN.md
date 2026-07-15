@@ -22,16 +22,17 @@ convincing lump of clay, quickly*.
 
 ## Shipped so far (Stages 0–3 + Add/Remove pass)
 
-- `[x]` Dense SDF grid at 192³, 1.5 mm voxel, chunked meshing
-  (288 mm work volume — one bump up from 128³, sparse SDF still
-  on the roadmap for going larger).
+- `[x]` Sparse-tile SDF grid at 352³, 1.5 mm voxel (528 mm work
+  volume — see `SPARSE_THEN_LAYERS.md` Tracks A1–A4), chunked
+  meshing with chunk entities spawned only where there's geometry.
 - `[x]` Orbit / pan / zoom camera, Q / E turntable.
 - `[x]` Workbench floor (y = 0) as a hard clip.
 - `[x]` Clay tool (Add / Remove) with soft CSG (magic clay).
 - `[x]` Cookie cutters (circle, square, hex, star).
-- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG runs
-  over the whole grid and uses a **soft-max at the corner** where
-  the cut plane meets the outer surface: the resulting SDF is C¹
+- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG iterates
+  only allocated tiles (Track A3) and uses a **soft-max at the
+  corner** where the cut plane meets the outer surface: the
+  resulting SDF is C¹
   around the ring instead of kinked, so surface-nets can't
   average a saw-tooth edge across the cut. Slab is 3 mm (two
   voxels) so the mesher sees a real gradient across the gap.
@@ -67,10 +68,13 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 3. `[x]` **Add material on an empty worktable.** — Shift+LMB on the
    empty bench projects the ray onto y = 0 and deposits a blob
    sitting on the bench. Every other tool still bails on a miss.
+   *(Domain still 288 mm — worktable-scale Add is Track A in
+   `SPARSE_THEN_LAYERS.md`.)*
 
 4. `[x]` **Primitives menu.** — `Shift+N` / `File → Insert Primitive…`.
    Sphere / Cube / Cylinder / Torus with a size slider; unioned into
    the current grid, journaled as one undo stroke.
+   *(Silent fuse → fixed by Track B: Insert creates a new layer.)*
 
 5. `[x]` **Selection tool: pick tiny bits.** Option A (single-grid
    component labels) shipped. New `Select` tool (`9`); LMB picks the
@@ -82,7 +86,7 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    yellow wireframe hugging its voxel-space AABB (turns with the
    piece). Labels are recomputed lazily (invalidated after any
    stroke / undo / redo / Insert / New / Load). Option B (multi-piece
-   scene) still deferred.
+   scene) → superseded by **Layers** in `SPARSE_THEN_LAYERS.md`.
 
 6. `[x]` **Rigid gravity (rest).** `File → Rest pieces on bench`
    (`Ctrl+G`). Every floating connected component is translated
@@ -118,6 +122,56 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
      stress proxy (e.g. curvature × vertical load), with a plastic
      yield threshold. Not FEM.
    - Almost certainly its own design document before writing code.
+   - **Parked behind Tracks A/B** — do not start until sparse +
+     layers foundations are landed or explicitly re-prioritised.
+
+---
+
+## Next architecture track (locked 2026-07-15)
+
+Full plan: **`SPARSE_THEN_LAYERS.md`**.
+
+**Order: sparse SDF first, then same-domain layers.**
+Rationale: unlock a worktable-scale domain so empty-bench Add /
+coil-sausage work is real; layers then cost tile sets, not N× dense
+grids. Per-body transforms (old Option A) stay deferred.
+
+Locked product calls:
+
+- Insert Primitive → **new layer by default**; Merge is explicit.
+- Tools → **active layer only** in v1 (multi-active later).
+- Per-layer **visibility** toggle with the Layers UI.
+- Custom **32³ tile** store behind `Grid` (not OpenVDB yet).
+
+Suggested PR stack (see doc for acceptance checks):
+
+1. `[x]` **P0** — this plan (docs).
+2. `[x]` **P1** — sparse `Grid` façade, parity at current 192³.
+3. `[x]` **P2** — chunk entities spawn/despawn with geometry, not
+   pre-spawned for the whole domain (8/216 chunks live for the
+   starter sphere — a real entity-count win already).
+4. `[x]` **P3** — sparse-native wire cutter, component labelling
+   (scan *and* storage), rigid-translate/rest-on-bench, and the
+   Move-tool gizmo-drag preview (growable region snapshot) all off
+   the full-domain path. Also fixed a second full-domain scan found
+   along the way in the app's delete-selection path.
+5. `[x]` **P4** — domain grown to 352³ (528 mm, ≥ the 400 mm View
+   grid). Bench-first Add needed no code changes (already fully
+   parameterised on `grid.res()`); found and fixed a related bug
+   while verifying — `ray_march`'s iteration cap was a fixed
+   constant sized for the old domain, silently truncating reach
+   below the `max_dist` callers already ask for.
+6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
+7. `[x]` **P6** — `LayersState { layers, active }` replaces the bare
+   `SculptWorkpiece` grid, single layer, behaviour unchanged.
+8. `[x]` **P7** — Insert Primitive → new layer; cross-layer pick
+   (`ray_march_visible`) activates whatever the user clicks on;
+   save/STL flatten every visible layer (`Grid::union_from`) so
+   switching to layers can't silently drop a piece before the real
+   v3 format lands.
+9. `[ ]` **P8** — Layers panel (name / visibility / delete) + Merge
+   Down.
+10. `[ ]` **P9** — `.mudclay` v3 multi-layer sections.
 
 ---
 
@@ -125,15 +179,17 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 
 From `DESIGN.md`'s staged roadmap:
 
-- `[ ]` **Sparse narrow-band SDF store** (Stage 2 → not migrated yet;
-  still on dense 128³). Effective resolution ceiling for detail work.
-- `[ ]` **Dual contouring** for sharp features. Marching cubes today
-  rounds every corner.
-- `[ ]` **Merge on contact / weld.** Explicit user action; needs
-  component identity from (5).
+- `[~]` **Sparse narrow-band SDF store** — now Track A in
+  `SPARSE_THEN_LAYERS.md` (still dense 192³ until P1). Effective
+  resolution / domain ceiling for detail work.
+- `[ ]` **Dual contouring** for sharp features. Marching cubes /
+  surface nets today round every corner.
+- `[~]` **Merge on contact / weld.** Explicit user action — Track B
+  Merge Down (`min` union). Not automatic on contact.
 - `[ ]` **Matcap library + cavity shading.** One matcap right now;
   cavity term (`smoothed(φ) − φ`) is cheap.
-- `[ ]` **Multi-piece scene** with hide / show, per-piece transforms.
+- `[~]` **Multi-piece scene** — Track B Layers (same-domain, hide /
+  show). Per-piece transforms still deferred.
 - `[ ]` **Reference images pinned to the workbench** (Stage 4).
 - `[ ]` **Autosave / crash recovery** (Stage 4).
 - `[ ]` **Watertightness check on export.**

@@ -14,7 +14,7 @@ use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
 use crate::selection::Selection;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
-use crate::workpiece::SculptWorkpiece;
+use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
     app.add_systems(Update, (emit_hotkey, handle_action));
@@ -38,7 +38,7 @@ fn emit_hotkey(
 
 fn handle_action(
     mut events: EventReader<AppAction>,
-    mut workpiece: ResMut<SculptWorkpiece>,
+    mut workpiece: ResMut<LayersState>,
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<Selection>,
@@ -56,7 +56,7 @@ fn handle_action(
 }
 
 fn rest_on_bench_now(
-    workpiece: &mut SculptWorkpiece,
+    workpiece: &mut LayersState,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
     selection: &mut Selection,
@@ -64,7 +64,7 @@ fn rest_on_bench_now(
     // Abandon any live sculpting stroke — rest is a separate undo unit.
     stroke.discard_live();
 
-    let labels = label_components(&workpiece.grid);
+    let labels = label_components(workpiece.grid());
     if labels.component_count() == 0 {
         info!("rest: no material on the workbench");
         return;
@@ -72,19 +72,19 @@ fn rest_on_bench_now(
 
     let mut recorder = StrokeRecorder::default();
     let summary = rest_components_on_bench(
-        &mut workpiece.grid,
+        workpiece.grid_mut(),
         &labels,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
 
-    let grid_res = workpiece.grid.res();
+    let grid_res = workpiece.grid().res();
     if let Some(region) = summary.dirty {
         recorder.record_dirty_region(region, grid_res);
         for c in region.touched_chunks(grid_res) {
-            workpiece.dirty.insert((c.x, c.y, c.z));
+            workpiece.mark_dirty((c.x, c.y, c.z));
         }
     }
-    if let Some(entry) = recorder.finish(&workpiece.grid) {
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
         history.push_stroke(entry);
     }
 

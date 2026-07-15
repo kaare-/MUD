@@ -99,7 +99,9 @@ impl From<io::Error> for ReadError {
 pub fn write_project<W: Write>(grid: &Grid, writer: &mut W) -> io::Result<()> {
     let res = grid.res();
     let origin = grid.origin();
-    let samples = grid.samples();
+    // `Grid` is sparse internally; the on-disk v1 format is still a
+    // flat blob, so materialise it once here.
+    let samples = grid.to_dense();
     let sample_count = samples.len() as u32;
 
     writer.write_all(MAGIC)?;
@@ -117,16 +119,18 @@ pub fn write_project<W: Write>(grid: &Grid, writer: &mut W) -> io::Result<()> {
     // Bulk-write the samples. A single `write_all` beats per-voxel
     // formatting by ~50x on debug builds and matters even on release
     // for 128³ grids (8 MiB blob).
-    let byte_buf: &[u8] = bytemuck_cast(samples);
+    let byte_buf: &[u8] = bytemuck_cast(&samples);
     writer.write_all(byte_buf)?;
     writer.flush()?;
     Ok(())
 }
 
 /// Total on-disk size for a given grid. Useful for pre-sizing buffers
-/// or reporting file size in log messages.
+/// or reporting file size in log messages. Computed from `res`
+/// directly rather than materialising the dense buffer.
 pub fn project_size(grid: &Grid) -> usize {
-    HEADER_LEN + 4 * grid.samples().len()
+    let res = grid.res();
+    HEADER_LEN + 4 * (res.x as usize) * (res.y as usize) * (res.z as usize)
 }
 
 /// Read a project file from `reader` and return the reconstructed grid.
