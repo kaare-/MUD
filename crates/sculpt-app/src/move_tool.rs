@@ -17,13 +17,15 @@
 //! translations would resample the SDF and blur the surface; every
 //! DCC move here is lossless.
 //!
-//! Live preview strategy: at drag start, the whole SDF is
-//! snapshotted (`Vec<f32>`, ~27 MB at 192³) and the component
-//! labels are frozen. Each drag frame resets the grid from the
-//! snapshot and re-applies `translate_component` with the *total*
-//! delta, so undo doesn't need to record intermediate states. On
-//! release, the final delta is applied one last time via a
-//! journalling recorder → one clean undo entry.
+//! Live preview strategy: at drag start, a region-scoped snapshot
+//! covering just the selected component's own (widened) bounds is
+//! taken, and the component labels are frozen. `ensure_region_covers`
+//! grows that snapshot on demand as the drag reaches farther (Track
+//! A3, `PLAN.md`) — never a whole-domain copy. Each drag frame resets
+//! the grid from the snapshot and re-applies `translate_component`
+//! with the *total* delta, so undo doesn't need to record
+//! intermediate states. On release, the final delta is applied one
+//! last time via a journalling recorder → one clean undo entry.
 //!
 //! The heavy lifting — shifting voxel values along with their
 //! narrow band — lives in `sculpt_core::translate_component`.

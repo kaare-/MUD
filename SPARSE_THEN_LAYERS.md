@@ -462,8 +462,53 @@ that still deliberately materialises a full dense buffer — Track A5
 (the v2 on-disk sparse format) is the right place to revisit that,
 not before.
 
+## A4 — domain grown (2026-07-15)
+
+Raised `RES` from 192 to **352** (352 × 1.5 mm/voxel = **528 mm
+domain**) in `workpiece.rs` — past the ≥512 mm XZ target and bigger
+than the 400 mm `View → Workbench grid` overlay, satisfying both A4
+goals at once. Kept the domain cubic (same `RES` on every axis)
+rather than shrinking Y independently: it already covers both
+targets, and an anisotropic domain would have needed `Grid::from_sphere`,
+the workbench-origin math, and `ray_march`'s reach to all account for
+non-uniform extents for no benefit this pass actually needed.
+
+This is affordable specifically *because* A1–A3 landed first: none of
+the sparse tile storage, lazy chunk spawning, or the region-scoped
+volume walkers scale with `RES` directly — they scale with what the
+user actually builds. Verified live: saving the (still just the
+starter-sphere) workpiece produces a `48 + 4×352³` = 174,456,880-byte
+file, exact — confirming the running app is genuinely on the new
+domain, not just the constant in source.
+
+**Found and fixed along the way:** `Grid::ray_march`'s inner
+iteration budget was a fixed `1024` sized for the *old* ~192 mm
+domain (1024 steps × 1.5 mm max-step ≈ 1536 mm max reach). That cap
+was already silently tighter than the `max_dist` parameter callers
+pass (`sculpt.rs` passes `4000.0` mm), and would only get more likely
+to bite as pieces (and the camera distance needed to view them) grow.
+Now sized from `max_dist / max_step` instead of a constant, so it
+scales with whatever the caller actually asks for. Added a regression
+test (reverted the fix locally to confirm it fails without the change,
+then re-applied) that starts a ray 3000 mm outside the grid and
+confirms it still finds the surface.
+
+**Bench-first Add** (`Shift+LMB` on the empty bench) needed no code
+changes — `ray_bench_intersection` is pure infinite-plane math with
+no domain clamp, and `stamp_bench_blob` / `apply_sphere_brush` are
+already parameterised entirely through `grid.res()` / `grid.origin()`.
+Manual GUI verification of an actual bench click hit the same
+synthetic-input limitation noted in prior turns (mouse+modifier
+combos are unreliable via `xdotool` in this VNC/llvmpipe sandbox,
+confirmed pre-existing on unmodified code); relying instead on the
+exact save-file-size proof above plus the existing
+`workbench_clip_prevents_material_below_plane` brush tests, which
+exercise the same `workbench_y` clip this path uses.
+
 ## Next step
 
-**Track A4** (grow the domain past 192³ + bench-first Add) is now
-unblocked. Alternatively, start **Track B** (layers) — it never
-depended on A3 or A4.
+Track A is functionally complete for now (P5 — the `.mudclay` v2
+sparse on-disk format — is the only item left, and only matters once
+users are routinely saving pieces that don't fill most of the
+domain). Start **Track B** (layers): Insert Primitive → new layer,
+active-layer-only tools, visibility toggle, explicit Merge Down.

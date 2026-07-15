@@ -22,16 +22,17 @@ convincing lump of clay, quickly*.
 
 ## Shipped so far (Stages 0–3 + Add/Remove pass)
 
-- `[x]` Dense SDF grid at 192³, 1.5 mm voxel, chunked meshing
-  (288 mm work volume — one bump up from 128³, sparse SDF still
-  on the roadmap for going larger).
+- `[x]` Sparse-tile SDF grid at 352³, 1.5 mm voxel (528 mm work
+  volume — see `SPARSE_THEN_LAYERS.md` Tracks A1–A4), chunked
+  meshing with chunk entities spawned only where there's geometry.
 - `[x]` Orbit / pan / zoom camera, Q / E turntable.
 - `[x]` Workbench floor (y = 0) as a hard clip.
 - `[x]` Clay tool (Add / Remove) with soft CSG (magic clay).
 - `[x]` Cookie cutters (circle, square, hex, star).
-- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG runs
-  over the whole grid and uses a **soft-max at the corner** where
-  the cut plane meets the outer surface: the resulting SDF is C¹
+- `[x]` Wire cutter (LMB drag → planar slab cut). Slab CSG iterates
+  only allocated tiles (Track A3) and uses a **soft-max at the
+  corner** where the cut plane meets the outer surface: the
+  resulting SDF is C¹
   around the ring instead of kinked, so surface-nets can't
   average a saw-tooth edge across the cut. Slab is 3 mm (two
   voxels) so the mesher sees a real gradient across the gap.
@@ -154,7 +155,12 @@ Suggested PR stack (see doc for acceptance checks):
    Move-tool gizmo-drag preview (growable region snapshot) all off
    the full-domain path. Also fixed a second full-domain scan found
    along the way in the app's delete-selection path.
-5. `[ ]` **P4** — grow domain (≥512 mm XZ) + bench-first clay.
+5. `[x]` **P4** — domain grown to 352³ (528 mm, ≥ the 400 mm View
+   grid). Bench-first Add needed no code changes (already fully
+   parameterised on `grid.res()`); found and fixed a related bug
+   while verifying — `ray_march`'s iteration cap was a fixed
+   constant sized for the old domain, silently truncating reach
+   below the `max_dist` callers already ask for.
 6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
 7. `[ ]` **P6–P9** — `LayersState`, Insert→layer, UI+Merge, v3 save.
 

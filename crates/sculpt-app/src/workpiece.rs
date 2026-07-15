@@ -14,13 +14,13 @@
 //! **Track A2 (`PLAN.md` / `SPARSE_THEN_LAYERS.md`):** chunk entities
 //! are spawned lazily and despawned when they go empty, instead of
 //! eagerly pre-spawning every chunk in the domain at startup. This is
-//! a real win even at the current 192³ domain: a chunk only gets an
-//! entity where the *surface* actually passes through it, not
-//! wherever the grid has data — the starter sphere's shell touches a
-//! small fraction of the 6×6×6 = 216 possible chunks, so most of them
-//! are never spawned at all. It matters even more once the domain
-//! grows (Track A4): pre-spawning thousands of chunks that will never
-//! hold geometry would be wasteful at that scale.
+//! a real win even at a modest domain: a chunk only gets an entity
+//! where the *surface* actually passes through it, not wherever the
+//! grid has data — the starter sphere's shell touches only a small
+//! fraction of the possible chunks, so most of them are never
+//! spawned at all. It matters even more at the current 11×11×11 = 1331
+//! chunk domain (Track A4): pre-spawning thousands of chunks that
+//! will never hold geometry would be wasteful at that scale.
 
 use std::collections::{HashMap, HashSet};
 
@@ -31,23 +31,31 @@ use glam::{UVec3, Vec3 as GVec3};
 
 use sculpt_core::{extract_chunk, ChunkCoord, Grid, CHUNK_SIZE};
 
-/// Effective grid resolution per axis. 192^3 at 1.5 mm/voxel gives a
-/// **288 mm domain** — big enough for a chunky two-handed piece,
-/// still cheap enough that Move-drag preview stays interactive.
+/// Effective grid resolution per axis. **352³ at 1.5 mm/voxel gives a
+/// 528 mm domain** (Track A4, `SPARSE_THEN_LAYERS.md`) — bigger than
+/// the 400 mm `View → Workbench grid` overlay, and comfortably past
+/// the ≥512 mm XZ target: room for a coil piece built up from an
+/// empty bench (`File > New`, then `Shift+LMB` on the bare bench),
+/// not just a single two-handed lump.
 ///
-/// `Grid` itself is sparse tiles as of Track A1 (`SPARSE_THEN_LAYERS.md`),
-/// but a full-domain starter shape like the sphere below still
-/// allocates every tile, so at this resolution the worst-case
-/// footprint is still ~27 MB (f32) — same as the old dense buffer.
-/// The Move-drag snapshot and component labels (Track A3, not yet
-/// sparsified) pay a comparable cost. Full re-mesh takes ~120 ms
-/// (bounded by our 32-chunks-per-frame cap for smoothness during
-/// large edits).
+/// This only affords going ~1.8× past the old 192³ / 288 mm domain
+/// (worst case dense-equivalent footprint ~174 MB) because Tracks
+/// A1–A3 landed first: `Grid` only allocates the 32³ tiles a shape
+/// actually touches (a starter sphere's shell is a handful of tiles
+/// out of the 11×11×11 = 1331 possible, not all of them), chunk
+/// entities are spawned only where there's geometry, and every
+/// volume walker (wire cutter, component labels, rigid translate,
+/// the Move-tool live preview) is scoped to the region it actually
+/// touches instead of raster-scanning the whole domain. None of that
+/// scales with `RES` directly, so growing this constant is now cheap
+/// for typical pieces — it only costs what the user actually builds.
 ///
-/// Going substantially larger than this needs both the domain grow
-/// (Track A4) and the sparse walkers (A3) landed first — see
-/// `PLAN.md`.
-const RES: u32 = 192;
+/// Kept cubic (same `RES` on every axis) for simplicity: this already
+/// satisfies both the XZ footprint target and gives generous Y
+/// headroom for a standing piece, without introducing an anisotropic
+/// domain shape `Grid::from_sphere`, the workbench-origin math below,
+/// and `ray_march`'s iteration budget would all need to account for.
+const RES: u32 = 352;
 const VOXEL_MM: f32 = 1.5;
 
 /// Cap on chunks re-meshed per frame. Prevents big edits (large brush

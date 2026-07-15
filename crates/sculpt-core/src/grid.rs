@@ -449,9 +449,18 @@ impl Grid {
             return Some(origin);
         }
 
-        // Enough iterations to walk a full Stage-2 domain (~192 mm) at
-        // one voxel per step, with headroom for grazes.
-        for _ in 0..1024 {
+        // Enough iterations to walk the full `max_dist` the caller
+        // asked for at one voxel per step (the common case away from
+        // any surface — see the comment above on why we never take a
+        // bigger step), with headroom for grazes near the hit. Sized
+        // from `max_dist` / `max_step` rather than a fixed constant
+        // so this scales automatically with both the domain (Track
+        // A4, `PLAN.md`) and how far a caller's camera can zoom out —
+        // a fixed cap tied to one specific domain size is exactly
+        // the kind of assumption that silently truncates ray reach
+        // once either one grows.
+        let max_iters = ((max_dist / max_step).ceil() as u32).saturating_add(64);
+        for _ in 0..max_iters {
             let step = prev_d.max(min_step).min(max_step);
             let t_next = t + step;
             if t_next > max_dist {
@@ -694,6 +703,26 @@ mod tests {
             hit.x < 25.0,
             "ray tunnelled past the near face onto the deep body: {hit:?}"
         );
+    }
+
+    /// Regression for Track A4: the iteration budget used to be a
+    /// fixed constant sized for the old ~192 mm domain (1024 steps at
+    /// 1 voxel each ≈ 1536 mm max reach for a 1.5 mm grid, less for a
+    /// finer one). A camera zoomed out to see a bigger domain — or
+    /// just a bigger `max_dist` — must still be able to find a hit
+    /// well past that old ceiling.
+    #[test]
+    fn ray_march_reaches_hits_far_beyond_the_old_fixed_iteration_cap() {
+        let res = UVec3::new(32, 32, 32);
+        let vs = 1.0;
+        // Grid sits at x in [0, 32); the ray starts 3000 units to its
+        // left, so most of the march happens in "outside the domain"
+        // space before the sphere is ever reached.
+        let g = Grid::from_sphere(res, vs, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 8.0);
+        let hit = g
+            .ray_march(Vec3::new(-3000.0, 16.0, 16.0), Vec3::X, 4000.0)
+            .expect("ray should reach the sphere despite the long empty run-up");
+        assert!((hit.x - 8.0).abs() < 1.5, "unexpected hit x = {}", hit.x);
     }
 
     #[test]
