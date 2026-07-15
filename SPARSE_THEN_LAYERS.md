@@ -335,9 +335,28 @@ tile store instead of a dense `Vec<f32>`. Behaviour is unchanged:
   payoff starts once real "far from any surface" regions exist,
   which is Track A4 (domain grow).
 
+## P2 — shipped (2026-07-15)
+
+`SculptWorkpiece` no longer pre-spawns all 216 (6×6×6) chunk entities
+at startup. `remesh_dirty_chunks` now reconciles each dirty chunk's
+extracted mesh against its entity: spawn one where geometry newly
+appears, despawn it where geometry disappears, update it in place
+otherwise. `swap_grid` (project load / New) marks *every* chunk coord
+dirty, not just the previously-spawned ones, so both directions
+(chunks that go empty, chunks that gain geometry for the first time)
+get picked up.
+
+This is a real win **today**, not just future-proofing: a chunk only
+gets an entity where the SDF's zero-crossing actually passes through
+it, not wherever the grid has data. Verified live (temporary `info!`
+instrumentation, removed after use): the starter sphere spawns
+**8 of 216** possible chunks — the surface shell, not the solid
+interior or the empty exterior. Full lifecycle confirmed end-to-end
+in the running app: startup → 8 spawned; `Ctrl+N` → exactly those 8
+despawn to 0; `Ctrl+Shift+O` reload → the same 8 coords respawn with
+matching geometry (screenshot-verified).
+
 ## Next step
 
-Implement **P2** (remesh / spawn Bevy chunk entities only for
-allocated tiles, instead of always spawning the full 6×6×6 grid).
-Then **P3** (sparse-native wire-cutter, component labelling,
+Implement **P3** (sparse-native wire-cutter, component labelling,
 translate/rest, Move preview) before **A4** grows the domain.

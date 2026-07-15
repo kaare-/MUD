@@ -146,7 +146,9 @@ Suggested PR stack (see doc for acceptance checks):
 
 1. `[x]` **P0** — this plan (docs).
 2. `[x]` **P1** — sparse `Grid` façade, parity at current 192³.
-3. `[ ]` **P2** — remesh / spawn only allocated tiles.
+3. `[x]` **P2** — chunk entities spawn/despawn with geometry, not
+   pre-spawned for the whole domain (8/216 chunks live for the
+   starter sphere — a real entity-count win already).
 4. `[ ]` **P3** — sparse wire-cut / labels / translate-rest.
 5. `[ ]` **P4** — grow domain (≥512 mm XZ) + bench-first clay.
 6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).

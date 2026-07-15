@@ -1,14 +1,26 @@
 //! The sculpting subject.
 //!
 //! The workpiece owns:
-//! - a dense SDF grid (source of truth),
-//! - a set of chunk entities (Bevy renderables extracted from the grid),
+//! - the SDF grid (source of truth — sparse tiles as of Track A1),
+//! - a sparse map of chunk entities (Bevy renderables extracted from
+//!   the grid) for whichever chunks currently have geometry,
 //! - a dirty-chunk queue.
 //!
 //! One `WorkpieceRoot` entity carries the piece-local transform (the
 //! turntable rotation is applied here). Each chunk is a child entity
 //! whose mesh vertices are already in piece-local space, so its own
 //! transform stays identity.
+//!
+//! **Track A2 (`PLAN.md` / `SPARSE_THEN_LAYERS.md`):** chunk entities
+//! are spawned lazily and despawned when they go empty, instead of
+//! eagerly pre-spawning every chunk in the domain at startup. This is
+//! a real win even at the current 192³ domain: a chunk only gets an
+//! entity where the *surface* actually passes through it, not
+//! wherever the grid has data — the starter sphere's shell touches a
+//! small fraction of the 6×6×6 = 216 possible chunks, so most of them
+//! are never spawned at all. It matters even more once the domain
+//! grows (Track A4): pre-spawning thousands of chunks that will never
+//! hold geometry would be wasteful at that scale.
 
 use std::collections::{HashMap, HashSet};
 
@@ -23,14 +35,18 @@ use sculpt_core::{extract_chunk, ChunkCoord, Grid, CHUNK_SIZE};
 /// **288 mm domain** — big enough for a chunky two-handed piece,
 /// still cheap enough that Move-drag preview stays interactive.
 ///
-/// Memory footprint at 192³: grid 27 MB (f32), snapshot 27 MB
-/// during a drag, component labels 27 MB when live. Full re-mesh
-/// takes ~120 ms (bounded by our 32-chunks-per-frame cap for
-/// smoothness during large edits).
+/// `Grid` itself is sparse tiles as of Track A1 (`SPARSE_THEN_LAYERS.md`),
+/// but a full-domain starter shape like the sphere below still
+/// allocates every tile, so at this resolution the worst-case
+/// footprint is still ~27 MB (f32) — same as the old dense buffer.
+/// The Move-drag snapshot and component labels (Track A3, not yet
+/// sparsified) pay a comparable cost. Full re-mesh takes ~120 ms
+/// (bounded by our 32-chunks-per-frame cap for smoothness during
+/// large edits).
 ///
-/// The Stage-2 sparse-SDF migration in `PLAN.md` is still the
-/// answer for going much larger; this bump is what we can afford
-/// on a dense grid without hurting interactivity.
+/// Going substantially larger than this needs both the domain grow
+/// (Track A4) and the sparse walkers (A3) landed first — see
+/// `PLAN.md`.
 const RES: u32 = 192;
 const VOXEL_MM: f32 = 1.5;
 
@@ -53,8 +69,17 @@ pub struct ChunkEntity {
 #[derive(Resource)]
 pub struct SculptWorkpiece {
     pub grid: Grid,
+    /// Chunk coord → spawned entity, for chunks that currently have
+    /// an active mesh. Sparse: a coord with no geometry has no
+    /// entry, not an entity with an empty mesh. See the module-level
+    /// Track A2 note.
     pub chunks: HashMap<(u32, u32, u32), Entity>,
     pub dirty: HashSet<(u32, u32, u32)>,
+    /// Shared material every chunk entity is spawned with. Cached
+    /// here so `remesh_dirty_chunks` can spawn newly-occupied chunks
+    /// without needing its own `Assets<StandardMaterial>` write pass
+    /// tangled into chunk lookup.
+    material: Handle<StandardMaterial>,
 }
 
 impl SculptWorkpiece {
@@ -65,9 +90,12 @@ impl SculptWorkpiece {
     /// Commands. Callers should check the current `grid.res()` +
     /// `voxel_size()` before offering the swap.
     ///
-    /// Marks every chunk dirty so the mesher rebuilds the whole
-    /// workpiece over the next few frames (bounded by
-    /// [`MAX_CHUNKS_PER_FRAME`]).
+    /// Marks *every possible* chunk coord dirty — not just the ones
+    /// with a currently-spawned entity — so the mesher both re-checks
+    /// chunks that might now be empty (and despawns them) and
+    /// discovers chunks that might now have geometry for the first
+    /// time (and spawns them). Rebuilds over the next few frames
+    /// (bounded by [`MAX_CHUNKS_PER_FRAME`]).
     pub fn swap_grid(&mut self, new_grid: Grid) -> Result<(), GridSwapError> {
         if new_grid.res() != self.grid.res() {
             return Err(GridSwapError::ResolutionMismatch {
@@ -81,10 +109,15 @@ impl SculptWorkpiece {
                 incoming: new_grid.voxel_size(),
             });
         }
+        let num_chunks = new_grid.num_chunks();
         self.grid = new_grid;
         self.dirty.clear();
-        for &key in self.chunks.keys() {
-            self.dirty.insert(key);
+        for cz in 0..num_chunks.z {
+            for cy in 0..num_chunks.y {
+                for cx in 0..num_chunks.x {
+                    self.dirty.insert((cx, cy, cz));
+                }
+            }
         }
         Ok(())
     }
@@ -119,7 +152,6 @@ pub fn plugin(app: &mut App) {
 
 fn spawn_workpiece(
     mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     // Grid is centered on X/Z. Y=0 is the workbench, so the grid's Y
@@ -142,59 +174,56 @@ fn spawn_workpiece(
         ..default()
     });
 
-    let root = commands
-        .spawn((WorkpieceRoot, Transform::default(), Visibility::default()))
-        .id();
+    commands.spawn((WorkpieceRoot, Transform::default(), Visibility::default()));
 
+    // No chunk entities spawned up front — every chunk coord starts
+    // dirty and `remesh_dirty_chunks` spawns an entity only for the
+    // ones that turn out to have geometry (see the module doc).
     let num_chunks = RES.div_ceil(CHUNK_SIZE);
-    let mut chunks = HashMap::new();
     let mut dirty = HashSet::new();
-
     for cz in 0..num_chunks {
         for cy in 0..num_chunks {
             for cx in 0..num_chunks {
-                let key = (cx, cy, cz);
-                let mesh_handle = meshes.add(empty_mesh());
-                let entity = commands
-                    .spawn((
-                        Mesh3d(mesh_handle),
-                        MeshMaterial3d(material.clone()),
-                        Transform::default(),
-                        Visibility::default(),
-                        ChunkEntity {
-                            coord: ChunkCoord::new(cx, cy, cz),
-                        },
-                    ))
-                    .id();
-                commands.entity(root).add_child(entity);
-                chunks.insert(key, entity);
-                dirty.insert(key);
+                dirty.insert((cx, cy, cz));
             }
         }
     }
 
     commands.insert_resource(SculptWorkpiece {
         grid,
-        chunks,
+        chunks: HashMap::new(),
         dirty,
+        material,
     });
 }
 
-fn empty_mesh() -> Mesh {
+fn build_mesh(extracted: sculpt_core::ExtractedMesh) -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
-    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, Vec::<[f32; 3]>::new());
-    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, Vec::<[f32; 3]>::new());
-    mesh.insert_indices(Indices::U32(Vec::new()));
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, extracted.positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, extracted.normals);
+    mesh.insert_indices(Indices::U32(extracted.indices));
     mesh
 }
 
+/// Re-extract every dirty chunk (bounded by [`MAX_CHUNKS_PER_FRAME`]
+/// per frame) and reconcile its entity against the result:
+/// - geometry appears where there was none → spawn a chunk entity;
+/// - geometry disappears → despawn it;
+/// - geometry changes shape → update the existing mesh in place.
+///
+/// A chunk that goes dirty again later (any edit touching it calls
+/// `DirtyRegion::touched_chunks`, independent of whether it currently
+/// has an entity) is picked back up here the same way, so a despawned
+/// chunk respawns correctly the next time it gets material.
 fn remesh_dirty_chunks(
     mut workpiece: ResMut<SculptWorkpiece>,
+    mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     q_meshes: Query<&Mesh3d>,
+    q_root: Query<Entity, With<WorkpieceRoot>>,
 ) {
     if workpiece.dirty.is_empty() {
         return;
@@ -214,28 +243,37 @@ fn remesh_dirty_chunks(
 
     for key in batch {
         let coord = ChunkCoord::new(key.0, key.1, key.2);
-        let Some(&entity) = workpiece.chunks.get(&key) else {
-            continue;
-        };
-        let Ok(mesh3d) = q_meshes.get(entity) else {
-            continue;
-        };
-
         let extracted = extract_chunk(&workpiece.grid, coord);
 
-        let new_mesh = if extracted.is_empty() {
-            empty_mesh()
-        } else {
-            let mut mesh = Mesh::new(
-                PrimitiveTopology::TriangleList,
-                RenderAssetUsages::default(),
-            );
-            mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, extracted.positions);
-            mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, extracted.normals);
-            mesh.insert_indices(Indices::U32(extracted.indices));
-            mesh
-        };
+        if extracted.is_empty() {
+            if let Some(entity) = workpiece.chunks.remove(&key) {
+                commands.entity(entity).despawn();
+            }
+            continue;
+        }
 
-        meshes.insert(mesh3d.0.id(), new_mesh);
+        if let Some(&entity) = workpiece.chunks.get(&key) {
+            // Existing chunk, geometry changed shape: update in place.
+            if let Ok(mesh3d) = q_meshes.get(entity) {
+                meshes.insert(mesh3d.0.id(), build_mesh(extracted));
+            }
+        } else {
+            // Newly-occupied chunk: spawn it under the workpiece root.
+            let Ok(root) = q_root.get_single() else {
+                continue;
+            };
+            let mesh_handle = meshes.add(build_mesh(extracted));
+            let entity = commands
+                .spawn((
+                    Mesh3d(mesh_handle),
+                    MeshMaterial3d(workpiece.material.clone()),
+                    Transform::default(),
+                    Visibility::default(),
+                    ChunkEntity { coord },
+                ))
+                .id();
+            commands.entity(root).add_child(entity);
+            workpiece.chunks.insert(key, entity);
+        }
     }
 }
