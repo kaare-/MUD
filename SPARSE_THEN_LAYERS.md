@@ -414,9 +414,56 @@ design than the other three, and the existing full-grid path is still
 correct, just not sparsified. Left as explicit follow-up rather than
 risk a subtly-wrong bounded region under time pressure.
 
+## P3 — completed (2026-07-15)
+
+Closed out the two items deferred above.
+
+**Move-tool gizmo-drag preview** (`move_tool.rs`): replaced the
+per-frame full-grid `to_dense()` / `restore_samples()` with a
+*growable* region snapshot. New `sculpt_core::touched_region_for_translate`
+computes the exact box a single-component translate by a given delta
+could read from or write to (the component's own widened bounds,
+unioned with that box shifted by the delta) — deliberately narrower
+than what `translate_components` snapshots internally for its
+multi-component bookkeeping, since a stationary component's SDF is
+never actually mutated by a translate and so never needs guarding.
+`ActiveDrag` now holds a `RegionSnapshot` sized to that box at delta
+zero; `ensure_region_covers` grows it on demand as the drag reaches
+farther — restoring the *current* (smaller) snapshot first (safe,
+since nothing outside it has ever been written to this drag), then
+taking a fresh snapshot over the union of old and newly-required
+bounds straight from the now-pristine live grid. Every frame that
+doesn't exceed the drag's high-water mark (the common case) pays a
+bounds check and nothing else; growing is O(region), never O(domain).
+New `Grid::restore_region` is the region-scoped inverse of
+`snapshot_region`.
+
+**`ComponentField` label storage**: switched from one dense
+`Vec<ComponentId>` sized `res³` to the same
+`HashMap<ChunkCoord, tile>` shape `Grid` uses — a component can only
+ever occupy voxels inside an allocated `Grid` tile, so the label
+field only allocates where labelling actually wrote a non-`EMPTY` id.
+This removed the `ids() -> &[ComponentId]` escape hatch entirely (no
+consumer needs a dense slice once `id_at` is the only way in), which
+also caught and fixed a second full-domain raster scan that had been
+hiding in the app layer: `selection.rs`'s `delete_selected_component`
+used to walk `0..res` on every axis to find the selected component's
+voxels; it now walks `bounds_of(target)` directly.
+
+**Verified:** live in the running app — `Ctrl+G` still drops the
+sphere onto the bench correctly (exercises `label_components` +
+`bounds_of` + `id_at` through the sparsified path end-to-end); full
+test suite (93 tests) green, including a new regression confirming a
+5 mm sphere's label field allocates only a handful of tiles on a
+192³ grid, nowhere near a dense `res³` buffer.
+
+Track A3 is now done. The `.mudclay` writer is the one place left
+that still deliberately materialises a full dense buffer — Track A5
+(the v2 on-disk sparse format) is the right place to revisit that,
+not before.
+
 ## Next step
 
-Domain grow (**A4**) is still blocked on the Move-tool gizmo-drag
-snapshot above and on sparsifying `ComponentField`'s label storage —
-do those two before raising `RES` past 192. Alternatively, start
-**Track B** (layers) now: it doesn't depend on either.
+**Track A4** (grow the domain past 192³ + bench-first Add) is now
+unblocked. Alternatively, start **Track B** (layers) — it never
+depended on A3 or A4.

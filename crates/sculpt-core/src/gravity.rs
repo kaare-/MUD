@@ -35,6 +35,51 @@ use crate::grid::{DirtyRegion, Grid};
 /// gradient probe. Widen this if we ever migrate to a fatter band.
 const BAND: u32 = 3;
 
+/// The region a *single-component* translate by `delta` could
+/// possibly read from or write to: `id`'s own widened AABB, unioned
+/// with that same box shifted by `delta`. `None` if `id` has no
+/// bounds (empty / out-of-range component).
+///
+/// Exposed so callers that need to reset a live-preview drag back to
+/// a pristine baseline before re-applying a (possibly different)
+/// total delta — the Move tool's gizmo drag — can size that baseline
+/// snapshot correctly without duplicating the `BAND` widening logic
+/// here. Deliberately narrower than what [`translate_components`]
+/// itself snapshots internally (which also covers every *stationary*
+/// component's own bounds, so its multi-component bookkeeping has
+/// somewhere to read from): a stationary component's SDF is never
+/// actually written to by a translate, so a single-component caller
+/// only needs to guard the moving component's own reachable region.
+pub fn touched_region_for_translate(
+    labels: &ComponentField,
+    id: ComponentId,
+    delta: IVec3,
+    res: UVec3,
+) -> Option<(UVec3, UVec3)> {
+    let (mn, mx) = labels.bounds_of(id)?;
+    let wmin = UVec3::new(
+        mn.x.saturating_sub(BAND),
+        mn.y.saturating_sub(BAND),
+        mn.z.saturating_sub(BAND),
+    )
+    .as_ivec3();
+    let wmax = UVec3::new(
+        (mx.x + BAND).min(res.x),
+        (mx.y + BAND).min(res.y),
+        (mx.z + BAND).min(res.z),
+    )
+    .as_ivec3();
+
+    let mut union_min = wmin.min(wmin + delta);
+    let mut union_max = wmax.max(wmax + delta);
+    union_min = union_min.max(IVec3::ZERO);
+    union_max = union_max.min(res.as_ivec3());
+    if union_min.x >= union_max.x || union_min.y >= union_max.y || union_min.z >= union_max.z {
+        return None;
+    }
+    Some((union_min.as_uvec3(), union_max.as_uvec3()))
+}
+
 /// Result of a rest-on-bench pass.
 #[derive(Copy, Clone, Debug, Default)]
 pub struct RestSummary {
@@ -229,9 +274,6 @@ where
     // of every component's old + shifted widened AABB — exactly the
     // bound this algorithm can possibly touch or read from.
     let old_region = grid.snapshot_region(union_min.as_uvec3(), union_max.as_uvec3());
-    let old_ids = labels.ids();
-    let stride_y = res.x as usize;
-    let stride_z = (res.x * res.y) as usize;
 
     let mut min = UVec3::new(u32::MAX, u32::MAX, u32::MAX);
     let mut max = UVec3::ZERO;
@@ -240,8 +282,6 @@ where
         for dst_iy in union_min.y..union_max.y {
             for dst_ix in union_min.x..union_max.x {
                 let (dx, dy, dz) = (dst_ix as u32, dst_iy as u32, dst_iz as u32);
-                let dst_idx =
-                    dx as usize + dy as usize * stride_y + dz as usize * stride_z;
                 let old_val_here = old_region.get(dx, dy, dz);
 
                 let mut new_val = f32::INFINITY;
@@ -270,7 +310,7 @@ where
                         // owned by yet another component and gets
                         // handled when *that* component's loop iter
                         // fires below.
-                        let label_here = old_ids[dst_idx];
+                        let label_here = labels.id_at(dx, dy, dz);
                         if label_here == c as ComponentId || label_here == EMPTY {
                             new_val = new_val.min(old_val_here);
                             base_is_from_non_moving = true;
@@ -307,9 +347,7 @@ where
                     {
                         continue;
                     }
-                    let src_idx =
-                        sx as usize + sy as usize * stride_y + sz as usize * stride_z;
-                    let label_src = old_ids[src_idx];
+                    let label_src = labels.id_at(sx, sy, sz);
                     if label_src != c as ComponentId && label_src != EMPTY {
                         continue;
                     }
@@ -504,6 +542,31 @@ mod tests {
             ratio > 0.9,
             "band preservation ratio {ratio:.2} — surface got sheared during rest",
         );
+    }
+
+    #[test]
+    fn touched_region_covers_original_and_shifted_bounds() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(16.0, 16.0, 16.0), 4.0);
+        let labels = label_components(&g);
+        let id = labels.ids_by_size_desc()[0];
+        let (orig_min, orig_max) = labels.bounds_of(id).unwrap();
+
+        let (region_min, region_max) =
+            touched_region_for_translate(&labels, id, IVec3::new(20, 0, 0), g.res()).unwrap();
+
+        // Original bounds (widened by BAND=3) must be inside the region.
+        assert!(region_min.x <= orig_min.x.saturating_sub(3));
+        assert!(region_max.x >= orig_max.x + 3);
+        // The shifted (+20 on x) bounds must also be covered.
+        assert!(region_max.x >= orig_max.x + 3 + 20);
+    }
+
+    #[test]
+    fn touched_region_is_none_for_a_zero_size_or_missing_component() {
+        let g = Grid::empty(UVec3::new(16, 16, 16), 1.0, Vec3::ZERO);
+        let labels = label_components(&g);
+        assert!(touched_region_for_translate(&labels, 1, IVec3::new(1, 0, 0), g.res()).is_none());
     }
 
     #[test]

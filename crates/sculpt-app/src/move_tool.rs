@@ -34,7 +34,8 @@ use bevy::prelude::*;
 use bevy::window::PrimaryWindow;
 use glam::{IVec3, Vec3 as GVec3};
 use sculpt_core::{
-    label_components, translate_component, ChunkCoord, ComponentField, ComponentId,
+    label_components, touched_region_for_translate, translate_component, ChunkCoord,
+    ComponentField, ComponentId, Grid, RegionSnapshot,
 };
 
 use crate::actions::AppAction;
@@ -142,10 +143,13 @@ struct ActiveDrag {
     /// nudge can be followed by a gizmo tweak without losing the
     /// typed part.
     initial_widget_mm: Vec3,
-    /// Full pre-drag SDF, used to rewind before each frame's
-    /// re-application. ~27 MB at 192³ — a fine trade for accurate
-    /// live preview + single-entry undo.
-    grid_snapshot: Vec<f32>,
+    /// Region-scoped snapshot covering everywhere this drag has
+    /// reached so far, used to rewind before each frame's
+    /// re-application (so repeated `translate_component` calls with
+    /// a varying total delta don't compound). Grows on demand via
+    /// [`ensure_region_covers`] instead of paying a full-domain
+    /// `to_dense()` / `restore_samples()` every frame.
+    grid_snapshot: RegionSnapshot,
     /// Labels captured at drag start. Since we always start each
     /// frame's translate from `grid_snapshot`, the label field
     /// stays valid for the whole drag.
@@ -568,10 +572,20 @@ fn gizmo_pointer_input(
         // Bail: nothing to move.
         return;
     };
-    // `Grid` is sparse internally; this materialises a full dense
-    // snapshot for the drag's revert-and-reapply loop. Tile/region
-    // -local snapshots are `PLAN.md` Track A3, not this pass.
-    let snapshot: Vec<f32> = workpiece.grid.to_dense();
+    // Region-scoped snapshot of just the component's own (widened)
+    // bounds at zero delta; `ensure_region_covers` grows this as the
+    // drag reaches farther, so we never pay a full-domain copy here.
+    let Some((region_min, region_max)) = touched_region_for_translate(
+        &labels,
+        component_id,
+        IVec3::ZERO,
+        workpiece.grid.res(),
+    ) else {
+        // No bounds for the selected component — shouldn't happen
+        // given `selected_id` just succeeded, but bail cleanly.
+        return;
+    };
+    let snapshot = workpiece.grid.snapshot_region(region_min, region_max);
     let active = ActiveDrag {
         axis,
         t_start,
@@ -651,6 +665,40 @@ fn update_drag(
     state.pending_mm = new_mm;
 }
 
+/// Ensure `active.grid_snapshot` covers everywhere a translate by
+/// `delta` could read from or write to.
+///
+/// The common case (the drag hasn't grown past its current reach) is
+/// a cheap bounds check and nothing else. Growing is still O(region),
+/// never O(domain): the *currently* snapshotted box is first restored
+/// to pristine (undoing whatever this drag has previewed there so
+/// far), which — since nothing outside that box has ever been
+/// written to during this drag — leaves the *entire* grid pristine.
+/// A fresh, bigger snapshot covering the union of the old box and the
+/// newly-required one is then safe to take straight from the live
+/// grid.
+fn ensure_region_covers(active: &mut ActiveDrag, grid: &mut Grid, delta: IVec3) {
+    let Some((need_min, need_max)) =
+        touched_region_for_translate(&active.labels, active.component_id, delta, grid.res())
+    else {
+        return;
+    };
+    let (cur_min, cur_max) = active.grid_snapshot.bounds();
+    let already_covered = need_min.x >= cur_min.x
+        && need_min.y >= cur_min.y
+        && need_min.z >= cur_min.z
+        && need_max.x <= cur_max.x
+        && need_max.y <= cur_max.y
+        && need_max.z <= cur_max.z;
+    if already_covered {
+        return;
+    }
+    grid.restore_region(&active.grid_snapshot);
+    let new_min = cur_min.min(need_min);
+    let new_max = cur_max.max(need_max);
+    active.grid_snapshot = grid.snapshot_region(new_min, new_max);
+}
+
 fn apply_preview(
     drag: &mut MoveGizmoDrag,
     workpiece: &mut SculptWorkpiece,
@@ -668,9 +716,8 @@ fn apply_preview(
     // Reset the grid from the snapshot every frame; then translate
     // by the total offset. That way we don't accumulate rounding
     // error and undo doesn't need to record intermediate states.
-    if !workpiece.grid.restore_samples(&active.grid_snapshot) {
-        return;
-    }
+    ensure_region_covers(active, &mut workpiece.grid, target_delta_vox);
+    workpiece.grid.restore_region(&active.grid_snapshot);
     let dirty = translate_component(
         &mut workpiece.grid,
         &active.labels,
@@ -693,23 +740,24 @@ fn apply_preview(
 }
 
 fn commit_drag(
-    active: ActiveDrag,
+    mut active: ActiveDrag,
     final_pending_mm: &Vec3,
     workpiece: &mut ResMut<SculptWorkpiece>,
     selection: &mut ResMut<Selection>,
     history: &mut ResMut<UndoHistory>,
 ) {
-    // Reset one last time so the recorder sees pre-values from
-    // the true pre-drag state, not the intermediate preview.
-    if !workpiece.grid.restore_samples(&active.grid_snapshot) {
-        return;
-    }
     let vs = workpiece.grid.voxel_size();
     let final_delta_vox = IVec3::new(
         (final_pending_mm.x / vs).round() as i32,
         (final_pending_mm.y / vs).round() as i32,
         (final_pending_mm.z / vs).round() as i32,
     );
+    // Reset one last time so the recorder sees pre-values from the
+    // true pre-drag state, not the intermediate preview. The region
+    // should already cover this delta from the last preview frame,
+    // but re-check defensively — cheap when it's already covered.
+    ensure_region_covers(&mut active, &mut workpiece.grid, final_delta_vox);
+    workpiece.grid.restore_region(&active.grid_snapshot);
     if final_delta_vox == IVec3::ZERO {
         info!("move: drag ended with zero-voxel offset — nothing to commit");
         // Ensure the reset chunks get re-meshed.
@@ -776,7 +824,7 @@ fn cancel_drag(
     workpiece: &mut ResMut<SculptWorkpiece>,
     state: &mut ResMut<MoveState>,
 ) {
-    let _ = workpiece.grid.restore_samples(&active.grid_snapshot);
+    workpiece.grid.restore_region(&active.grid_snapshot);
     for &(x, y, z) in &active.dirty_chunks {
         workpiece.dirty.insert((x, y, z));
     }

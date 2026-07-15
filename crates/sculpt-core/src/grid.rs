@@ -285,6 +285,21 @@ impl Grid {
         RegionSnapshot { data, min, size }
     }
 
+    /// Overwrite every voxel `snap` covers with its snapshotted
+    /// value. The inverse of [`Grid::snapshot_region`] — restores a
+    /// bounded region to a prior state without touching anything
+    /// outside it, unlike the full-domain [`Grid::restore_samples`].
+    pub fn restore_region(&mut self, snap: &RegionSnapshot) {
+        let (min, max) = snap.bounds();
+        for gz in min.z..max.z {
+            for gy in min.y..max.y {
+                for gx in min.x..max.x {
+                    self.set(gx, gy, gz, snap.get(gx, gy, gz));
+                }
+            }
+        }
+    }
+
     /// Piece-local physical extent of the grid.
     pub fn extent(&self) -> Vec3 {
         Vec3::new(
@@ -487,6 +502,12 @@ pub struct RegionSnapshot {
 }
 
 impl RegionSnapshot {
+    /// The `[min, max)` global voxel bounds this snapshot covers.
+    #[inline]
+    pub fn bounds(&self) -> (UVec3, UVec3) {
+        (self.min, self.min + self.size)
+    }
+
     /// Read the pre-snapshot value at global voxel `(ix, iy, iz)`.
     #[inline]
     pub fn get(&self, ix: u32, iy: u32, iz: u32) -> f32 {
@@ -826,6 +847,19 @@ mod tests {
         // an unallocated tile's convention.
         assert!(snap.get(30, 30, 30) > 1e30);
         assert!(snap.get(0, 0, 0) > 1e30);
+    }
+
+    #[test]
+    fn restore_region_reverts_only_the_snapshotted_box() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        g.set(10, 10, 10, -5.0);
+        g.set(50, 50, 50, -9.0);
+        let snap = g.snapshot_region(UVec3::new(0, 0, 0), UVec3::new(20, 20, 20));
+        g.set(10, 10, 10, 5.0);
+        g.set(50, 50, 50, 1.0);
+        g.restore_region(&snap);
+        assert_eq!(g.get(10, 10, 10), -5.0, "inside the box: reverted");
+        assert_eq!(g.get(50, 50, 50), 1.0, "outside the box: untouched by restore");
     }
 
     #[test]

@@ -327,13 +327,20 @@ fn delete_selected_component(
     let mut removed = 0u32;
     let mut min = UVec3::new(u32::MAX, u32::MAX, u32::MAX);
     let mut max = UVec3::ZERO;
-    let ids = labels.ids();
 
-    for iz in 0..res.z {
-        for iy in 0..res.y {
-            for ix in 0..res.x {
-                let idx = (ix + iy * res.x + iz * res.x * res.y) as usize;
-                if ids[idx] != target {
+    // `bounds_of` already gives the exact AABB of `target`'s voxels —
+    // no need to raster-scan the whole domain (`PLAN.md` Track A3;
+    // `ComponentField` no longer even exposes a dense array to scan).
+    let Some((scan_min, scan_max)) = labels.bounds_of(target) else {
+        info!("delete: selected component has no bounds — nothing to do");
+        selection.picked_voxel = None;
+        return;
+    };
+
+    for iz in scan_min.z..scan_max.z {
+        for iy in scan_min.y..scan_max.y {
+            for ix in scan_min.x..scan_max.x {
+                if labels.id_at(ix, iy, iz) != target {
                     continue;
                 }
                 let pre = workpiece.grid.get(ix, iy, iz);
