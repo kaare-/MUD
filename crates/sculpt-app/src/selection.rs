@@ -26,6 +26,7 @@ use sculpt_core::{label_components, ChunkCoord, ComponentField, ComponentId, EMP
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::move_tool::{MoveGizmoDrag, MoveGizmoInputSet};
 use crate::sculpt::{SculptTool, ToolKind};
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
@@ -45,7 +46,10 @@ pub fn plugin(app: &mut App) {
             delete_hotkey,
             update_selection_highlight,
         )
-            .after(TurntableSet),
+            .after(TurntableSet)
+            // Gizmo runs first: if it consumed the click, selection
+            // yields via its `move_drag.started_this_frame` check.
+            .after(MoveGizmoInputSet),
     );
 }
 
@@ -108,6 +112,15 @@ impl Selection {
         self.labels = Some(labels);
     }
 
+    /// Take ownership of the cached label field, leaving `None`
+    /// behind. Pairs with [`Self::set_labels`] for callers that
+    /// need to read the labels without keeping a live borrow.
+    /// The delete / highlight / move-gizmo paths all use this to
+    /// dodge the "cannot borrow `selection` as immutable while
+    /// mutable" pattern.
+    pub fn take_labels(&mut self) -> Option<ComponentField> {
+        self.labels.take()
+    }
 }
 
 /// Ensure [`Selection::labels`] is populated for the current grid,
@@ -133,6 +146,7 @@ fn selection_input(
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
     workpiece: Res<SculptWorkpiece>,
+    move_drag: Res<MoveGizmoDrag>,
     mut selection: ResMut<Selection>,
 ) {
     // Both Select and Move accept LMB-picks so the user can jump
@@ -141,6 +155,13 @@ fn selection_input(
         return;
     }
     if ui_gate.pointer {
+        return;
+    }
+    // The Move gizmo runs before us in the same frame; if it
+    // already grabbed the click (drag starting) or is holding an
+    // in-flight drag, the click belongs to the gizmo, not to
+    // "pick a different piece".
+    if move_drag.started_this_frame || move_drag.is_active() {
         return;
     }
     if !buttons.just_pressed(MouseButton::Left) {
