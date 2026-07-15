@@ -18,7 +18,10 @@ pub enum BrushMode {
 /// Polynomial smooth-min used for magic-clay Pull. `k` is the blend
 /// radius in mm; larger = rounder fillet at the join. Same construction
 /// as Inigo Quilez's `smin` — equals `a.min(b)` when `|a-b| >= k`.
-fn soft_min(a: f32, b: f32, k: f32) -> f32 {
+///
+/// `pub(crate)` so the wire cutter can share the same soft join
+/// arithmetic without duplicating the polynomial.
+pub(crate) fn soft_min(a: f32, b: f32, k: f32) -> f32 {
     let k = k.max(1e-6);
     let h = (k - (a - b).abs()).max(0.0) / k;
     a.min(b) - h * h * k * 0.25
@@ -27,7 +30,7 @@ fn soft_min(a: f32, b: f32, k: f32) -> f32 {
 /// Polynomial smooth-max — soft CSG intersection complement used for
 /// magic-clay Press so a shallow bite reads like clay, not a hard ball
 /// boolean.
-fn soft_max(a: f32, b: f32, k: f32) -> f32 {
+pub(crate) fn soft_max(a: f32, b: f32, k: f32) -> f32 {
     -soft_min(-a, -b, k)
 }
 

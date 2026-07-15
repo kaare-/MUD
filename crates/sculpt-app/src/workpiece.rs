@@ -19,10 +19,19 @@ use glam::{UVec3, Vec3 as GVec3};
 
 use sculpt_core::{extract_chunk, ChunkCoord, Grid, CHUNK_SIZE};
 
-/// Effective grid resolution per axis. 128^3 at 1.5 mm/voxel gives a
-/// 192 mm domain (~ hand-sized) with fast Stage-0 meshing. Migrate to
-/// 256^3 sparse in Stage 2 as planned.
-const RES: u32 = 128;
+/// Effective grid resolution per axis. 192^3 at 1.5 mm/voxel gives a
+/// **288 mm domain** — big enough for a chunky two-handed piece,
+/// still cheap enough that Move-drag preview stays interactive.
+///
+/// Memory footprint at 192³: grid 27 MB (f32), snapshot 27 MB
+/// during a drag, component labels 27 MB when live. Full re-mesh
+/// takes ~120 ms (bounded by our 32-chunks-per-frame cap for
+/// smoothness during large edits).
+///
+/// The Stage-2 sparse-SDF migration in `PLAN.md` is still the
+/// answer for going much larger; this bump is what we can afford
+/// on a dense grid without hurting interactivity.
+const RES: u32 = 192;
 const VOXEL_MM: f32 = 1.5;
 
 /// Cap on chunks re-meshed per frame. Prevents big edits (large brush

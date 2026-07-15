@@ -18,7 +18,7 @@
 //! DCC move here is lossless.
 //!
 //! Live preview strategy: at drag start, the whole SDF is
-//! snapshotted (`Vec<f32>`, ~8 MB at 128³) and the component
+//! snapshotted (`Vec<f32>`, ~27 MB at 192³) and the component
 //! labels are frozen. Each drag frame resets the grid from the
 //! snapshot and re-applies `translate_component` with the *total*
 //! delta, so undo doesn't need to record intermediate states. On
@@ -143,7 +143,7 @@ struct ActiveDrag {
     /// typed part.
     initial_widget_mm: Vec3,
     /// Full pre-drag SDF, used to rewind before each frame's
-    /// re-application. ~8 MB at 128³ — a fine trade for accurate
+    /// re-application. ~27 MB at 192³ — a fine trade for accurate
     /// live preview + single-entry undo.
     grid_snapshot: Vec<f32>,
     /// Labels captured at drag start. Since we always start each

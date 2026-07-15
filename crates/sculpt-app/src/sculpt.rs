@@ -136,10 +136,12 @@ pub struct WireCutState {
     pub view_dir_local: Option<GVec3>,
 }
 
-/// Slab thickness (mm) the wire cutter carves. Corresponds to the
-/// "kerf" of a physical wire — thin, so the cut looks like a slice
-/// rather than a groove.
-const WIRE_CUTTER_THICKNESS: f32 = 1.5;
+/// Slab thickness (mm) the wire cutter carves. Two voxels wide at
+/// the default `1.5 mm` voxel size, so the mesher has a real
+/// gradient across the slab and the two cut faces come out clean
+/// planes instead of a saw-tooth strip where each voxel column
+/// straddles the plane edge at a slightly different y.
+const WIRE_CUTTER_THICKNESS: f32 = 3.0;
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<SculptTool>();
