@@ -223,11 +223,12 @@ where
     }
 
     let empty_sdf = grid.voxel_size() * 32.0;
-    // `Grid` is sparse internally; snapshotting the whole grid is a
-    // real cost here (`PLAN.md` Track A3 will replace this with a
-    // tile/region-local snapshot), but it keeps this pass's logic
-    // unchanged for now.
-    let old_samples: Vec<f32> = grid.to_dense();
+    // Region-scoped snapshot (`PLAN.md` Track A3), not a full-domain
+    // `to_dense()`: every read below stays inside `[union_min,
+    // union_max)`, which we've already computed above as the union
+    // of every component's old + shifted widened AABB — exactly the
+    // bound this algorithm can possibly touch or read from.
+    let old_region = grid.snapshot_region(union_min.as_uvec3(), union_max.as_uvec3());
     let old_ids = labels.ids();
     let stride_y = res.x as usize;
     let stride_z = (res.x * res.y) as usize;
@@ -241,7 +242,7 @@ where
                 let (dx, dy, dz) = (dst_ix as u32, dst_iy as u32, dst_iz as u32);
                 let dst_idx =
                     dx as usize + dy as usize * stride_y + dz as usize * stride_z;
-                let old_val_here = old_samples[dst_idx];
+                let old_val_here = old_region.get(dx, dy, dz);
 
                 let mut new_val = f32::INFINITY;
 
@@ -312,7 +313,7 @@ where
                     if label_src != c as ComponentId && label_src != EMPTY {
                         continue;
                     }
-                    new_val = new_val.min(old_samples[src_idx]);
+                    new_val = new_val.min(old_region.get(sx, sy, sz));
                 }
 
                 let final_val = if new_val.is_finite() {
@@ -528,6 +529,41 @@ mod tests {
             (mid - 16.5).abs() <= 1.0,
             "shifted centre x = {mid}, expected ≈ 16.5 voxels",
         );
+    }
+
+    /// Regression for the Track A3 region-scoped snapshot: moving one
+    /// component must not disturb a distant, uninvolved one whose
+    /// voxels fall well outside the moving component's widened AABB
+    /// (i.e. outside the snapshot region `translate_component` takes).
+    #[test]
+    fn translating_one_component_leaves_a_distant_component_untouched() {
+        let mut g = Grid::empty(UVec3::new(160, 160, 160), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(10.0, 30.0, 10.0), 4.0);
+        add_sphere(&mut g, Vec3::new(140.0, 30.0, 140.0), 4.0);
+        let labels = label_components(&g);
+        assert_eq!(labels.component_count(), 2);
+
+        let near_id = labels.id_at(10, 30, 10);
+        let far_id_before = labels.id_at(140, 30, 140);
+        let far_bounds_before = labels.bounds_of(far_id_before).expect("far piece has bounds");
+        let far_centre_before = g.get(140, 30, 140);
+
+        let _ = translate_component(
+            &mut g,
+            &labels,
+            near_id,
+            IVec3::new(20, 0, 0),
+            |_, _, _, _| {},
+        );
+
+        // The far component's centre voxel is completely unaffected.
+        assert_eq!(g.get(140, 30, 140), far_centre_before);
+        let labels_after = label_components(&g);
+        assert_eq!(labels_after.component_count(), 2);
+        let far_id_after = labels_after.id_at(140, 30, 140);
+        assert_ne!(far_id_after, EMPTY);
+        let far_bounds_after = labels_after.bounds_of(far_id_after).expect("far piece still there");
+        assert_eq!(far_bounds_after, far_bounds_before, "far piece must not move or resize");
     }
 
     #[test]

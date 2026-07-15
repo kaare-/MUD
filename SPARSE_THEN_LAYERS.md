@@ -356,7 +356,67 @@ in the running app: startup → 8 spawned; `Ctrl+N` → exactly those 8
 despawn to 0; `Ctrl+Shift+O` reload → the same 8 coords respawn with
 matching geometry (screenshot-verified).
 
+## P3 — mostly shipped (2026-07-15)
+
+Sparsified the three volume walkers that still iterated the full
+domain, using two new `Grid` primitives:
+
+- `Grid::allocated_chunk_coords()` — cheap key-set copy, no sample
+  data touched.
+- `Grid::snapshot_region(min, max) -> RegionSnapshot` — a dense
+  snapshot of a sub-box, indexed by the same global voxel coords as
+  the grid it came from; reads outside the box return the same
+  far-positive sentinel an unallocated tile does.
+
+**Wire cutter** (`cutter::apply_wire_cutter_with_callback`): now
+iterates allocated tiles only, not `0..res` on every axis. This is
+exact, not approximate — a CSG subtract can only push the field more
+positive, never less, so a voxel starting at the far-positive
+sentinel is provably unaffected (`soft_max(FAR_POSITIVE, -d_slab, k)`
+degenerates to `FAR_POSITIVE` because `corner_k` is a couple of
+voxels and the sentinel is astronomically larger than any real
+`d_slab`). Verified: cutting a sparse brush-built sphere splits it
+correctly and allocates zero new tiles; the existing deep-reshape
+regression test (cells several voxels into the remaining piece
+getting properly lifted toward the cut plane) still passes unchanged.
+
+**Component labelling** (`components::label_components`): the
+seed-scan that used to raster the whole domain now only visits
+allocated tiles — a voxel in an unallocated tile is guaranteed empty
+by the sparse `Grid` contract, so it can never seed or extend a
+component. The flood-fill itself is untouched (`grid.get` already
+returns the right answer for neighbours in unallocated tiles, so a
+flood correctly stops at a tile boundary with no special-casing).
+**Not yet sparsified:** the label array itself (`ids: Vec<ComponentId>`)
+is still one dense `res³` buffer. That's fine at the current domain,
+but it will need to become sparse too before Track A4 grows the
+domain much further — worth doing together with A4, not before it,
+since it doesn't matter until the domain actually grows.
+
+**Rest-on-bench / rigid translate** (`gravity::translate_components`,
+backs both `rest_components_on_bench` and the Move-tool's typed-apply
+path): replaced the full-domain `to_dense()` snapshot with
+`snapshot_region(union_min, union_max)` — the same bounding box the
+function already computed as everything it could possibly touch or
+read from. Verified live in the running app: `Ctrl+G` visibly drops
+the (slightly floating) starter sphere onto the bench, `Ctrl+Z`
+correctly restores the floating position, and a new regression test
+confirms translating one component leaves a distant, uninvolved one
+completely untouched.
+
+**Deliberately deferred:** the Move tool's **gizmo-drag** live
+preview (`move_tool.rs`) still snapshots/restores the *whole* grid
+every frame via `to_dense()` / `restore_samples()`. Bounding that
+snapshot safely needs tracking the union of every region the drag
+could reach over its *whole* lifetime (drag distance varies frame to
+frame, unlike rest-on-bench's one-shot bounded delta) — a bit more
+design than the other three, and the existing full-grid path is still
+correct, just not sparsified. Left as explicit follow-up rather than
+risk a subtly-wrong bounded region under time pressure.
+
 ## Next step
 
-Implement **P3** (sparse-native wire-cutter, component labelling,
-translate/rest, Move preview) before **A4** grows the domain.
+Domain grow (**A4**) is still blocked on the Move-tool gizmo-drag
+snapshot above and on sparsifying `ComponentField`'s label storage —
+do those two before raising `RES` past 192. Alternatively, start
+**Track B** (layers) now: it doesn't depend on either.

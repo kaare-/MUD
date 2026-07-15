@@ -239,6 +239,52 @@ impl Grid {
         self.tiles.len()
     }
 
+    /// Coordinates of every currently-allocated tile. Cheap: copies
+    /// the key set, touches no sample data.
+    ///
+    /// Track A3 sparse walkers (wire cutter, component labelling) use
+    /// this to skip regions that are provably all far-positive
+    /// instead of visiting every voxel in `res`. Returned as an owned
+    /// `Vec` (not a borrowing iterator) so callers can still mutate
+    /// the grid — e.g. via `set` — while iterating.
+    pub fn allocated_chunk_coords(&self) -> Vec<ChunkCoord> {
+        self.tiles.keys().copied().collect()
+    }
+
+    /// Snapshot the sub-region `[min, max)` (voxel indices, clipped
+    /// to `res`) into a dense buffer callers can re-read at the
+    /// *pre-mutation* value while they overwrite the live grid.
+    ///
+    /// This is the region-scoped alternative to [`Grid::to_dense`]
+    /// for algorithms (rigid translate / rest-on-bench) that already
+    /// know a tight bounding box of everything they might touch —
+    /// letting them avoid an O(domain) copy in favour of an
+    /// O(region) one.
+    pub fn snapshot_region(&self, min: UVec3, max: UVec3) -> RegionSnapshot {
+        let min = min.min(self.res);
+        let max = max.min(self.res);
+        let size = UVec3::new(
+            max.x.saturating_sub(min.x),
+            max.y.saturating_sub(min.y),
+            max.z.saturating_sub(min.z),
+        );
+        let n = (size.x as usize) * (size.y as usize) * (size.z as usize);
+        let mut data = vec![FAR_POSITIVE; n];
+        let stride_y = size.x as usize;
+        let stride_z = stride_y * size.y as usize;
+        for gz in min.z..max.z {
+            for gy in min.y..max.y {
+                for gx in min.x..max.x {
+                    let li = (gx - min.x) as usize
+                        + (gy - min.y) as usize * stride_y
+                        + (gz - min.z) as usize * stride_z;
+                    data[li] = self.get(gx, gy, gz);
+                }
+            }
+        }
+        RegionSnapshot { data, min, size }
+    }
+
     /// Piece-local physical extent of the grid.
     pub fn extent(&self) -> Vec3 {
         Vec3::new(
@@ -422,6 +468,43 @@ impl Grid {
             prev_d = d;
         }
         None
+    }
+}
+
+/// A dense snapshot of a sub-region of a [`Grid`], taken by
+/// [`Grid::snapshot_region`]. Indexed with the same *global* voxel
+/// coordinates as the grid it was taken from — [`RegionSnapshot::get`]
+/// does the min-offset translation internally, so call sites don't
+/// need to juggle local vs. global indices.
+///
+/// Reading outside the snapshotted region returns [`FAR_POSITIVE`],
+/// matching an unallocated `Grid` tile — the same "far outside any
+/// surface" convention everywhere else in this module.
+pub struct RegionSnapshot {
+    data: Vec<f32>,
+    min: UVec3,
+    size: UVec3,
+}
+
+impl RegionSnapshot {
+    /// Read the pre-snapshot value at global voxel `(ix, iy, iz)`.
+    #[inline]
+    pub fn get(&self, ix: u32, iy: u32, iz: u32) -> f32 {
+        if ix < self.min.x
+            || iy < self.min.y
+            || iz < self.min.z
+            || ix >= self.min.x + self.size.x
+            || iy >= self.min.y + self.size.y
+            || iz >= self.min.z + self.size.z
+        {
+            return FAR_POSITIVE;
+        }
+        let lx = (ix - self.min.x) as usize;
+        let ly = (iy - self.min.y) as usize;
+        let lz = (iz - self.min.z) as usize;
+        let stride_y = self.size.x as usize;
+        let stride_z = stride_y * self.size.y as usize;
+        self.data[lx + ly * stride_y + lz * stride_z]
     }
 }
 
@@ -712,5 +795,47 @@ mod tests {
         let mut g = Grid::empty(UVec3::new(8, 8, 8), 1.0, Vec3::ZERO);
         let bad = vec![0.0f32; 10];
         assert!(!g.restore_samples(&bad));
+    }
+
+    #[test]
+    fn allocated_chunk_coords_matches_tile_count() {
+        let mut g = Grid::empty(UVec3::new(96, 96, 96), 1.0, Vec3::ZERO);
+        g.set(5, 5, 5, -1.0);
+        g.set(40, 5, 5, -1.0);
+        g.set(80, 80, 80, -1.0);
+        let coords = g.allocated_chunk_coords();
+        assert_eq!(coords.len(), 3);
+        assert_eq!(coords.len(), g.allocated_tile_count());
+    }
+
+    #[test]
+    fn snapshot_region_matches_get_inside_and_far_positive_outside() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        for (ix, iy, iz, v) in [(10u32, 10u32, 10u32, -2.5f32), (15, 12, 11, 3.0)] {
+            g.set(ix, iy, iz, v);
+        }
+        let snap = g.snapshot_region(UVec3::new(8, 8, 8), UVec3::new(20, 20, 20));
+        for iz in 8..20u32 {
+            for iy in 8..20u32 {
+                for ix in 8..20u32 {
+                    assert_eq!(snap.get(ix, iy, iz), g.get(ix, iy, iz));
+                }
+            }
+        }
+        // Outside the snapshotted box reads as far-positive, matching
+        // an unallocated tile's convention.
+        assert!(snap.get(30, 30, 30) > 1e30);
+        assert!(snap.get(0, 0, 0) > 1e30);
+    }
+
+    #[test]
+    fn snapshot_region_reflects_pre_mutation_state_after_the_grid_changes() {
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        g.set(10, 10, 10, -5.0);
+        let snap = g.snapshot_region(UVec3::new(0, 0, 0), UVec3::new(32, 32, 32));
+        g.set(10, 10, 10, 5.0);
+        // The live grid changed; the snapshot still reports the old value.
+        assert_eq!(snap.get(10, 10, 10), -5.0);
+        assert_eq!(g.get(10, 10, 10), 5.0);
     }
 }

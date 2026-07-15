@@ -149,7 +149,11 @@ Suggested PR stack (see doc for acceptance checks):
 3. `[x]` **P2** — chunk entities spawn/despawn with geometry, not
    pre-spawned for the whole domain (8/216 chunks live for the
    starter sphere — a real entity-count win already).
-4. `[ ]` **P3** — sparse wire-cut / labels / translate-rest.
+4. `[~]` **P3** — sparse-native wire cutter + component-label scan +
+   rest-on-bench/rigid-translate (region snapshot, not full-domain).
+   **Remaining before P4:** Move-tool gizmo-drag preview still
+   snapshots the whole grid per frame; `ComponentField` label
+   storage is still one dense `res³` buffer.
 5. `[ ]` **P4** — grow domain (≥512 mm XZ) + bench-first clay.
 6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
 7. `[ ]` **P6–P9** — `LayersState`, Insert→layer, UI+Merge, v3 save.
