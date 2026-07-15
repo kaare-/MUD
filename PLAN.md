@@ -67,10 +67,13 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 3. `[x]` **Add material on an empty worktable.** — Shift+LMB on the
    empty bench projects the ray onto y = 0 and deposits a blob
    sitting on the bench. Every other tool still bails on a miss.
+   *(Domain still 288 mm — worktable-scale Add is Track A in
+   `SPARSE_THEN_LAYERS.md`.)*
 
 4. `[x]` **Primitives menu.** — `Shift+N` / `File → Insert Primitive…`.
    Sphere / Cube / Cylinder / Torus with a size slider; unioned into
    the current grid, journaled as one undo stroke.
+   *(Silent fuse → fixed by Track B: Insert creates a new layer.)*
 
 5. `[x]` **Selection tool: pick tiny bits.** Option A (single-grid
    component labels) shipped. New `Select` tool (`9`); LMB picks the
@@ -82,7 +85,7 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    yellow wireframe hugging its voxel-space AABB (turns with the
    piece). Labels are recomputed lazily (invalidated after any
    stroke / undo / redo / Insert / New / Load). Option B (multi-piece
-   scene) still deferred.
+   scene) → superseded by **Layers** in `SPARSE_THEN_LAYERS.md`.
 
 6. `[x]` **Rigid gravity (rest).** `File → Rest pieces on bench`
    (`Ctrl+G`). Every floating connected component is translated
@@ -118,6 +121,36 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
      stress proxy (e.g. curvature × vertical load), with a plastic
      yield threshold. Not FEM.
    - Almost certainly its own design document before writing code.
+   - **Parked behind Tracks A/B** — do not start until sparse +
+     layers foundations are landed or explicitly re-prioritised.
+
+---
+
+## Next architecture track (locked 2026-07-15)
+
+Full plan: **`SPARSE_THEN_LAYERS.md`**.
+
+**Order: sparse SDF first, then same-domain layers.**
+Rationale: unlock a worktable-scale domain so empty-bench Add /
+coil-sausage work is real; layers then cost tile sets, not N× dense
+grids. Per-body transforms (old Option A) stay deferred.
+
+Locked product calls:
+
+- Insert Primitive → **new layer by default**; Merge is explicit.
+- Tools → **active layer only** in v1 (multi-active later).
+- Per-layer **visibility** toggle with the Layers UI.
+- Custom **32³ tile** store behind `Grid` (not OpenVDB yet).
+
+Suggested PR stack (see doc for acceptance checks):
+
+1. `[~]` **P0** — this plan (docs).
+2. `[ ]` **P1** — sparse `Grid` façade, parity at current 192³.
+3. `[ ]` **P2** — remesh / spawn only allocated tiles.
+4. `[ ]` **P3** — sparse wire-cut / labels / translate-rest.
+5. `[ ]` **P4** — grow domain (≥512 mm XZ) + bench-first clay.
+6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
+7. `[ ]` **P6–P9** — `LayersState`, Insert→layer, UI+Merge, v3 save.
 
 ---
 
@@ -125,15 +158,17 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 
 From `DESIGN.md`'s staged roadmap:
 
-- `[ ]` **Sparse narrow-band SDF store** (Stage 2 → not migrated yet;
-  still on dense 128³). Effective resolution ceiling for detail work.
-- `[ ]` **Dual contouring** for sharp features. Marching cubes today
-  rounds every corner.
-- `[ ]` **Merge on contact / weld.** Explicit user action; needs
-  component identity from (5).
+- `[~]` **Sparse narrow-band SDF store** — now Track A in
+  `SPARSE_THEN_LAYERS.md` (still dense 192³ until P1). Effective
+  resolution / domain ceiling for detail work.
+- `[ ]` **Dual contouring** for sharp features. Marching cubes /
+  surface nets today round every corner.
+- `[~]` **Merge on contact / weld.** Explicit user action — Track B
+  Merge Down (`min` union). Not automatic on contact.
 - `[ ]` **Matcap library + cavity shading.** One matcap right now;
   cavity term (`smoothed(φ) − φ`) is cheap.
-- `[ ]` **Multi-piece scene** with hide / show, per-piece transforms.
+- `[~]` **Multi-piece scene** — Track B Layers (same-domain, hide /
+  show). Per-piece transforms still deferred.
 - `[ ]` **Reference images pinned to the workbench** (Stage 4).
 - `[ ]` **Autosave / crash recovery** (Stage 4).
 - `[ ]` **Watertightness check on export.**
