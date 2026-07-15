@@ -568,7 +568,10 @@ fn gizmo_pointer_input(
         // Bail: nothing to move.
         return;
     };
-    let snapshot: Vec<f32> = workpiece.grid.samples().to_vec();
+    // `Grid` is sparse internally; this materialises a full dense
+    // snapshot for the drag's revert-and-reapply loop. Tile/region
+    // -local snapshots are `PLAN.md` Track A3, not this pass.
+    let snapshot: Vec<f32> = workpiece.grid.to_dense();
     let active = ActiveDrag {
         axis,
         t_start,

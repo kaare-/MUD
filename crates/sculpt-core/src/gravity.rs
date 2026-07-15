@@ -223,7 +223,11 @@ where
     }
 
     let empty_sdf = grid.voxel_size() * 32.0;
-    let old_samples: Vec<f32> = grid.samples().to_vec();
+    // `Grid` is sparse internally; snapshotting the whole grid is a
+    // real cost here (`PLAN.md` Track A3 will replace this with a
+    // tile/region-local snapshot), but it keeps this pass's logic
+    // unchanged for now.
+    let old_samples: Vec<f32> = grid.to_dense();
     let old_ids = labels.ids();
     let stride_y = res.x as usize;
     let stride_z = (res.x * res.y) as usize;
@@ -400,10 +404,10 @@ mod tests {
         let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
         add_sphere(&mut g, Vec3::new(16.0, 4.0, 16.0), 5.0);
         let labels = label_components(&g);
-        let before = g.samples().to_vec();
+        let before = g.to_dense();
         let summary = rest_components_on_bench(&mut g, &labels, |_, _, _, _| {});
         assert_eq!(summary.moved, 0);
-        assert_eq!(g.samples(), before.as_slice());
+        assert_eq!(g.to_dense(), before);
     }
 
     #[test]
@@ -532,7 +536,7 @@ mod tests {
         add_sphere(&mut g, Vec3::new(8.0, 8.0, 8.0), 3.0);
         let labels = label_components(&g);
         let id = labels.ids_by_size_desc()[0];
-        let before = g.samples().to_vec();
+        let before = g.to_dense();
         let dirty = translate_component(
             &mut g,
             &labels,
@@ -541,6 +545,6 @@ mod tests {
             |_, _, _, _| {},
         );
         assert!(dirty.is_none());
-        assert_eq!(g.samples(), before.as_slice());
+        assert_eq!(g.to_dense(), before);
     }
 }
