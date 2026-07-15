@@ -145,7 +145,7 @@ fn selection_input(
     q_piece: Query<&Transform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     ui_gate: Res<UiCapturesInput>,
-    workpiece: Res<LayersState>,
+    mut workpiece: ResMut<LayersState>,
     move_drag: Res<MoveGizmoDrag>,
     mut selection: ResMut<Selection>,
 ) {
@@ -188,13 +188,26 @@ fn selection_input(
     let dir_local = piece_inv
         .transform_vector3(*ray_world.direction)
         .normalize();
-    let Some(hit) = workpiece.grid().ray_march(
+    // Ray-march every *visible* layer, not just the active one, so a
+    // click naturally reaches — and activates — whatever piece the
+    // user is actually pointing at (`PLAN.md` Track B2). Without
+    // this, inserting a primitive (which activates its new layer)
+    // would leave every previously-placed piece unreachable by any
+    // tool until a future Layers panel adds another way to switch.
+    let Some((hit_layer, hit)) = workpiece.ray_march_visible(
         GVec3::new(origin_local.x, origin_local.y, origin_local.z),
         GVec3::new(dir_local.x, dir_local.y, dir_local.z),
         4000.0,
     ) else {
         return;
     };
+    if hit_layer != workpiece.active_index() {
+        workpiece.set_active_index(hit_layer);
+        // The cached labels (if any) belong to whichever layer was
+        // active before this click — drop them so the lookup below
+        // recomputes against the newly-active one.
+        selection.invalidate_labels();
+    }
 
     // Step a tiny bit *into* the surface along the view ray so we
     // land on a solid voxel rather than the outside face — the SDF

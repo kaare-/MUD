@@ -237,10 +237,18 @@ pub fn clear_worktable(
     }
 }
 
-/// Write the workpiece's grid to `path`. Wraps every failure in a
+/// Write the workpiece to `path`. Wraps every failure in a
 /// user-facing log message rather than propagating — we're being
 /// called from a fire-and-forget event handler and there's nowhere
 /// useful for the Result to go.
+///
+/// `.mudclay` v1 has no way to represent more than one layer (Track
+/// B4 — the v3 format — will fix that). Until then, save flattens
+/// every *visible* layer into one grid via min-union so switching to
+/// layers can never silently drop a whole piece on save; loading the
+/// file back always gets one merged layer, which is a real (if
+/// temporary) loss of the layer boundary, but never a loss of the
+/// material itself.
 pub fn save_to_path(workpiece: &LayersState, path: &Path) {
     info!("saving project to {}", path.display());
     let file = match File::create(path) {
@@ -251,11 +259,12 @@ pub fn save_to_path(workpiece: &LayersState, path: &Path) {
         }
     };
     let mut writer = BufWriter::new(file);
-    if let Err(e) = write_project(workpiece.grid(), &mut writer) {
+    let flattened = workpiece.visible_union_grid();
+    if let Err(e) = write_project(&flattened, &mut writer) {
         error!("failed to write project: {e}");
         return;
     }
-    let bytes = project_size(workpiece.grid());
+    let bytes = project_size(&flattened);
     info!("wrote {} bytes to {}", bytes, path.display());
 }
 

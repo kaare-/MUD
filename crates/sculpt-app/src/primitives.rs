@@ -2,9 +2,16 @@
 //!
 //! Menu action: `File → Insert Primitive…`. The user picks a shape
 //! (sphere / box / cylinder / torus) and a size (mm); on Insert we
-//! union that primitive into the current SDF grid, resting on the
-//! workbench, and journal the change as a single undo stroke so
-//! `Ctrl+Z` can take the insert back out.
+//! create a **new layer** (`PLAN.md` Track B2) holding just that
+//! primitive, resting on the workbench, and journal the change as a
+//! single undo stroke so `Ctrl+Z` empties the primitive back out. A
+//! fresh primitive can therefore never silently fuse with whatever
+//! else is on the table; fusion only happens through an explicit
+//! Merge Down (Track B3). Note: undoing an insert empties the new
+//! layer but doesn't remove it from the layer list yet — deleting an
+//! emptied layer is Track B3 work, alongside the Layers panel that
+//! will make an orphaned empty layer visible/reachable in the first
+//! place.
 //!
 //! Placement is deterministic: the primitive sits on the workbench
 //! (`y = 0`), centred on `x = z = 0`. Users can subsequently sculpt
@@ -12,7 +19,7 @@
 
 use bevy::prelude::*;
 use glam::Vec3 as GVec3;
-use sculpt_core::{apply_primitive_with_callback, ChunkCoord, Primitive, PrimitiveKind};
+use sculpt_core::{apply_primitive_with_callback, ChunkCoord, Grid, Primitive, PrimitiveKind};
 
 use crate::actions::AppAction;
 use crate::sculpt::{tool_label, SculptTool, ToolKind};
@@ -165,42 +172,59 @@ fn insert_primitive_centered_on_bench(
         workbench_y: Some(0.0),
     };
 
+    // New layer, not a union into the active one (Track B2). Domain
+    // (res/voxel_size/origin) is shared across every layer, so copy
+    // it from whichever is active right now before creating the new
+    // one — we don't want a live borrow on `workpiece` once we start
+    // mutating it below.
+    let (res, voxel_size, origin) = {
+        let domain = workpiece.grid();
+        (domain.res(), domain.voxel_size(), domain.origin())
+    };
+    let mut new_grid = Grid::empty(res, voxel_size, origin);
+
     let mut recorder = StrokeRecorder::default();
     let region = apply_primitive_with_callback(
-        workpiece.grid_mut(),
+        &mut new_grid,
         &prim,
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
 
-    let grid_res = workpiece.grid().res();
-    if let Some(region) = region {
-        recorder.record_dirty_region(region, grid_res);
-        for c in region.touched_chunks(grid_res) {
-            let ChunkCoord { x, y, z } = c;
-            workpiece.mark_dirty((x, y, z));
-        }
-    }
-    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
-        history.push_stroke(entry);
-        info!("inserted {} ({:.1} mm)", shape.label().to_lowercase(), size);
-        // Voxel index of the primitive's centre. Clamped so we
-        // never hand out an out-of-range index — the primitive is
-        // always at least partly in-bounds because we clipped it
-        // to the bench.
-        let grid_res = workpiece.grid().res();
-        let vs = workpiece.grid().voxel_size();
-        let origin = workpiece.grid().origin();
-        let cx = ((prim.center.x - origin.x) / vs).round() as i32;
-        let cy = ((prim.center.y - origin.y) / vs).round() as i32;
-        let cz = ((prim.center.z - origin.z) / vs).round() as i32;
-        let voxel = (
-            cx.clamp(0, grid_res.x as i32 - 1) as u32,
-            cy.clamp(0, grid_res.y as i32 - 1) as u32,
-            cz.clamp(0, grid_res.z as i32 - 1) as u32,
-        );
-        Some(voxel)
-    } else {
+    let Some(region) = region else {
         info!("insert {} was a no-op — nothing changed", shape.label());
-        None
+        return None;
+    };
+
+    let material = workpiece.active_material();
+    let layer_name = format!("Layer {}", workpiece.layer_count() + 1);
+    let layer_id = workpiece.push_new_layer(new_grid, material, layer_name);
+
+    let grid_res = workpiece.grid().res();
+    recorder.record_dirty_region(region, grid_res);
+    for c in region.touched_chunks(grid_res) {
+        let ChunkCoord { x, y, z } = c;
+        workpiece.mark_dirty((x, y, z));
     }
+    if let Some(entry) = recorder.finish(workpiece.grid(), layer_id) {
+        history.push_stroke(entry);
+    }
+    info!(
+        "inserted {} ({:.1} mm) on a new layer",
+        shape.label().to_lowercase(),
+        size
+    );
+    // Voxel index of the primitive's centre. Clamped so we never
+    // hand out an out-of-range index — the primitive is always at
+    // least partly in-bounds because we clipped it to the bench.
+    let vs = workpiece.grid().voxel_size();
+    let origin = workpiece.grid().origin();
+    let cx = ((prim.center.x - origin.x) / vs).round() as i32;
+    let cy = ((prim.center.y - origin.y) / vs).round() as i32;
+    let cz = ((prim.center.z - origin.z) / vs).round() as i32;
+    let voxel = (
+        cx.clamp(0, grid_res.x as i32 - 1) as u32,
+        cy.clamp(0, grid_res.y as i32 - 1) as u32,
+        cz.clamp(0, grid_res.z as i32 - 1) as u32,
+    );
+    Some(voxel)
 }

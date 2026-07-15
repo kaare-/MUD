@@ -162,7 +162,16 @@ Suggested PR stack (see doc for acceptance checks):
    constant sized for the old domain, silently truncating reach
    below the `max_dist` callers already ask for.
 6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
-7. `[ ]` **P6–P9** — `LayersState`, Insert→layer, UI+Merge, v3 save.
+7. `[x]` **P6** — `LayersState { layers, active }` replaces the bare
+   `SculptWorkpiece` grid, single layer, behaviour unchanged.
+8. `[x]` **P7** — Insert Primitive → new layer; cross-layer pick
+   (`ray_march_visible`) activates whatever the user clicks on;
+   save/STL flatten every visible layer (`Grid::union_from`) so
+   switching to layers can't silently drop a piece before the real
+   v3 format lands.
+9. `[ ]` **P8** — Layers panel (name / visibility / delete) + Merge
+   Down.
+10. `[ ]` **P9** — `.mudclay` v3 multi-layer sections.
 
 ---
 

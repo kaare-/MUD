@@ -149,6 +149,11 @@ impl UndoHistory {
         self.undo.clear();
         self.redo.clear();
     }
+
+    #[cfg(test)]
+    pub fn undo_len_for_test(&self) -> usize {
+        self.undo.len()
+    }
 }
 
 /// Wraps the stroke recorder so `sculpt_input` can push voxel values

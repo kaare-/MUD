@@ -92,6 +92,8 @@ pub type LayerId = u32;
 /// same [`WorkpieceRoot`] parent — see the module doc.
 pub struct Layer {
     pub id: LayerId,
+    // Read by the Layers panel (Track B3, not yet built).
+    #[allow(dead_code)]
     pub name: String,
     pub visible: bool,
     pub grid: Grid,
@@ -177,16 +179,100 @@ impl LayersState {
         self.layers[self.active].dirty.insert(key);
     }
 
+    // Used by the Layers panel (Track B3, not yet built) for
+    // visibility toggles / rename / delete on the active layer.
+    #[allow(dead_code)]
     pub fn active_layer(&self) -> &Layer {
         &self.layers[self.active]
     }
 
+    #[allow(dead_code)]
     pub fn active_layer_mut(&mut self) -> &mut Layer {
         &mut self.layers[self.active]
     }
 
     pub fn active_id(&self) -> LayerId {
         self.layers[self.active].id
+    }
+
+    /// The active layer's chunk material, cloned so a new layer can
+    /// be spawned with a visually-matching colour without reaching
+    /// into `Layer`'s private field.
+    pub fn active_material(&self) -> Handle<StandardMaterial> {
+        self.layers[self.active].material.clone()
+    }
+
+    pub fn active_index(&self) -> usize {
+        self.active
+    }
+
+    pub fn layer_count(&self) -> usize {
+        self.layers.len()
+    }
+
+    /// Switch the active layer by index. No-op if out of range.
+    pub fn set_active_index(&mut self, idx: usize) {
+        if idx < self.layers.len() {
+            self.active = idx;
+        }
+    }
+
+    /// Create a new layer (starting from `grid`), make it active, and
+    /// return its stable id. Used by Insert Primitive (`PLAN.md`
+    /// Track B2 — "Insert Primitive → always a new layer" so a fresh
+    /// primitive can never silently fuse with existing material;
+    /// fusion only happens via an explicit Merge Down, B3).
+    pub fn push_new_layer(
+        &mut self,
+        grid: Grid,
+        material: Handle<StandardMaterial>,
+        name: impl Into<String>,
+    ) -> LayerId {
+        let id = self.next_id;
+        self.next_id += 1;
+        self.layers.push(Layer::new(id, name, grid, material));
+        self.active = self.layers.len() - 1;
+        id
+    }
+
+    /// Ray-march every *visible* layer and report the one with the
+    /// closest hit (index into `layers`, plus the hit point), or
+    /// `None` if the ray misses every visible layer's surface.
+    /// Lets a click reach — and, via [`set_active_index`], activate —
+    /// whatever the user is actually pointing at, not just whichever
+    /// layer happens to be active already.
+    pub fn ray_march_visible(&self, origin: GVec3, dir: GVec3, max_dist: f32) -> Option<(usize, GVec3)> {
+        let mut best: Option<(usize, GVec3, f32)> = None;
+        for (i, layer) in self.layers.iter().enumerate() {
+            if !layer.visible {
+                continue;
+            }
+            if let Some(hit) = layer.grid.ray_march(origin, dir, max_dist) {
+                let d = (hit - origin).length();
+                let closer = best.as_ref().map(|&(_, _, bd)| d < bd).unwrap_or(true);
+                if closer {
+                    best = Some((i, hit, d));
+                }
+            }
+        }
+        best.map(|(i, hit, _)| (i, hit))
+    }
+
+    /// Flatten every *visible* layer's material into one grid via
+    /// per-voxel min-union. Used for STL export and `.mudclay` save
+    /// until the v3 multi-layer format lands (Track B4): today's
+    /// single-grid formats have no way to represent more than one
+    /// layer, so exporting/saving must not silently drop whichever
+    /// ones aren't active.
+    pub fn visible_union_grid(&self) -> Grid {
+        let domain = &self.layers[self.active].grid;
+        let mut out = Grid::empty(domain.res(), domain.voxel_size(), domain.origin());
+        for layer in &self.layers {
+            if layer.visible {
+                out.union_from(&layer.grid);
+            }
+        }
+        out
     }
 
     /// Mutable access to a specific layer by its stable id,
@@ -236,6 +322,22 @@ impl LayersState {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+impl LayersState {
+    /// Construct a single-layer state directly from a `Grid`, for
+    /// tests that need to exercise `LayersState`-consuming logic
+    /// (e.g. `move_tool::apply_move`) without spinning up a full
+    /// Bevy `App`. `Handle::default()` is a fine stand-in material —
+    /// nothing under test renders anything.
+    pub fn new_for_test(grid: Grid) -> Self {
+        Self {
+            layers: vec![Layer::new(0, "Layer 1", grid, Handle::default())],
+            active: 0,
+            next_id: 1,
+        }
     }
 }
 
@@ -398,5 +500,79 @@ fn remesh_dirty_chunks(
                 layer.chunks.insert(key, entity);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::Vec3 as GVec3;
+
+    fn sphere(centre: GVec3) -> Grid {
+        Grid::from_sphere(UVec3::new(64, 64, 64), 1.0, GVec3::ZERO, centre, 6.0)
+    }
+
+    /// End-to-end test of Track B2's "Insert Primitive → new layer"
+    /// plus the interim save/export path ("PLAN.md" Track B2/B4):
+    /// two layers must both survive `visible_union_grid`, and a
+    /// hidden layer must not contribute to it.
+    #[test]
+    fn push_new_layer_keeps_both_layers_and_union_preserves_both() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        assert_eq!(state.layer_count(), 1);
+        assert_eq!(state.active_index(), 0);
+
+        let second = sphere(GVec3::new(48.0, 48.0, 48.0));
+        let id = state.push_new_layer(second, Handle::default(), "Layer 2");
+        assert_eq!(state.layer_count(), 2);
+        // Inserting always activates the new layer.
+        assert_eq!(state.active_index(), 1);
+        assert_eq!(state.active_id(), id);
+
+        // The active layer's own grid only has the second sphere.
+        assert!(state.grid().sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
+        assert!(state.grid().sample(GVec3::new(16.0, 16.0, 16.0)) > 0.0);
+
+        // The flattened union has both.
+        let flattened = state.visible_union_grid();
+        assert!(flattened.sample(GVec3::new(16.0, 16.0, 16.0)) < 0.0, "first layer's sphere must survive the union");
+        assert!(flattened.sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0, "second layer's sphere must survive the union");
+    }
+
+    #[test]
+    fn hidden_layer_is_excluded_from_visible_union() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 48.0, 48.0)), Handle::default(), "Layer 2");
+        state.layers[0].visible = false;
+
+        let flattened = state.visible_union_grid();
+        assert!(
+            flattened.sample(GVec3::new(16.0, 16.0, 16.0)) > 0.0,
+            "hidden layer's material must not appear in the union"
+        );
+        assert!(flattened.sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
+    }
+
+    #[test]
+    fn ray_march_visible_finds_the_closest_hit_across_layers() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 32.0, 32.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 32.0, 32.0)), Handle::default(), "Layer 2");
+        // Active layer is now index 1 (the far sphere). A ray from the
+        // -X side should hit the *near* sphere (layer 0) first, even
+        // though it isn't active.
+        let hit = state.ray_march_visible(GVec3::new(-10.0, 32.0, 32.0), GVec3::X, 200.0);
+        let (idx, point) = hit.expect("ray should hit the near sphere");
+        assert_eq!(idx, 0, "closest hit should be the near sphere's layer, not the active one");
+        assert!((point.x - 10.0).abs() < 1.5, "hit should land on the near sphere, x~10, got {point:?}");
+    }
+
+    #[test]
+    fn ray_march_visible_skips_hidden_layers() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 32.0, 32.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 32.0, 32.0)), Handle::default(), "Layer 2");
+        state.layers[0].visible = false;
+        let hit = state.ray_march_visible(GVec3::new(-10.0, 32.0, 32.0), GVec3::X, 200.0);
+        let (idx, _) = hit.expect("ray should hit the far (visible) sphere");
+        assert_eq!(idx, 1, "hidden layer must be skipped even though it's physically closer");
     }
 }

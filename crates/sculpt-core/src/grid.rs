@@ -300,6 +300,37 @@ impl Grid {
         }
     }
 
+    /// Union `other`'s material into `self` via a per-voxel `min` —
+    /// the SDF equivalent of a boolean union, and the whole of what
+    /// "merge two layers" and "flatten every visible layer for
+    /// export" both reduce to (`PLAN.md` Track B). Only visits
+    /// `other`'s allocated tiles; an unallocated one is guaranteed
+    /// far-positive there and so can never lower `self`'s value by
+    /// definition of `min` — nothing to do, safe to skip.
+    ///
+    /// Both grids must share the same domain (resolution, voxel
+    /// size, origin) — true by construction for every layer in a
+    /// `LayersState`, since they're all carved from the same shared
+    /// domain. Voxels outside `self`'s bounds (only possible if the
+    /// domains actually differ) are silently skipped rather than
+    /// panicking.
+    pub fn union_from(&mut self, other: &Grid) {
+        for coord in other.allocated_chunk_coords() {
+            let base = coord.voxel_min();
+            let max = coord.voxel_max(other.res());
+            for gz in base.z..max.z.min(self.res.z) {
+                for gy in base.y..max.y.min(self.res.y) {
+                    for gx in base.x..max.x.min(self.res.x) {
+                        let v = other.get(gx, gy, gz);
+                        if v < self.get(gx, gy, gz) {
+                            self.set(gx, gy, gz, v);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Piece-local physical extent of the grid.
     pub fn extent(&self) -> Vec3 {
         Vec3::new(
@@ -889,6 +920,39 @@ mod tests {
         g.restore_region(&snap);
         assert_eq!(g.get(10, 10, 10), -5.0, "inside the box: reverted");
         assert_eq!(g.get(50, 50, 50), 1.0, "outside the box: untouched by restore");
+    }
+
+    #[test]
+    fn union_from_merges_two_disjoint_spheres() {
+        let res = UVec3::new(64, 64, 64);
+        let a = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 6.0);
+        let b = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(48.0, 48.0, 48.0), 6.0);
+        let mut merged = a.clone();
+        merged.union_from(&b);
+        assert!(merged.sample(Vec3::new(16.0, 16.0, 16.0)) < 0.0, "sphere A still solid");
+        assert!(merged.sample(Vec3::new(48.0, 48.0, 48.0)) < 0.0, "sphere B now solid too");
+        assert!(merged.sample(Vec3::new(32.0, 32.0, 32.0)) > 0.0, "gap between them stays empty");
+    }
+
+    #[test]
+    fn union_from_only_lowers_never_raises() {
+        // Union must never remove material `self` already had.
+        let res = UVec3::new(32, 32, 32);
+        let mut base = Grid::from_sphere(res, 1.0, Vec3::ZERO, Vec3::new(16.0, 16.0, 16.0), 10.0);
+        let empty = Grid::empty(res, 1.0, Vec3::ZERO);
+        let before = base.to_dense();
+        base.union_from(&empty);
+        assert_eq!(base.to_dense(), before, "unioning with nothing must be a no-op");
+    }
+
+    #[test]
+    fn union_from_skips_far_positive_tiles_and_stays_sparse() {
+        let res = UVec3::new(96, 96, 96);
+        let mut a = Grid::empty(res, 1.0, Vec3::ZERO);
+        a.set(5, 5, 5, -1.0);
+        let b = Grid::empty(res, 1.0, Vec3::ZERO); // nothing allocated
+        a.union_from(&b);
+        assert_eq!(a.allocated_tile_count(), 1, "unioning with an empty grid must not allocate anything new");
     }
 
     #[test]

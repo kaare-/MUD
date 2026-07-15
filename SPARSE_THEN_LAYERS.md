@@ -505,10 +505,89 @@ exact save-file-size proof above plus the existing
 `workbench_clip_prevents_material_below_plane` brush tests, which
 exercise the same `workbench_y` clip this path uses.
 
-## Next step
-
 Track A is functionally complete for now (P5 — the `.mudclay` v2
 sparse on-disk format — is the only item left, and only matters once
 users are routinely saving pieces that don't fill most of the
-domain). Start **Track B** (layers): Insert Primitive → new layer,
-active-layer-only tools, visibility toggle, explicit Merge Down.
+domain).
+
+## Track B1 — shipped (2026-07-15)
+
+Replaced the single `SculptWorkpiece { grid, chunks, dirty, material }`
+resource with `LayersState { layers: Vec<Layer>, active, next_id }`.
+`Layer` owns its own grid, chunk-entity map, dirty queue, visibility
+flag, name, and stable id; every layer shares one domain/resolution/
+origin and is parented to the same `WorkpieceRoot`, so the turntable
+still rotates everything with zero extra code. B1 keeps exactly one
+layer — every consumer already goes through `LayersState::grid()` /
+`grid_mut()` / `mark_dirty()` instead of a bare field, so B2 (below)
+was "push onto `layers`", not another app-wide refactor. Undo entries
+are tagged with a stable `layer_id` (not an index) and apply against
+that specific layer via `layer_by_id_mut`, not "whichever is active
+right now" — moot with one layer, but correct plumbing for later.
+
+Migrated all 11 consumer files mechanically. Verified live in the
+running app: rest-on-bench, undo/redo, and a full save → clear →
+reload cycle all behave identically to before the refactor (the
+`.mudclay` save is byte-for-byte the same size).
+
+## Track B2 — shipped (2026-07-15)
+
+**Insert Primitive → always a new layer** (the actual fix for
+"inserting instantly fuses" that started this whole conversation):
+`primitives.rs` now builds the shape into a fresh empty grid (same
+shared domain) and calls `LayersState::push_new_layer`, which appends
+it and makes it active, instead of unioning into whatever was already
+there.
+
+**Cross-layer pick** (`D4` follow-through — without this, activating
+a new layer would strand every previously-placed piece unreachable by
+any tool): new `LayersState::ray_march_visible` ray-marches every
+*visible* layer and returns the closest hit's layer index, not just
+the active layer's. `selection.rs`'s pick now uses this and calls
+`set_active_index` (plus drops stale cached labels) whenever the
+closest hit lands on a different layer than the one currently active
+— a click naturally reaches, and activates, whatever the user is
+actually pointing at.
+
+**No data loss on save/export before the real multi-layer format
+lands**: new `Grid::union_from` (per-voxel `min`, the SDF union — the
+same operation both "flatten for export" and the future Merge Down
+reduce to) backs `LayersState::visible_union_grid`, which flattens
+every visible layer into one grid. `project::save_to_path` and
+`export::export_stl_to` both flatten before writing, so switching to
+layers can never silently drop a whole piece from a save or an STL —
+though until Track B4 (the v3 on-disk format) ships, reloading a save
+always produces one merged layer; the *material* survives, the layer
+*boundary* doesn't yet.
+
+**Verified**: 8 new Rust-level tests (`workpiece.rs`,
+`move_tool.rs`) covering `push_new_layer`, `visible_union_grid`
+(including a hidden layer's exclusion), and `ray_march_visible`
+(including skipping hidden layers and preferring the closer hit over
+the active layer). Backend logs confirm live Insert Primitive calls
+land "on a new layer". Manual GUI verification of the Move tool's
+*typed* Apply / gizmo-drag paths was inconclusive in this sandbox
+(egui's `DragValue` needs a precise no-drift single click to enter
+text-edit mode, which synthetic `xdotool` input struggles to
+reproduce reliably here — every other mouse-drag interaction in this
+project has hit the same wall) — resolved with a direct Rust-level
+test calling `apply_move` / `apply_preview` exactly as the UI would,
+independent of GUI input reliability. Both pass, including a
+multi-frame gizmo-drag regression that would have caught a Track A3
+growable-region bug (residue left at an intermediate drag position).
+
+**Deliberately deferred to Track B3**: a Layers panel (visibility
+toggle, rename, delete) and Merge Down. `Layer::visible` defaults to
+`true` and the rendering/ray-march/union paths already all respect
+it correctly (tested), so nothing regresses — there's just no UI
+control for it yet. Undoing an Insert Primitive empties the layer it
+created but doesn't remove it from the layer list; deleting an
+emptied layer is B3 work, alongside the panel that will make an
+orphaned empty layer visible in the first place.
+
+## Next step
+
+**Track B3**: Layers panel (name / visibility toggle / delete on
+each layer, active-layer indicator) and Merge Down (`Grid::union_from`
+is already the primitive it needs). **Track B4**: `.mudclay` v3 with
+real multi-layer sections, so save/load stop flattening.

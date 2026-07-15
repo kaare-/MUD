@@ -981,3 +981,185 @@ fn apply_move(
     );
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use glam::UVec3;
+    use sculpt_core::Grid;
+
+    /// End-to-end test of the typed-widget Move path (`apply_move`,
+    /// which the Move HUD's Apply button and Enter-to-commit both
+    /// call), driven directly at the Rust level rather than through
+    /// GUI input. Manual GUI verification of this exact path was
+    /// inconclusive in this sandbox (an egui `DragValue` needs a
+    /// precise single-click-no-drag to enter edit mode, which
+    /// synthetic input struggles to reproduce reliably here) — this
+    /// test exists to give an unambiguous answer independent of that.
+    #[test]
+    fn apply_move_translates_the_selected_component() {
+        let mut workpiece =
+            LayersState::new_for_test(Grid::from_sphere(
+                UVec3::new(64, 64, 64),
+                1.0,
+                glam::Vec3::ZERO,
+                glam::Vec3::new(16.0, 16.0, 16.0),
+                6.0,
+            ));
+        let mut selection = Selection::default();
+        // Simulate "just clicked the sphere with the Select tool".
+        selection.picked_voxel = Some((16, 16, 16));
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+
+        let before = workpiece.grid().to_dense();
+        let applied = apply_move(
+            Vec3::new(20.0, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(applied, "apply_move should report success");
+
+        // The grid actually changed...
+        assert_ne!(workpiece.grid().to_dense(), before, "grid must change after a move");
+        // ...specifically, material moved from x=16 to roughly x=36.
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0,
+            "old position should now be empty"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(36.0, 16.0, 16.0)) < 0.0,
+            "sphere should now be solid at the shifted position"
+        );
+        // Selection follows the piece.
+        assert_eq!(selection.picked_voxel, Some((36, 16, 16)));
+        // One undo entry was journalled.
+        assert_eq!(history.undo_len_for_test(), 1);
+    }
+
+    #[test]
+    fn apply_move_is_a_noop_with_nothing_selected() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(32, 32, 32),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let mut selection = Selection::default();
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+        let applied = apply_move(
+            Vec3::new(20.0, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(!applied);
+        assert_eq!(history.undo_len_for_test(), 0);
+    }
+
+    /// End-to-end test of the gizmo-drag preview loop (`apply_preview`,
+    /// what dragging one of the axis arrows calls every frame), also
+    /// driven directly rather than through GUI mouse-drag input
+    /// (unreliable in this sandbox for the same reasons noted above).
+    /// Specifically exercises the Track A3 growable-region behaviour:
+    /// a second, larger delta must not leave stray material at the
+    /// first delta's intermediate position — the reset-from-snapshot
+    /// step must have grown to cover it.
+    #[test]
+    fn gizmo_drag_preview_moves_the_piece_without_leaving_intermediate_residue() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(64, 64, 64),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let labels = label_components(workpiece.grid());
+        let component_id = labels.id_at(16, 16, 16);
+        let (region_min, region_max) = touched_region_for_translate(
+            &labels,
+            component_id,
+            IVec3::ZERO,
+            workpiece.grid().res(),
+        )
+        .unwrap();
+        let snapshot = workpiece.grid().snapshot_region(region_min, region_max);
+
+        let mut drag = MoveGizmoDrag {
+            active: Some(ActiveDrag {
+                axis: Axis::X,
+                t_start: 0.0,
+                initial_widget_mm: Vec3::ZERO,
+                grid_snapshot: snapshot,
+                labels,
+                component_id,
+                voxel_size: workpiece.grid().voxel_size(),
+                dirty_chunks: HashSet::new(),
+                last_applied_vox: IVec3::ZERO,
+            }),
+            started_this_frame: false,
+        };
+
+        // First frame: drag to +10 mm.
+        let mut state = MoveState {
+            pending_mm: Vec3::new(10.0, 0.0, 0.0),
+        };
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(workpiece.grid().sample(glam::Vec3::new(26.0, 16.0, 16.0)) < 0.0);
+        assert!(workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0);
+
+        // Second frame: drag further, to +25 mm — beyond the region
+        // the first frame's snapshot covered, forcing a grow.
+        state.pending_mm = Vec3::new(25.0, 0.0, 0.0);
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(41.0, 16.0, 16.0)) < 0.0,
+            "sphere should now be solid at the +25mm position"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(26.0, 16.0, 16.0)) > 0.0,
+            "the +10mm intermediate position must be cleared, not left behind"
+        );
+        assert!(
+            workpiece.grid().sample(glam::Vec3::new(16.0, 16.0, 16.0)) > 0.0,
+            "the original position must still be cleared"
+        );
+
+        // Third frame: drag back to a smaller delta — must still
+        // reset correctly (region only ever grows, never shrinks,
+        // but the reset-then-translate must still land exactly).
+        state.pending_mm = Vec3::new(5.0, 0.0, 0.0);
+        apply_preview(&mut drag, &mut workpiece, &state);
+        assert!(workpiece.grid().sample(glam::Vec3::new(21.0, 16.0, 16.0)) < 0.0);
+        assert!(workpiece.grid().sample(glam::Vec3::new(41.0, 16.0, 16.0)) > 0.0, "the +25mm position must be cleared after dragging back");
+    }
+
+    #[test]
+    fn apply_move_is_a_noop_when_delta_rounds_to_zero_voxels() {
+        let mut workpiece = LayersState::new_for_test(Grid::from_sphere(
+            UVec3::new(32, 32, 32),
+            1.0,
+            glam::Vec3::ZERO,
+            glam::Vec3::new(16.0, 16.0, 16.0),
+            6.0,
+        ));
+        let mut selection = Selection::default();
+        selection.picked_voxel = Some((16, 16, 16));
+        let mut history = UndoHistory::default();
+        let mut stroke = SculptStroke::default();
+        // 0.1 mm at 1 mm/voxel rounds to 0 voxels.
+        let applied = apply_move(
+            Vec3::new(0.1, 0.0, 0.0),
+            &mut workpiece,
+            &mut selection,
+            &mut history,
+            &mut stroke,
+        );
+        assert!(!applied);
+    }
+}
