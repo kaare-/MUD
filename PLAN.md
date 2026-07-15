@@ -144,8 +144,8 @@ Locked product calls:
 
 Suggested PR stack (see doc for acceptance checks):
 
-1. `[~]` **P0** — this plan (docs).
-2. `[ ]` **P1** — sparse `Grid` façade, parity at current 192³.
+1. `[x]` **P0** — this plan (docs).
+2. `[x]` **P1** — sparse `Grid` façade, parity at current 192³.
 3. `[ ]` **P2** — remesh / spawn only allocated tiles.
 4. `[ ]` **P3** — sparse wire-cut / labels / translate-rest.
 5. `[ ]` **P4** — grow domain (≥512 mm XZ) + bench-first clay.

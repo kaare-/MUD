@@ -263,8 +263,8 @@ Prefer stacking on the current Stage-3 tip
 
 | PR | Track | Scope | Reviewability |
 |---|---|---|---|
-| **P0** | plan | This doc + `PLAN.md` reorder | docs only |
-| **P1** | A0–A1 | Sparse `Grid` façade, parity tests, still 192³ domain | core-heavy, app thin |
+| **P0** | plan | This doc + `PLAN.md` reorder | docs only — shipped |
+| **P1** | A0–A1 | Sparse `Grid` façade, parity tests, still 192³ domain | core-heavy, app thin — shipped |
 | **P2** | A2 | Chunk spawn/despawn + remesh allocated only | app remesh |
 | **P3** | A3 | Wire cutter + labels + translate/rest sparse walks | core walkers |
 | **P4** | A4 | Domain grow + bench-first Add (+ optional empty New) | product-visible |
@@ -296,8 +296,48 @@ its own falsifiable check.
 
 ---
 
-## Immediate next step after this plan lands
+## P1 — shipped (2026-07-15)
 
-Implement **P1** (sparse `Grid` behind the façade at current 192³
-domain with behavioural parity). No Layers UI yet. No domain grow
-until P1–P3 are green.
+`sculpt-core`'s `Grid` is now a `HashMap<ChunkCoord, Box<[f32; 32³]>>`
+tile store instead of a dense `Vec<f32>`. Behaviour is unchanged:
+
+- `get` / `set` / `sample` / `gradient` / `gradient_at` / `ray_march`
+  / `res` / `voxel_size` / `origin` / `position` / `extent` /
+  `num_chunks` / `from_sphere` / `empty` — identical signatures and
+  results.
+- `get_unchecked` keeps its `unsafe fn` signature for API
+  compatibility but has no unchecked fast path over a `HashMap`; it
+  now just calls `get`.
+- **Contract change:** `samples() -> &[f32]` is gone. A sparse store
+  has no single contiguous buffer to borrow. It's replaced by
+  `to_dense() -> Vec<f32>`, which materialises the full buffer on
+  demand. Updated call sites: the `.mudclay` writer
+  (`sculpt_core::project::write_project`), `gravity::translate_components`
+  (its full-grid snapshot), and the app's Move-tool drag-preview
+  snapshot (`move_tool.rs`). These are exactly the operations Track
+  A3 will make tile-native; until then they pay a `to_dense()` cost
+  they didn't pay before, which is an accepted, documented trade-off
+  for this phase — not a behavioural change.
+- New tests in `grid.rs`: zero tiles for an empty grid, one write
+  allocates exactly one tile, tile boundaries clip correctly at
+  non-multiple-of-32 resolutions, `to_dense` / `from_samples`
+  round-trip exactly, loading mostly-far-positive data stays sparse,
+  and `restore_samples` re-sparsifies a tile that was written then
+  reverted (the Move-preview reset case).
+- Verified: `cargo test --workspace` (83 tests) and `cargo clippy
+  --workspace --all-targets` both clean. Manually smoke-tested the
+  running app (Insert Primitive union, Select highlight, Rest on
+  bench, `Ctrl+N` clear, `Ctrl+S` save) — saved file size matched
+  `48 + 4×192³` bytes exactly, confirming the sparse-to-dense project
+  writer round-trips correctly against the live grid.
+- Domain is still 192³ — no memory win yet (`from_sphere` fills the
+  whole domain with distinct values, so every tile allocates). The
+  payoff starts once real "far from any surface" regions exist,
+  which is Track A4 (domain grow).
+
+## Next step
+
+Implement **P2** (remesh / spawn Bevy chunk entities only for
+allocated tiles, instead of always spawning the full 6×6×6 grid).
+Then **P3** (sparse-native wire-cutter, component labelling,
+translate/rest, Move preview) before **A4** grows the domain.
