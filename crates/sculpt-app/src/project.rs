@@ -25,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use bevy::prelude::*;
-use sculpt_core::{project_size, read_project, write_project, Grid};
+use sculpt_core::{project_size, read_project, write_project};
 
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
@@ -220,21 +220,12 @@ pub fn clear_worktable(
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
 ) {
-    let empty = Grid::empty(
-        workpiece.grid().res(),
-        workpiece.grid().voxel_size(),
-        workpiece.grid().origin(),
-    );
-    match workpiece.swap_active_grid(empty) {
-        Ok(()) => {
-            history.clear();
-            stroke.discard_live();
-            info!("worktable cleared — undo history cleared");
-        }
-        Err(e) => {
-            error!("can't clear worktable: {e}");
-        }
-    }
+    // Drop every extra layer and empty the survivor — File → New is
+    // "blank worktable", not "clear the active layer only".
+    workpiece.reset_to_empty_single_layer();
+    history.clear();
+    stroke.discard_live();
+    info!("worktable cleared — undo history cleared");
 }
 
 /// Write the workpiece to `path`. Wraps every failure in a

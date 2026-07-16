@@ -1,6 +1,6 @@
-//! Egui-based menus, tool palette, and status strip.
+//! Egui-based menus, tool palette, layers panel, and status strip.
 //!
-//! Adds three panels around the 3D viewport:
+//! Adds panels around the 3D viewport:
 //!
 //! - **Top**: menu bar with a `File` dropdown (Save / Load / Export
 //!   STL / Quit). Shortcut hints inline so keyboard-inclined users
@@ -8,9 +8,10 @@
 //! - **Left**: tool palette — one button per [`ToolKind`], current
 //!   tool highlighted. Includes the 1–8 shortcut in the label so the
 //!   two paths are self-teaching.
+//! - **Right**: Layers panel (Track B3) — name, active indicator,
+//!   visibility, delete, Merge Down.
 //! - **Bottom**: status strip showing current tool size (`mm`),
-//!   symmetry state, and magic-clay state. The two toggles are
-//!   themselves buttons.
+//!   symmetry state, magic-clay state, and active layer.
 //!
 //! Every UI action fires the same [`AppAction`] events the keyboard
 //! path emits, so the "what does this do?" answer is in one place
@@ -55,7 +56,7 @@ fn draw_ui(
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     selection: Res<Selection>,
-    workpiece: Res<LayersState>,
+    mut workpiece: ResMut<LayersState>,
     grid_state: Res<WorkbenchGridState>,
     mut move_state: ResMut<MoveState>,
     mut actions: EventWriter<AppAction>,
@@ -200,6 +201,8 @@ fn draw_ui(
             ui.small(tool_palette_hint(tool.kind));
         });
 
+    draw_layers_panel(ctx, &mut workpiece, &mut actions);
+
     // Bottom status strip. Size (read-only readout — the number is
     // driven by the wheel/keys), symmetry (toggle button), magic-clay
     // (toggle button). Keeping toggles here means the state is
@@ -231,6 +234,12 @@ fn draw_ui(
                 }
             });
             ui.separator();
+            let active_idx = workpiece.active_index();
+            let layer_n = active_idx + 1;
+            let layer_m = workpiece.layer_count();
+            let layer_name = workpiece.active_layer().name.clone();
+            ui.label(format!("Layer {layer_n}/{layer_m} · {layer_name}"));
+            ui.separator();
             // Selection HUD: current pick, delete, active-only.
             draw_selection_hud(ui, &selection, &workpiece, &mut actions);
             ui.separator();
@@ -241,10 +250,116 @@ fn draw_ui(
     // Move widget. Only shown when the Move tool is active — the
     // widget is a floating egui window anchored to the top-right
     // corner of the viewport (out of the sculpt path). Compact
-    // X/Y/Z spinners in mm plus an Apply button.
+    // X/Y/Z spinners in mm plus an Apply button. Anchored left of
+    // the Layers panel so the two don't overlap.
     if matches!(tool.kind, ToolKind::Move) {
         draw_move_widget(ctx, &selection, &mut move_state, &mut actions);
     }
+}
+
+/// Right-side Layers panel (Track B3). Newest layer at the top
+/// (Photoshop-like). Click a row to activate; eye toggles visibility;
+/// × deletes (disabled on the last layer); Merge Down unions the
+/// active layer into the one below it.
+fn draw_layers_panel(
+    ctx: &egui::Context,
+    workpiece: &mut LayersState,
+    actions: &mut EventWriter<AppAction>,
+) {
+    egui::SidePanel::right("mud_layers")
+        .default_width(220.0)
+        .resizable(false)
+        .show(ctx, |ui| {
+            ui.heading("Layers");
+            ui.small("Tools edit the active layer only.");
+            ui.separator();
+
+            let count = workpiece.layer_count();
+            let active = workpiece.active_index();
+            let can_delete = count > 1;
+            let can_merge = active > 0;
+
+            // Snapshot names/visibility for the row loop so we can
+            // still call `layer_mut` for in-place rename without
+            // fighting the borrow checker over `layers()`.
+            let rows: Vec<(usize, bool)> = (0..count)
+                .rev()
+                .map(|idx| (idx, workpiece.layers()[idx].visible))
+                .collect();
+
+            for (idx, visible) in rows {
+                ui.horizontal(|ui| {
+                    let vis_label = if visible { "vis" } else { "hid" };
+                    if ui
+                        .add(egui::Button::new(vis_label).min_size(egui::vec2(28.0, 18.0)))
+                        .on_hover_text(if visible {
+                            "Hide layer"
+                        } else {
+                            "Show layer"
+                        })
+                        .clicked()
+                    {
+                        actions.send(AppAction::SetLayerVisible(idx, !visible));
+                    }
+
+                    let is_active = idx == active;
+                    // Edit a local copy so we can validate through
+                    // `rename_layer` on focus loss (rejects blanks).
+                    let mut name = workpiece.layers()[idx].name.clone();
+                    let edit = egui::TextEdit::singleline(&mut name)
+                        .desired_width(110.0)
+                        .frame(is_active);
+                    let response = ui.add(edit);
+                    if response.changed() {
+                        // Live preview while typing; final trim /
+                        // reject happens on focus loss below.
+                        if let Some(layer) = workpiece.layer_mut(idx) {
+                            layer.name = name.clone();
+                        }
+                    }
+                    if response.gained_focus() && !is_active {
+                        actions.send(AppAction::SetActiveLayer(idx));
+                    }
+                    if response.lost_focus() && !workpiece.rename_layer(idx, name) {
+                        // Blank / whitespace — restore a stable label.
+                        let _ = workpiece.rename_layer(idx, format!("Layer {}", idx + 1));
+                    }
+
+                    let marker = if is_active { "*" } else { " " };
+                    if ui
+                        .selectable_label(is_active, marker)
+                        .on_hover_text("Set active")
+                        .clicked()
+                    {
+                        actions.send(AppAction::SetActiveLayer(idx));
+                    }
+
+                    ui.add_enabled_ui(can_delete, |ui| {
+                        if ui
+                            .small_button("x")
+                            .on_hover_text("Delete layer")
+                            .clicked()
+                        {
+                            actions.send(AppAction::DeleteLayer(idx));
+                        }
+                    });
+                });
+            }
+
+            ui.separator();
+            ui.add_enabled_ui(can_merge, |ui| {
+                if ui
+                    .button("Merge Down")
+                    .on_hover_text("Union active layer into the one below, then drop it")
+                    .clicked()
+                {
+                    actions.send(AppAction::MergeDown);
+                }
+            });
+            if !can_merge {
+                ui.small("Merge Down needs a layer below.");
+            }
+        });
 }
 
 /// Compact `⟨ X | Y | Z ⟩` translate widget. Reads / writes the
@@ -260,7 +375,9 @@ fn draw_move_widget(
 ) {
     let has_selection = selection.picked_voxel.is_some();
     egui::Window::new("Move")
-        .anchor(egui::Align2::RIGHT_TOP, [-12.0, 44.0])
+        // Sit just left of the Layers panel (~220px) so the two
+        // don't stack on top of each other.
+        .anchor(egui::Align2::RIGHT_TOP, [-232.0, 44.0])
         .collapsible(false)
         .resizable(false)
         .show(ctx, |ui| {

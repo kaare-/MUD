@@ -15,6 +15,9 @@
 //! Chunk invalidation is packaged with each entry so we can re-mesh
 //! only the affected chunks on undo/redo instead of rebuilding the
 //! whole grid.
+//!
+//! Track B3 also journals structural layer ops (Delete Layer, Merge
+//! Down) as first-class history entries alongside strokes.
 
 use std::collections::HashSet;
 
@@ -24,7 +27,7 @@ use glam::UVec3;
 use sculpt_core::{ChunkCoord, DirtyRegion, Grid, CHUNK_SIZE};
 
 use crate::input_gate::UiCapturesInput;
-use crate::workpiece::{LayerId, LayersState};
+use crate::workpiece::{LayerId, LayerSnapshot, LayersState, MergeDownRecord};
 
 /// Cap on how many strokes we remember. Prevents runaway memory growth
 /// during long sessions. `Ctrl+Z` past this point simply stops.
@@ -60,6 +63,21 @@ impl UndoEntry {
             grid.set(x, y, z, post);
         }
     }
+}
+
+/// Delete-layer journal: full layer snapshot + where it sat + which
+/// layer was active before the delete.
+pub struct DeleteLayerEntry {
+    pub index: usize,
+    pub previous_active: usize,
+    pub layer: LayerSnapshot,
+}
+
+/// One undo unit — either a sculpt stroke or a structural layer op.
+pub enum HistoryEntry {
+    Stroke(UndoEntry),
+    MergeDown(MergeDownRecord),
+    DeleteLayer(DeleteLayerEntry),
 }
 
 /// Stroke-time recorder. One instance lives in [`SculptStroke`] while
@@ -126,13 +144,25 @@ fn pack_key(x: u32, y: u32, z: u32) -> u64 {
 /// Global undo / redo stacks.
 #[derive(Resource, Default)]
 pub struct UndoHistory {
-    undo: Vec<UndoEntry>,
-    redo: Vec<UndoEntry>,
+    undo: Vec<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
 }
 
 impl UndoHistory {
     pub fn push_stroke(&mut self, entry: UndoEntry) {
-        // A new stroke invalidates the redo stack — you can't cherry-
+        self.push(HistoryEntry::Stroke(entry));
+    }
+
+    pub fn push_merge_down(&mut self, entry: MergeDownRecord) {
+        self.push(HistoryEntry::MergeDown(entry));
+    }
+
+    pub fn push_delete_layer(&mut self, entry: DeleteLayerEntry) {
+        self.push(HistoryEntry::DeleteLayer(entry));
+    }
+
+    fn push(&mut self, entry: HistoryEntry) {
+        // A new edit invalidates the redo stack — you can't cherry-
         // pick a branch of history you diverged from.
         self.redo.clear();
         self.undo.push(entry);
@@ -221,33 +251,83 @@ fn handle_undo_redo_input(
 
     if want_undo {
         if let Some(entry) = history.undo.pop() {
-            // Apply to the layer the entry was recorded against, not
-            // necessarily the currently-active one (Track B1). In B1
-            // there's only ever one layer so this always hits; a
-            // future layer-delete dropping the id first would just
-            // skip here rather than panic — nothing left to undo.
-            if let Some(layer) = workpiece.layer_by_id_mut(entry.layer_id) {
-                entry.apply_pre(&mut layer.grid);
-                for c in &entry.dirty_chunks {
-                    layer.mark_dirty(*c);
-                }
-            }
+            undo_entry(&entry, &mut workpiece);
             history.redo.push(entry);
             selection.invalidate_labels();
         }
     } else if want_redo {
         if let Some(entry) = history.redo.pop() {
-            if let Some(layer) = workpiece.layer_by_id_mut(entry.layer_id) {
-                entry.apply_post(&mut layer.grid);
-                for c in &entry.dirty_chunks {
-                    layer.mark_dirty(*c);
-                }
-            }
+            redo_entry(&entry, &mut workpiece);
             history.undo.push(entry);
             if history.undo.len() > MAX_HISTORY {
                 history.undo.remove(0);
             }
             selection.invalidate_labels();
+        }
+    }
+}
+
+fn undo_entry(entry: &HistoryEntry, workpiece: &mut LayersState) {
+    match entry {
+        HistoryEntry::Stroke(stroke) => {
+            // Apply to the layer the entry was recorded against, not
+            // necessarily the currently-active one. A layer-delete
+            // that dropped the id first simply skips — nothing left.
+            if let Some(layer) = workpiece.layer_by_id_mut(stroke.layer_id) {
+                stroke.apply_pre(&mut layer.grid);
+                for c in &stroke.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
+            }
+        }
+        HistoryEntry::MergeDown(merge) => {
+            if let Some(layer) = workpiece.layer_by_id_mut(merge.dst_id) {
+                for ((x, y, z), pre) in merge.voxels.iter().copied().zip(merge.pre.iter().copied())
+                {
+                    layer.grid.set(x, y, z, pre);
+                }
+                for c in &merge.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
+            }
+            workpiece.restore_layer_at(merge.src_index, merge.src.clone());
+            workpiece.set_active_index(merge.src_index);
+        }
+        HistoryEntry::DeleteLayer(del) => {
+            workpiece.restore_layer_at(del.index, del.layer.clone());
+            workpiece.set_active_index(del.previous_active);
+        }
+    }
+}
+
+fn redo_entry(entry: &HistoryEntry, workpiece: &mut LayersState) {
+    match entry {
+        HistoryEntry::Stroke(stroke) => {
+            if let Some(layer) = workpiece.layer_by_id_mut(stroke.layer_id) {
+                stroke.apply_post(&mut layer.grid);
+                for c in &stroke.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
+            }
+        }
+        HistoryEntry::MergeDown(merge) => {
+            // Source is sitting at src_index again after undo; drop it
+            // and re-apply the dest union delta.
+            let _ = workpiece.drop_layer_at(merge.src_index);
+            if let Some(layer) = workpiece.layer_by_id_mut(merge.dst_id) {
+                for ((x, y, z), post) in
+                    merge.voxels.iter().copied().zip(merge.post.iter().copied())
+                {
+                    layer.grid.set(x, y, z, post);
+                }
+                for c in &merge.dirty_chunks {
+                    layer.mark_dirty(*c);
+                }
+            }
+            workpiece.set_active_index(merge.dst_index);
+        }
+        HistoryEntry::DeleteLayer(del) => {
+            let _ = workpiece.drop_layer_at(del.index);
         }
     }
 }
