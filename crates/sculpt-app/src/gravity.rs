@@ -1,14 +1,13 @@
-//! App-level glue for the `rest_components_on_bench` core op.
+//! App-level glue for rigid rest and plastic settle.
 //!
-//! `View → Rest on Bench` (or `Ctrl+G`) drops every floating piece
-//! onto the workbench. The core op reports every touched voxel via a
-//! callback so we can journal the whole operation as one undo stroke.
-//!
-//! Selection state (component id caches, active picks) is
-//! invalidated because ids reshuffle after any translation.
+//! - `Ctrl+G` / `Sculpt → Rest pieces on bench` — rigid −Y drop.
+//! - `Ctrl+Shift+G` / `Sculpt → Settle (plastic)…` — column-squash
+//!   burst (`PLASTIC_GRAVITY.md`).
 
 use bevy::prelude::*;
-use sculpt_core::{label_components, rest_components_on_bench};
+use sculpt_core::{
+    label_components, rest_components_on_bench, settle_components_plastic, PlasticSettleParams,
+};
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
@@ -16,11 +15,29 @@ use crate::selection::Selection;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::LayersState;
 
-pub fn plugin(app: &mut App) {
-    app.add_systems(Update, (emit_hotkey, handle_action));
+/// Plasticity slider state for the Settle dialog.
+#[derive(Resource)]
+pub struct SettleDialogState {
+    pub open: bool,
+    /// Draft plasticity in the dialog (committed on Settle).
+    pub plasticity: f32,
 }
 
-fn emit_hotkey(
+impl Default for SettleDialogState {
+    fn default() -> Self {
+        Self {
+            open: false,
+            plasticity: 0.7,
+        }
+    }
+}
+
+pub fn plugin(app: &mut App) {
+    app.init_resource::<SettleDialogState>();
+    app.add_systems(Update, (emit_hotkeys, handle_action));
+}
+
+fn emit_hotkeys(
     keys: Res<ButtonInput<KeyCode>>,
     ui_gate: Res<UiCapturesInput>,
     mut actions: EventWriter<AppAction>,
@@ -31,7 +48,13 @@ fn emit_hotkey(
     let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
     let super_key =
         keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
-    if (ctrl || super_key) && keys.just_pressed(KeyCode::KeyG) {
+    let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+    if !(ctrl || super_key) || !keys.just_pressed(KeyCode::KeyG) {
+        return;
+    }
+    if shift {
+        actions.send(AppAction::ShowSettleDialog);
+    } else {
         actions.send(AppAction::RestPiecesOnBench);
     }
 }
@@ -42,15 +65,33 @@ fn handle_action(
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<Selection>,
+    mut dialog: ResMut<SettleDialogState>,
 ) {
     for a in events.read() {
-        if matches!(a, AppAction::RestPiecesOnBench) {
-            rest_on_bench_now(
-                &mut workpiece,
-                &mut history,
-                &mut stroke,
-                &mut selection,
-            );
+        match a {
+            AppAction::RestPiecesOnBench => {
+                rest_on_bench_now(
+                    &mut workpiece,
+                    &mut history,
+                    &mut stroke,
+                    &mut selection,
+                );
+            }
+            AppAction::ShowSettleDialog => {
+                dialog.open = true;
+            }
+            AppAction::SettlePlastic(p) => {
+                dialog.plasticity = p.clamp(0.0, 1.0);
+                dialog.open = false;
+                settle_plastic_now(
+                    &mut workpiece,
+                    &mut history,
+                    &mut stroke,
+                    &mut selection,
+                    dialog.plasticity,
+                );
+            }
+            _ => {}
         }
     }
 }
@@ -61,7 +102,6 @@ fn rest_on_bench_now(
     stroke: &mut SculptStroke,
     selection: &mut Selection,
 ) {
-    // Abandon any live sculpting stroke — rest is a separate undo unit.
     stroke.discard_live();
 
     let labels = label_components(workpiece.grid());
@@ -88,12 +128,58 @@ fn rest_on_bench_now(
         history.push_stroke(entry);
     }
 
-    // Component ids reshuffle after translation; drop selection cache.
     selection.picked_voxel = None;
     selection.invalidate_labels();
 
     info!(
         "rest: dropped {} of {} pieces onto the workbench",
         summary.moved, summary.components
+    );
+}
+
+fn settle_plastic_now(
+    workpiece: &mut LayersState,
+    history: &mut UndoHistory,
+    stroke: &mut SculptStroke,
+    selection: &mut Selection,
+    plasticity: f32,
+) {
+    stroke.discard_live();
+
+    let labels = label_components(workpiece.grid());
+    if labels.component_count() == 0 {
+        info!("settle: no material on the active layer");
+        return;
+    }
+
+    let params = PlasticSettleParams {
+        plasticity,
+        ..PlasticSettleParams::default()
+    };
+    let mut recorder = StrokeRecorder::default();
+    let summary = settle_components_plastic(
+        workpiece.grid_mut(),
+        &labels,
+        &params,
+        |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
+    );
+
+    let grid_res = workpiece.grid().res();
+    if let Some(region) = summary.dirty {
+        recorder.record_dirty_region(region, grid_res);
+        for c in region.touched_chunks(grid_res) {
+            workpiece.mark_dirty((c.x, c.y, c.z));
+        }
+    }
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
+        history.push_stroke(entry);
+    }
+
+    selection.picked_voxel = None;
+    selection.invalidate_labels();
+
+    info!(
+        "settle: plasticity={:.2}, touched {} voxels over {} iter(s)",
+        plasticity, summary.voxels_touched, summary.iterations_run
     );
 }

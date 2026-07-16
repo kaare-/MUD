@@ -613,5 +613,6 @@ visible-union ("what I see is what I print").
 
 ## Next step
 
-Secondary backlog (dual contouring, plastic gravity, pen tablet,
-matcap library, …) — pick from `PLAN.md` as needed.
+Plastic gravity spike shipped (`PLASTIC_GRAVITY.md`, `Ctrl+Shift+G`).
+Secondary backlog otherwise: dual contouring, pen tablet, matcap
+library, … — pick from `PLAN.md` as needed.
