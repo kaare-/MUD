@@ -268,11 +268,11 @@ Prefer stacking on the current Stage-3 tip
 | **P2** | A2 | Chunk spawn/despawn + remesh allocated only | app remesh |
 | **P3** | A3 | Wire cutter + labels + translate/rest sparse walks | core walkers |
 | **P4** | A4 | Domain grow + bench-first Add (+ optional empty New) | product-visible |
-| **P5** | A5 | `.mudclay` v2 sparse write + v1 read | IO |
+| **P5** | A5 | `.mudclay` v2 sparse write + v1 read | IO — shipped with P9 |
 | **P6** | B1 | `LayersState`, single layer, undo tags | refactor |
 | **P7** | B2 | Insert→new layer, pick across layers, visibility | behaviour |
 | **P8** | B3 | Layers panel + Merge | UI — shipped |
-| **P9** | B4 | `.mudclay` v3 + STL visible-union | IO |
+| **P9** | B4 | `.mudclay` v3 + STL visible-union | IO — shipped |
 
 Do **not** combine A4 domain-grow with B-layers in one PR — each has
 its own falsifiable check.
@@ -603,7 +603,15 @@ remesh.
 **File → New** resets to a single empty layer (not merely clearing
 the active one), matching "blank worktable".
 
+## Track B4 — shipped
+
+**`.mudclay` v3**: writer emits sparse tiles per layer (name,
+visibility, stable id, active index). Reader accepts **v1** (dense
+→ one layer), **v2** (sparse single grid → one layer), and **v3**
+(full stack). Save no longer flattens; STL export stays
+visible-union ("what I see is what I print").
+
 ## Next step
 
-**Track B4**: `.mudclay` v3 with real multi-layer sections, so
-save/load stop flattening.
+Secondary backlog (dual contouring, plastic gravity, pen tablet,
+matcap library, …) — pick from `PLAN.md` as needed.

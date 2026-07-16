@@ -290,11 +290,9 @@ impl LayersState {
     }
 
     /// Flatten every *visible* layer's material into one grid via
-    /// per-voxel min-union. Used for STL export and `.mudclay` save
-    /// until the v3 multi-layer format lands (Track B4): today's
-    /// single-grid formats have no way to represent more than one
-    /// layer, so exporting/saving must not silently drop whichever
-    /// ones aren't active.
+    /// per-voxel min-union. Used for STL export ("what I see is what
+    /// I print"). `.mudclay` v3 saves layers intact; this is no
+    /// longer on the save path.
     pub fn visible_union_grid(&self) -> Grid {
         let domain = &self.layers[self.active].grid;
         let mut out = Grid::empty(domain.res(), domain.voxel_size(), domain.origin());
@@ -304,6 +302,79 @@ impl LayersState {
             }
         }
         out
+    }
+
+    /// Replace the entire layer stack from a loaded `.mudclay` scene.
+    /// Queues every live chunk entity for despawn, then rebuilds
+    /// layers from `layers` (id / name / visible / grid). Requires the
+    /// incoming domain to match the current one (same restriction as
+    /// [`Self::swap_active_grid`]).
+    pub fn replace_from_scene(
+        &mut self,
+        layers: Vec<(LayerId, String, bool, Grid)>,
+        active: usize,
+    ) -> Result<(), GridSwapError> {
+        if layers.is_empty() {
+            return Err(GridSwapError::EmptyScene);
+        }
+        if active >= layers.len() {
+            return Err(GridSwapError::EmptyScene);
+        }
+        let material = self.layers[self.active].material.clone();
+        let current = &self.layers[self.active].grid;
+        let res = layers[0].3.res();
+        let voxel_size = layers[0].3.voxel_size();
+        let origin = layers[0].3.origin();
+        if res != current.res() {
+            return Err(GridSwapError::ResolutionMismatch {
+                current: current.res(),
+                incoming: res,
+            });
+        }
+        if (voxel_size - current.voxel_size()).abs() > 1e-4 {
+            return Err(GridSwapError::VoxelSizeMismatch {
+                current: current.voxel_size(),
+                incoming: voxel_size,
+            });
+        }
+        for (_, _, _, grid) in &layers {
+            if grid.res() != res
+                || (grid.voxel_size() - voxel_size).abs() > 1e-4
+                || grid.origin() != origin
+            {
+                return Err(GridSwapError::ResolutionMismatch {
+                    current: res,
+                    incoming: grid.res(),
+                });
+            }
+        }
+
+        for mut layer in self.layers.drain(..) {
+            for (_, entity) in layer.chunks.drain() {
+                self.pending_despawn.push(entity);
+            }
+        }
+
+        let mut next_id = 1u32;
+        for (id, name, visible, grid) in layers {
+            let mut layer = Layer {
+                id,
+                name,
+                visible,
+                grid,
+                chunks: HashMap::new(),
+                dirty: HashSet::new(),
+                material: material.clone(),
+            };
+            for coord in layer.grid.allocated_chunk_coords() {
+                layer.dirty.insert((coord.x, coord.y, coord.z));
+            }
+            next_id = next_id.max(id.saturating_add(1));
+            self.layers.push(layer);
+        }
+        self.active = active;
+        self.next_id = next_id;
+        Ok(())
     }
 
     /// Mutable access to a specific layer by its stable id,
@@ -572,6 +643,8 @@ impl LayersState {
 pub enum GridSwapError {
     ResolutionMismatch { current: UVec3, incoming: UVec3 },
     VoxelSizeMismatch { current: f32, incoming: f32 },
+    /// Load / replace refused an empty layer list (or a bad active index).
+    EmptyScene,
 }
 
 impl std::fmt::Display for GridSwapError {
@@ -586,6 +659,9 @@ impl std::fmt::Display for GridSwapError {
                 f,
                 "voxel size mismatch: current {current} mm, incoming {incoming} mm",
             ),
+            GridSwapError::EmptyScene => {
+                write!(f, "invalid project scene (no layers or bad active index)")
+            }
         }
     }
 }
@@ -937,5 +1013,34 @@ mod tests {
         assert!(!state.rename_layer(0, "   "), "whitespace-only names rejected");
         assert!(state.set_visible(0, false));
         assert!(!state.layers()[0].visible);
+    }
+
+    #[test]
+    fn replace_from_scene_restores_multi_layer_stack() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 48.0, 48.0)), Handle::default(), "L2");
+        state.set_visible(0, false);
+
+        let layers: Vec<_> = state
+            .layers()
+            .iter()
+            .map(|l| (l.id, l.name.clone(), l.visible, l.grid.clone()))
+            .collect();
+        let active = state.active_index();
+
+        // Blow away and reload.
+        let mut fresh = LayersState::new_for_test(Grid::empty(
+            UVec3::new(64, 64, 64),
+            1.0,
+            GVec3::ZERO,
+        ));
+        fresh
+            .replace_from_scene(layers, active)
+            .expect("same domain");
+        assert_eq!(fresh.layer_count(), 2);
+        assert_eq!(fresh.active_index(), 1);
+        assert!(!fresh.layers()[0].visible);
+        assert_eq!(fresh.layers()[1].name, "L2");
+        assert!(fresh.grid().sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
     }
 }
