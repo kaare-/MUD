@@ -119,14 +119,12 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    Bottom / Front / Back / Left / Right` snap the orbit camera
    to a face-on preset; distance and target are preserved.
 
-9. `[ ]` **Plastic gravity (gradual setting).** *(spike required)*
-   - Slider 0 → 1 = elastic → yielding clay.
-   - Approximation: iterative descent of the SDF surface under a
-     stress proxy (e.g. curvature × vertical load), with a plastic
-     yield threshold. Not FEM.
-   - Almost certainly its own design document before writing code.
-   - **Parked behind Tracks A/B** — do not start until sparse +
-     layers foundations are landed or explicitly re-prioritised.
+9. `[~]` **Plastic gravity (gradual setting).** Spike shipped —
+   see `PLASTIC_GRAVITY.md`. `Sculpt → Settle (plastic)…`
+   (`Ctrl+Shift+G`): column-squash under a footprint-aware height
+   limit, plasticity slider 0→1, one undo stroke. Not FEM; not
+   continuous sim. Follow-ups: curvature×load proxy, multi-layer,
+   volume-perfect redistribution.
 
 ---
 

@@ -17,6 +17,7 @@ pub mod gravity;
 pub mod grid;
 pub mod mesh;
 pub mod paddle;
+pub mod plastic;
 pub mod primitives;
 pub mod profile;
 pub mod project;
@@ -28,6 +29,9 @@ pub use brush::{
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
 pub use gravity::{
     rest_components_on_bench, touched_region_for_translate, translate_component, RestSummary,
+};
+pub use plastic::{
+    settle_components_plastic, PlasticSettleParams, PlasticSettleSummary, DEFAULT_ITERATIONS,
 };
 pub use cutter::{
     apply_cookie_cutter, apply_cookie_cutter_with_callback, apply_wire_cutter,

@@ -28,6 +28,7 @@ use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
+use crate::gravity::SettleDialogState;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
@@ -143,6 +144,10 @@ fn draw_ui(
                 ui.separator();
                 if menu_item(ui, "Rest pieces on bench", "Ctrl+G") {
                     actions.send(AppAction::RestPiecesOnBench);
+                    ui.close_menu();
+                }
+                if menu_item(ui, "Settle (plastic)\u{2026}", "Ctrl+Shift+G") {
+                    actions.send(AppAction::ShowSettleDialog);
                     ui.close_menu();
                 }
             });
@@ -480,6 +485,7 @@ fn draw_dialogs(
     mut contexts: EguiContexts,
     mut state: ResMut<FileDialogState>,
     mut prim_state: ResMut<PrimitiveDialogState>,
+    mut settle_state: ResMut<SettleDialogState>,
     mut actions: EventWriter<AppAction>,
 ) {
     let ctx = contexts.ctx_mut();
@@ -589,6 +595,43 @@ fn draw_dialogs(
                 actions.send(AppAction::InsertPrimitive(shape, size));
             }
             prim_state.open = None;
+        }
+    }
+
+    // Plastic settle dialog — plasticity slider, then one-shot burst.
+    if settle_state.open {
+        let mut commit: Option<Option<f32>> = None;
+        egui::Window::new("Settle (plastic)")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Plasticity (elastic → soft clay):");
+                ui.add(
+                    egui::Slider::new(&mut settle_state.plasticity, 0.0..=1.0)
+                        .text("plasticity"),
+                );
+                ui.small(
+                    "Tall thin forms slump and flare at the base.\n\
+                     Fat resting blobs barely move. One undo stroke.",
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("Settle").clicked() {
+                        commit = Some(Some(settle_state.plasticity));
+                    }
+                    if ui.button("Cancel").clicked() {
+                        commit = Some(None);
+                    }
+                });
+            });
+        match commit {
+            Some(Some(p)) => {
+                actions.send(AppAction::SettlePlastic(p));
+            }
+            Some(None) => {
+                settle_state.open = false;
+            }
+            None => {}
         }
     }
 
@@ -760,10 +803,11 @@ fn publish_ui_capture(
     mut contexts: EguiContexts,
     dialogs: Res<FileDialogState>,
     prim: Res<PrimitiveDialogState>,
+    settle: Res<SettleDialogState>,
     mut gate: ResMut<UiCapturesInput>,
 ) {
     let ctx = contexts.ctx_mut();
-    let modal = dialogs.any_open() || prim.open.is_some();
+    let modal = dialogs.any_open() || prim.open.is_some() || settle.open;
     gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
         modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());
