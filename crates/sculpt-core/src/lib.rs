@@ -39,5 +39,8 @@ pub use mesh::{extract_chunk, ExtractedMesh};
 pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
 pub use primitives::{apply_primitive, apply_primitive_with_callback, Primitive, PrimitiveKind};
 pub use profile::{extrude_profile, Profile};
-pub use project::{project_size, read_project, write_project, ReadError, MAGIC, VERSION};
+pub use project::{
+    project_scene_size, project_size, read_project, read_project_scene, write_project,
+    write_project_scene, ProjectLayer, ProjectScene, ReadError, MAGIC, VERSION,
+};
 pub use smooth::{apply_smooth_brush, apply_smooth_brush_with_callback, SmoothBrush};

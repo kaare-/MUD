@@ -164,18 +164,19 @@ Suggested PR stack (see doc for acceptance checks):
    while verifying — `ray_march`'s iteration cap was a fixed
    constant sized for the old domain, silently truncating reach
    below the `max_dist` callers already ask for.
-6. `[ ]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK).
+6. `[x]` **P5** — `.mudclay` v2 sparse tiles (v1 read OK). Shipped
+   together with P9: writer emits v3; reader accepts v1/v2/v3.
 7. `[x]` **P6** — `LayersState { layers, active }` replaces the bare
    `SculptWorkpiece` grid, single layer, behaviour unchanged.
 8. `[x]` **P7** — Insert Primitive → new layer; cross-layer pick
    (`ray_march_visible`) activates whatever the user clicks on;
-   save/STL flatten every visible layer (`Grid::union_from`) so
-   switching to layers can't silently drop a piece before the real
-   v3 format lands.
+   STL still flattens visible layers (`Grid::union_from`).
 9. `[x]` **P8** — Layers panel (name / visibility / delete) + Merge
    Down. Status strip shows `Layer N/M · name`. Delete and Merge
    Down are undoable; File → New resets to one empty layer.
-10. `[ ]` **P9** — `.mudclay` v3 multi-layer sections.
+10. `[x]` **P9** — `.mudclay` v3 multi-layer sections. Save keeps
+    layer boundaries; load restores the stack. STL export remains
+    visible-union.
 
 ---
 

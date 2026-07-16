@@ -1,23 +1,13 @@
 //! Save (`Ctrl+S`) and load (`Ctrl+O`) native `.mudclay` projects.
 //!
-//! **Save** is the mirror of STL export: extract the current grid
-//! state, write a `.mudclay` blob to the current working directory
-//! with a timestamped name (`mud-sculpt-YYYYMMDD-HHMMSS.mudclay`),
-//! log the path and byte count.
+//! **Save** writes the full layer stack as `.mudclay` v3 (sparse
+//! tiles per layer — Track B4). STL export still flattens visible
+//! layers; the project file keeps boundaries, names, and visibility.
 //!
-//! **Load** is deliberately as-dumb-as-possible for the MVP: no
-//! file picker, no "recent files" menu — instead, `Ctrl+O` scans the
-//! CWD for `mud-sculpt-*.mudclay`, picks the alphabetically-last
-//! one (which is also the newest, because the timestamps are
-//! zero-padded YYYYMMDD-HHMMSS), and loads it. That's enough for the
-//! reload-and-continue workflow that motivates the feature; a proper
-//! Save-As / Open dialog can wait until we have `rfd` or a native
-//! file picker plugin plumbed through.
-//!
-//! On load the current grid is swapped, every chunk is marked dirty
-//! for re-meshing, and the undo history is cleared (the pre/post
-//! voxel values it held reference the old grid and would be
-//! actively harmful if replayed against the new one).
+//! **Load** accepts v1 (dense) / v2 (sparse single grid) / v3
+//! (multi-layer). Older files become a one-layer scene. On success
+//! the live stack is replaced, chunk entities are despawned, and
+//! the undo history is cleared.
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -25,7 +15,9 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use bevy::prelude::*;
-use sculpt_core::{project_size, read_project, write_project};
+use sculpt_core::{
+    project_scene_size, read_project_scene, write_project_scene, ProjectLayer, ProjectScene,
+};
 
 use crate::actions::AppAction;
 use crate::export::timestamped_filename;
@@ -228,18 +220,10 @@ pub fn clear_worktable(
     info!("worktable cleared — undo history cleared");
 }
 
-/// Write the workpiece to `path`. Wraps every failure in a
-/// user-facing log message rather than propagating — we're being
-/// called from a fire-and-forget event handler and there's nowhere
-/// useful for the Result to go.
-///
-/// `.mudclay` v1 has no way to represent more than one layer (Track
-/// B4 — the v3 format — will fix that). Until then, save flattens
-/// every *visible* layer into one grid via min-union so switching to
-/// layers can never silently drop a whole piece on save; loading the
-/// file back always gets one merged layer, which is a real (if
-/// temporary) loss of the layer boundary, but never a loss of the
-/// material itself.
+/// Write the workpiece to `path` as `.mudclay` v3 (all layers).
+/// Wraps every failure in a user-facing log message rather than
+/// propagating — we're being called from a fire-and-forget event
+/// handler and there's nowhere useful for the Result to go.
 pub fn save_to_path(workpiece: &LayersState, path: &Path) {
     info!("saving project to {}", path.display());
     let file = match File::create(path) {
@@ -250,16 +234,21 @@ pub fn save_to_path(workpiece: &LayersState, path: &Path) {
         }
     };
     let mut writer = BufWriter::new(file);
-    let flattened = workpiece.visible_union_grid();
-    if let Err(e) = write_project(&flattened, &mut writer) {
+    let scene = scene_from_workpiece(workpiece);
+    if let Err(e) = write_project_scene(&scene, &mut writer) {
         error!("failed to write project: {e}");
         return;
     }
-    let bytes = project_size(&flattened);
-    info!("wrote {} bytes to {}", bytes, path.display());
+    let bytes = project_scene_size(&scene);
+    info!(
+        "wrote {} bytes ({} layer(s)) to {}",
+        bytes,
+        scene.layers.len(),
+        path.display()
+    );
 }
 
-/// Read a `.mudclay` file at `path` and swap it into the workpiece.
+/// Read a `.mudclay` file at `path` and replace the live layer stack.
 /// Clears the undo history and any in-flight stroke on success —
 /// journaled voxel values from before the swap reference a different
 /// grid.
@@ -278,27 +267,51 @@ pub fn load_from_path(
         }
     };
     let mut reader = BufReader::new(file);
-    let new_grid = match read_project(&mut reader) {
-        Ok(g) => g,
+    let scene = match read_project_scene(&mut reader) {
+        Ok(s) => s,
         Err(e) => {
             error!("failed to read {}: {e}", path.display());
             return;
         }
     };
-    match workpiece.swap_active_grid(new_grid) {
+    let layers: Vec<_> = scene
+        .layers
+        .into_iter()
+        .map(|ProjectLayer { id, name, visible, grid }| (id, name, visible, grid))
+        .collect();
+    let layer_count = layers.len();
+    let active = scene.active;
+    match workpiece.replace_from_scene(layers, active) {
         Ok(()) => {
             history.clear();
             stroke.discard_live();
             info!(
-                "loaded {} — undo history cleared",
+                "loaded {} ({} layer(s)) — undo history cleared",
                 path.file_name()
                     .map(|s| s.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string()),
+                layer_count,
             );
         }
         Err(e) => {
-            error!("can't apply loaded grid: {e}");
+            error!("can't apply loaded project: {e}");
         }
+    }
+}
+
+fn scene_from_workpiece(workpiece: &LayersState) -> ProjectScene {
+    ProjectScene {
+        layers: workpiece
+            .layers()
+            .iter()
+            .map(|layer| ProjectLayer {
+                id: layer.id,
+                name: layer.name.clone(),
+                visible: layer.visible,
+                grid: layer.grid.clone(),
+            })
+            .collect(),
+        active: workpiece.active_index(),
     }
 }
 
