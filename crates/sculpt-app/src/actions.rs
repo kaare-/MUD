@@ -78,6 +78,16 @@ pub enum AppAction {
     /// Rigidly translate the selected component by `(dx, dy, dz)`
     /// millimetres. No-op when nothing is selected.
     MoveSelection(Vec3),
+    /// Make layer `index` active (tools read/write that layer).
+    SetActiveLayer(usize),
+    /// Show / hide layer `index` (remesh, pick, and export skip hidden).
+    SetLayerVisible(usize, bool),
+    /// Delete layer `index` (refuses the last remaining layer).
+    DeleteLayer(usize),
+    /// Merge the active layer into the one below it (Photoshop
+    /// Merge Down). No-op when the active layer is already at the
+    /// bottom of the stack.
+    MergeDown,
     /// Cleanly shut down the app (equivalent to `AppExit::Success`).
     Quit,
 }

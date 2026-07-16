@@ -35,6 +35,10 @@ use glam::{UVec3, Vec3 as GVec3};
 
 use sculpt_core::{extract_chunk, ChunkCoord, Grid};
 
+use crate::actions::AppAction;
+use crate::selection::Selection;
+use crate::undo::{DeleteLayerEntry, SculptStroke, UndoHistory};
+
 /// Effective grid resolution per axis. **352³ at 1.5 mm/voxel gives a
 /// 528 mm domain** (Track A4, `SPARSE_THEN_LAYERS.md`) — bigger than
 /// the 400 mm `View → Workbench grid` overlay, and comfortably past
@@ -92,8 +96,6 @@ pub type LayerId = u32;
 /// same [`WorkpieceRoot`] parent — see the module doc.
 pub struct Layer {
     pub id: LayerId,
-    // Read by the Layers panel (Track B3, not yet built).
-    #[allow(dead_code)]
     pub name: String,
     pub visible: bool,
     pub grid: Grid,
@@ -109,6 +111,30 @@ pub struct Layer {
     /// pass tangled into chunk lookup. Shared across layers for now
     /// (no per-layer colour yet — not asked for).
     material: Handle<StandardMaterial>,
+}
+
+/// Detached copy of a layer's durable state (id / name / visibility /
+/// material / SDF). Used by undo for Delete Layer and Merge Down so
+/// the layer can be restored without keeping live chunk entities.
+#[derive(Clone)]
+pub struct LayerSnapshot {
+    pub id: LayerId,
+    pub name: String,
+    pub visible: bool,
+    pub material: Handle<StandardMaterial>,
+    pub grid: Grid,
+}
+
+impl LayerSnapshot {
+    fn from_layer(layer: &Layer) -> Self {
+        Self {
+            id: layer.id,
+            name: layer.name.clone(),
+            visible: layer.visible,
+            material: layer.material.clone(),
+            grid: layer.grid.clone(),
+        }
+    }
 }
 
 impl Layer {
@@ -153,6 +179,11 @@ pub struct LayersState {
     layers: Vec<Layer>,
     active: usize,
     next_id: LayerId,
+    /// Chunk entities belonging to layers that were just removed
+    /// (delete / merge). Drained and despawned at the start of
+    /// [`remesh_dirty_chunks`] so structural edits don't need their
+    /// own `Commands` borrow tangled into every caller.
+    pending_despawn: Vec<Entity>,
 }
 
 impl LayersState {
@@ -179,16 +210,16 @@ impl LayersState {
         self.layers[self.active].dirty.insert(key);
     }
 
-    // Used by the Layers panel (Track B3, not yet built) for
-    // visibility toggles / rename / delete on the active layer.
-    #[allow(dead_code)]
     pub fn active_layer(&self) -> &Layer {
         &self.layers[self.active]
     }
 
-    #[allow(dead_code)]
-    pub fn active_layer_mut(&mut self) -> &mut Layer {
-        &mut self.layers[self.active]
+    pub fn layers(&self) -> &[Layer] {
+        &self.layers
+    }
+
+    pub fn layer_mut(&mut self, idx: usize) -> Option<&mut Layer> {
+        self.layers.get_mut(idx)
     }
 
     pub fn active_id(&self) -> LayerId {
@@ -283,6 +314,187 @@ impl LayersState {
         self.layers.iter_mut().find(|l| l.id == id)
     }
 
+    /// Flip a layer's visibility. Hidden layers skip remesh / pick /
+    /// export flatten. Returns `false` if `idx` is out of range.
+    pub fn set_visible(&mut self, idx: usize, visible: bool) -> bool {
+        let Some(layer) = self.layers.get_mut(idx) else {
+            return false;
+        };
+        layer.visible = visible;
+        true
+    }
+
+    /// Rename a layer. Empty / whitespace-only names are rejected so
+    /// the panel never shows a blank row. Returns `false` if `idx`
+    /// is out of range or the name is empty after trim.
+    pub fn rename_layer(&mut self, idx: usize, name: impl Into<String>) -> bool {
+        let name = name.into();
+        let trimmed = name.trim();
+        if trimmed.is_empty() {
+            return false;
+        }
+        let Some(layer) = self.layers.get_mut(idx) else {
+            return false;
+        };
+        layer.name = trimmed.to_string();
+        true
+    }
+
+    /// Remove a layer by index. Refuses to delete the last remaining
+    /// layer (clear the worktable instead). Returns a snapshot for
+    /// undo, plus the active index from before the delete. Live chunk
+    /// entities are queued on [`Self::pending_despawn`].
+    pub fn delete_layer(&mut self, idx: usize) -> Option<(LayerSnapshot, usize)> {
+        if self.layers.len() <= 1 || idx >= self.layers.len() {
+            return None;
+        }
+        let previous_active = self.active;
+        let snapshot = LayerSnapshot::from_layer(&self.layers[idx]);
+        self.remove_layer_at(idx);
+        Some((snapshot, previous_active))
+    }
+
+    /// Drop a layer without snapshotting (redo of Delete / Merge).
+    /// Same last-layer guard as [`Self::delete_layer`].
+    pub fn drop_layer_at(&mut self, idx: usize) -> bool {
+        if self.layers.len() <= 1 || idx >= self.layers.len() {
+            return false;
+        }
+        self.remove_layer_at(idx);
+        true
+    }
+
+    /// Photoshop-style Merge Down: union the active layer into the
+    /// layer immediately below it (`active - 1`), then drop the
+    /// source. Returns `None` when the active layer is already the
+    /// bottom of the stack. The returned [`MergeDownRecord`] journals
+    /// both the dest voxel delta and a full source snapshot so undo
+    /// can restore the pre-merge scene.
+    pub fn merge_down_active(&mut self) -> Option<MergeDownRecord> {
+        let src_index = self.active;
+        if src_index == 0 || src_index >= self.layers.len() {
+            return None;
+        }
+        let dst_index = src_index - 1;
+        let src_snapshot = LayerSnapshot::from_layer(&self.layers[src_index]);
+        let dst_id = self.layers[dst_index].id;
+        let src_grid = self.layers[src_index].grid.clone();
+
+        // Capture only voxels where the source actually wins the min
+        // — that's the sparse delta undo needs to reverse.
+        let mut voxels = Vec::new();
+        let mut pre = Vec::new();
+        let mut dirty_chunks = HashSet::new();
+        for coord in src_grid.allocated_chunk_coords() {
+            dirty_chunks.insert((coord.x, coord.y, coord.z));
+            let base = coord.voxel_min();
+            let max = coord.voxel_max(src_grid.res());
+            for iz in base.z..max.z {
+                for iy in base.y..max.y {
+                    for ix in base.x..max.x {
+                        let s = src_grid.get(ix, iy, iz);
+                        let d = self.layers[dst_index].grid.get(ix, iy, iz);
+                        if s < d {
+                            voxels.push((ix, iy, iz));
+                            pre.push(d);
+                        }
+                    }
+                }
+            }
+        }
+
+        self.layers[dst_index].grid.union_from(&src_grid);
+        let post: Vec<f32> = voxels
+            .iter()
+            .map(|&(x, y, z)| self.layers[dst_index].grid.get(x, y, z))
+            .collect();
+        for key in &dirty_chunks {
+            self.layers[dst_index].dirty.insert(*key);
+        }
+
+        // Drop the source (entities → pending_despawn) and activate
+        // the destination — the merged result is what the user now
+        // wants to sculpt.
+        self.remove_layer_at(src_index);
+        self.active = dst_index;
+
+        Some(MergeDownRecord {
+            src_index,
+            dst_index,
+            src: src_snapshot,
+            dst_id,
+            voxels,
+            pre,
+            post,
+            dirty_chunks: dirty_chunks.into_iter().collect(),
+        })
+    }
+
+    /// Re-insert a previously-removed layer at `idx` (used by undo of
+    /// Delete / Merge Down). Chunk entities start empty; allocated
+    /// tiles are marked dirty so remesh respawns them.
+    pub fn restore_layer_at(&mut self, idx: usize, snap: LayerSnapshot) {
+        let idx = idx.min(self.layers.len());
+        let mut layer = Layer {
+            id: snap.id,
+            name: snap.name,
+            visible: snap.visible,
+            grid: snap.grid,
+            chunks: HashMap::new(),
+            dirty: HashSet::new(),
+            material: snap.material,
+        };
+        for coord in layer.grid.allocated_chunk_coords() {
+            layer.dirty.insert((coord.x, coord.y, coord.z));
+        }
+        self.next_id = self.next_id.max(snap.id.saturating_add(1));
+        self.layers.insert(idx, layer);
+        if self.active >= idx {
+            // Indices at/after the insert shift up; keep pointing at
+            // the same logical layer unless the caller overrides.
+            self.active += 1;
+        }
+    }
+
+    /// Reset to a single empty layer (File → New). Despawns every
+    /// other layer's chunks and clears the survivor's SDF.
+    pub fn reset_to_empty_single_layer(&mut self) {
+        while self.layers.len() > 1 {
+            self.remove_layer_at(self.layers.len() - 1);
+        }
+        self.active = 0;
+        let empty = Grid::empty(
+            self.layers[0].grid.res(),
+            self.layers[0].grid.voxel_size(),
+            self.layers[0].grid.origin(),
+        );
+        let _ = self.swap_active_grid(empty);
+        self.layers[0].name = "Layer 1".into();
+        self.layers[0].visible = true;
+    }
+
+    /// Remove layer `idx`, queue its chunk entities for despawn, and
+    /// clamp `active` onto a surviving neighbour.
+    fn remove_layer_at(&mut self, idx: usize) {
+        let mut layer = self.layers.remove(idx);
+        for (_, entity) in layer.chunks.drain() {
+            self.pending_despawn.push(entity);
+        }
+        if self.layers.is_empty() {
+            // Should be unreachable — callers refuse to delete the
+            // last layer — but keep `active` sane if it ever happens.
+            self.active = 0;
+            return;
+        }
+        if self.active > idx {
+            self.active -= 1;
+        } else if self.active == idx {
+            self.active = idx.saturating_sub(1).min(self.layers.len() - 1);
+        } else if self.active >= self.layers.len() {
+            self.active = self.layers.len() - 1;
+        }
+    }
+
     /// Replace the *active* layer's SDF grid, e.g. after loading a
     /// project file or clearing the worktable. Fails if the new
     /// grid's dimensions don't match the existing chunk layout, since
@@ -325,6 +537,20 @@ impl LayersState {
     }
 }
 
+/// Journal payload for Merge Down — built by
+/// [`LayersState::merge_down_active`] so the voxel walk stays next
+/// to `union_from`, then stored in [`crate::undo`].
+pub struct MergeDownRecord {
+    pub src_index: usize,
+    pub dst_index: usize,
+    pub src: LayerSnapshot,
+    pub dst_id: LayerId,
+    pub voxels: Vec<(u32, u32, u32)>,
+    pub pre: Vec<f32>,
+    pub post: Vec<f32>,
+    pub dirty_chunks: Vec<(u32, u32, u32)>,
+}
+
 #[cfg(test)]
 impl LayersState {
     /// Construct a single-layer state directly from a `Grid`, for
@@ -337,6 +563,7 @@ impl LayersState {
             layers: vec![Layer::new(0, "Layer 1", grid, Handle::default())],
             active: 0,
             next_id: 1,
+            pending_despawn: Vec::new(),
         }
     }
 }
@@ -365,7 +592,68 @@ impl std::fmt::Display for GridSwapError {
 
 pub fn plugin(app: &mut App) {
     app.add_systems(Startup, spawn_workpiece);
-    app.add_systems(Update, remesh_dirty_chunks);
+    app.add_systems(Update, (handle_layer_actions, remesh_dirty_chunks).chain());
+}
+
+/// Layers panel actions (Track B3): activate, visibility, rename,
+/// delete, Merge Down. Structural edits discard any in-flight stroke
+/// and push a journal entry so Ctrl+Z restores the pre-op scene.
+fn handle_layer_actions(
+    mut events: EventReader<AppAction>,
+    mut workpiece: ResMut<LayersState>,
+    mut history: ResMut<UndoHistory>,
+    mut stroke: ResMut<SculptStroke>,
+    mut selection: ResMut<Selection>,
+) {
+    for action in events.read() {
+        match action {
+            AppAction::SetActiveLayer(idx) => {
+                let before = workpiece.active_index();
+                workpiece.set_active_index(*idx);
+                if workpiece.active_index() != before {
+                    selection.picked_voxel = None;
+                    selection.invalidate_labels();
+                    stroke.discard_live();
+                }
+            }
+            AppAction::SetLayerVisible(idx, visible) => {
+                if workpiece.set_visible(*idx, *visible) {
+                    selection.invalidate_labels();
+                }
+            }
+            AppAction::DeleteLayer(idx) => {
+                if let Some((snapshot, previous_active)) = workpiece.delete_layer(*idx) {
+                    stroke.discard_live();
+                    history.push_delete_layer(DeleteLayerEntry {
+                        index: *idx,
+                        previous_active,
+                        layer: snapshot,
+                    });
+                    selection.picked_voxel = None;
+                    selection.invalidate_labels();
+                    info!(
+                        "deleted layer {} ({} remaining)",
+                        idx,
+                        workpiece.layer_count()
+                    );
+                }
+            }
+            AppAction::MergeDown => {
+                if let Some(record) = workpiece.merge_down_active() {
+                    stroke.discard_live();
+                    history.push_merge_down(record);
+                    selection.picked_voxel = None;
+                    selection.invalidate_labels();
+                    info!(
+                        "merged down → {} layer(s), active '{}'",
+                        workpiece.layer_count(),
+                        workpiece.active_layer().name
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 fn spawn_workpiece(
@@ -403,6 +691,7 @@ fn spawn_workpiece(
         layers: vec![layer],
         active: 0,
         next_id: 1,
+        pending_despawn: Vec::new(),
     });
 }
 
@@ -437,6 +726,12 @@ fn remesh_dirty_chunks(
     q_meshes: Query<&Mesh3d>,
     q_root: Query<Entity, With<WorkpieceRoot>>,
 ) {
+    // Structural edits (delete / merge) queue orphaned chunk entities
+    // here so they don't leak under WorkpieceRoot.
+    for entity in state.pending_despawn.drain(..) {
+        commands.entity(entity).despawn();
+    }
+
     for layer in state.layers.iter_mut() {
         if !layer.visible {
             // Hidden: drop every rendered chunk (cheap — they'll
@@ -574,5 +869,73 @@ mod tests {
         let hit = state.ray_march_visible(GVec3::new(-10.0, 32.0, 32.0), GVec3::X, 200.0);
         let (idx, _) = hit.expect("ray should hit the far (visible) sphere");
         assert_eq!(idx, 1, "hidden layer must be skipped even though it's physically closer");
+    }
+
+    #[test]
+    fn merge_down_unions_into_below_and_drops_source() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 48.0, 48.0)), Handle::default(), "Layer 2");
+        assert_eq!(state.active_index(), 1);
+
+        let record = state
+            .merge_down_active()
+            .expect("active layer 1 should merge into layer 0");
+        assert_eq!(record.src_index, 1);
+        assert_eq!(record.dst_index, 0);
+        assert_eq!(state.layer_count(), 1);
+        assert_eq!(state.active_index(), 0);
+        // Both spheres now live on the surviving layer.
+        assert!(state.grid().sample(GVec3::new(16.0, 16.0, 16.0)) < 0.0);
+        assert!(state.grid().sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
+    }
+
+    #[test]
+    fn merge_down_on_bottom_layer_is_noop() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        assert!(state.merge_down_active().is_none());
+        assert_eq!(state.layer_count(), 1);
+    }
+
+    #[test]
+    fn delete_layer_refuses_last_and_restores_via_snapshot() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        assert!(state.delete_layer(0).is_none(), "cannot delete the last layer");
+
+        state.push_new_layer(sphere(GVec3::new(48.0, 48.0, 48.0)), Handle::default(), "Layer 2");
+        let (snap, prev_active) = state.delete_layer(1).expect("second layer is deletable");
+        assert_eq!(prev_active, 1);
+        assert_eq!(state.layer_count(), 1);
+        assert_eq!(snap.name, "Layer 2");
+        assert!(snap.grid.sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
+
+        state.restore_layer_at(1, snap);
+        state.set_active_index(prev_active);
+        assert_eq!(state.layer_count(), 2);
+        assert_eq!(state.active_index(), 1);
+        assert!(state.grid().sample(GVec3::new(48.0, 48.0, 48.0)) < 0.0);
+    }
+
+    #[test]
+    fn reset_to_empty_single_layer_drops_extras() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        state.push_new_layer(sphere(GVec3::new(48.0, 48.0, 48.0)), Handle::default(), "Layer 2");
+        state.reset_to_empty_single_layer();
+        assert_eq!(state.layer_count(), 1);
+        assert_eq!(state.active_index(), 0);
+        assert_eq!(state.active_layer().name, "Layer 1");
+        assert!(
+            state.grid().allocated_tile_count() == 0,
+            "cleared worktable must be empty"
+        );
+    }
+
+    #[test]
+    fn rename_and_visibility_helpers() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        assert!(state.rename_layer(0, "Base"));
+        assert_eq!(state.active_layer().name, "Base");
+        assert!(!state.rename_layer(0, "   "), "whitespace-only names rejected");
+        assert!(state.set_visible(0, false));
+        assert!(!state.layers()[0].visible);
     }
 }

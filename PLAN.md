@@ -172,8 +172,9 @@ Suggested PR stack (see doc for acceptance checks):
    save/STL flatten every visible layer (`Grid::union_from`) so
    switching to layers can't silently drop a piece before the real
    v3 format lands.
-9. `[ ]` **P8** — Layers panel (name / visibility / delete) + Merge
-   Down.
+9. `[x]` **P8** — Layers panel (name / visibility / delete) + Merge
+   Down. Status strip shows `Layer N/M · name`. Delete and Merge
+   Down are undoable; File → New resets to one empty layer.
 10. `[ ]` **P9** — `.mudclay` v3 multi-layer sections.
 
 ---

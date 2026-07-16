@@ -271,7 +271,7 @@ Prefer stacking on the current Stage-3 tip
 | **P5** | A5 | `.mudclay` v2 sparse write + v1 read | IO |
 | **P6** | B1 | `LayersState`, single layer, undo tags | refactor |
 | **P7** | B2 | Insert→new layer, pick across layers, visibility | behaviour |
-| **P8** | B3 | Layers panel + Merge | UI |
+| **P8** | B3 | Layers panel + Merge | UI — shipped |
 | **P9** | B4 | `.mudclay` v3 + STL visible-union | IO |
 
 Do **not** combine A4 domain-grow with B-layers in one PR — each has
@@ -585,9 +585,25 @@ created but doesn't remove it from the layer list; deleting an
 emptied layer is B3 work, alongside the panel that will make an
 orphaned empty layer visible in the first place.
 
+## Track B3 — shipped
+
+**Layers panel** (right-side egui): per-layer visibility toggle,
+inline rename, active marker, delete (disabled on the last layer),
+and Photoshop-style **Merge Down** (union active into the layer
+below via `Grid::union_from`, then drop the source). Status strip
+shows `Layer N/M · name`.
+
+**Undo**: Delete Layer and Merge Down are first-class
+`HistoryEntry` variants (full layer snapshot + sparse dest voxel
+delta for merge), so Ctrl+Z restores the pre-op stack. Orphaned
+chunk entities from structural edits go through
+`LayersState::pending_despawn` and are despawned at the start of
+remesh.
+
+**File → New** resets to a single empty layer (not merely clearing
+the active one), matching "blank worktable".
+
 ## Next step
 
-**Track B3**: Layers panel (name / visibility toggle / delete on
-each layer, active-layer indicator) and Merge Down (`Grid::union_from`
-is already the primitive it needs). **Track B4**: `.mudclay` v3 with
-real multi-layer sections, so save/load stop flattening.
+**Track B4**: `.mudclay` v3 with real multi-layer sections, so
+save/load stop flattening.
