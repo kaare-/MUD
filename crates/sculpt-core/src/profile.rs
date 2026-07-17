@@ -28,6 +28,13 @@ pub enum Profile {
     /// inner corners at `outer · inner_ratio`. `inner_ratio = 0.4`
     /// gives a recognisably star-shaped silhouette.
     Star5 { outer: f32, inner_ratio: f32 },
+    /// Axis-aligned square with rounded corners. `corner_r` is
+    /// clamped to `half_side` (a full fillet becomes a circle of
+    /// that radius).
+    RoundedSquare { half_side: f32, corner_r: f32 },
+    /// Circle with a sinusoidal radial ripple. `amp` is peak
+    /// displacement in mm; `freq` is integer-ish waves around τ.
+    WavyCircle { radius: f32, amp: f32, freq: f32 },
 }
 
 impl Profile {
@@ -38,6 +45,12 @@ impl Profile {
             Profile::Square { half_side } => box_sdf(Vec2::new(x, y), Vec2::splat(half_side)),
             Profile::Hexagon { radius } => hexagon_sdf(Vec2::new(x, y), radius),
             Profile::Star5 { outer, inner_ratio } => star5_sdf(Vec2::new(x, y), outer, inner_ratio),
+            Profile::RoundedSquare { half_side, corner_r } => {
+                rounded_box_sdf(Vec2::new(x, y), Vec2::splat(half_side), corner_r)
+            }
+            Profile::WavyCircle { radius, amp, freq } => {
+                wavy_circle_sdf(Vec2::new(x, y), radius, amp, freq)
+            }
         }
     }
 
@@ -51,6 +64,8 @@ impl Profile {
             // is 2/√3 times the inradius.
             Profile::Hexagon { radius } => radius * 2.0 / 3.0_f32.sqrt(),
             Profile::Star5 { outer, .. } => outer,
+            Profile::RoundedSquare { half_side, .. } => half_side * std::f32::consts::SQRT_2,
+            Profile::WavyCircle { radius, amp, .. } => radius + amp.abs(),
         }
     }
 
@@ -61,6 +76,8 @@ impl Profile {
             Profile::Square { .. } => "square",
             Profile::Hexagon { .. } => "hexagon",
             Profile::Star5 { .. } => "star",
+            Profile::RoundedSquare { .. } => "rounded square",
+            Profile::WavyCircle { .. } => "wavy circle",
         }
     }
 
@@ -113,6 +130,35 @@ impl Profile {
                     })
                     .collect()
             }
+            Profile::RoundedSquare { half_side, corner_r } => {
+                // Approximate outline: four arcs + four flats.
+                let r = corner_r.clamp(0.0, half_side);
+                let flat = half_side - r;
+                let n_arc = (arc_resolution / 4).max(2);
+                let mut out = Vec::new();
+                for (cx, cy, a0) in [
+                    (flat, flat, 0.0f32),
+                    (-flat, flat, std::f32::consts::FRAC_PI_2),
+                    (-flat, -flat, std::f32::consts::PI),
+                    (flat, -flat, -std::f32::consts::FRAC_PI_2),
+                ] {
+                    for i in 0..n_arc {
+                        let t = a0 + (i as f32 / n_arc as f32) * std::f32::consts::FRAC_PI_2;
+                        out.push(Vec2::new(cx + r * t.cos(), cy + r * t.sin()));
+                    }
+                }
+                out
+            }
+            Profile::WavyCircle { radius, amp, freq } => {
+                let n = arc_resolution.max(16);
+                (0..n)
+                    .map(|i| {
+                        let t = (i as f32 / n as f32) * std::f32::consts::TAU;
+                        let rr = radius + amp * (freq * t).sin();
+                        Vec2::new(rr * t.cos(), rr * t.sin())
+                    })
+                    .collect()
+            }
         }
     }
 
@@ -120,8 +166,8 @@ impl Profile {
     /// size. `size` is interpreted per family so a shared "current
     /// cutter size" slider in the UI behaves predictably:
     ///
-    /// - Circle: `radius = size`
-    /// - Square: `half_side = size` (full side is `2*size`)
+    /// - Circle / WavyCircle: `radius = size`
+    /// - Square / RoundedSquare: `half_side = size` (full side is `2*size`)
     /// - Hexagon: `inradius = size` (flats at `y = ±size`)
     /// - Star5: `outer = size`; the inner-ratio is preserved.
     pub fn resized(&self, size: f32) -> Profile {
@@ -133,6 +179,32 @@ impl Profile {
                 outer: size,
                 inner_ratio: *inner_ratio,
             },
+            Profile::RoundedSquare {
+                half_side,
+                corner_r,
+            } => {
+                let scale = if *half_side > 1e-6 {
+                    size / *half_side
+                } else {
+                    1.0
+                };
+                Profile::RoundedSquare {
+                    half_side: size,
+                    corner_r: (*corner_r * scale).clamp(0.0, size),
+                }
+            }
+            Profile::WavyCircle {
+                radius,
+                amp,
+                freq,
+            } => {
+                let scale = if *radius > 1e-6 { size / *radius } else { 1.0 };
+                Profile::WavyCircle {
+                    radius: size,
+                    amp: *amp * scale,
+                    freq: *freq,
+                }
+            }
         }
     }
 }
@@ -142,6 +214,21 @@ impl Profile {
 fn box_sdf(p: Vec2, b: Vec2) -> f32 {
     let d = p.abs() - b;
     d.max(Vec2::ZERO).length() + d.x.max(d.y).min(0.0)
+}
+
+/// Rounded rectangle SDF (IQ). `r` is the corner radius.
+fn rounded_box_sdf(p: Vec2, b: Vec2, r: f32) -> f32 {
+    let r = r.clamp(0.0, b.x.min(b.y));
+    box_sdf(p, (b - Vec2::splat(r)).max(Vec2::ZERO)) - r
+}
+
+/// Circle with a radial sine ripple. Approximate but fine for
+/// cookie-cutter silhouettes.
+fn wavy_circle_sdf(p: Vec2, radius: f32, amp: f32, freq: f32) -> f32 {
+    let rho = p.length();
+    let theta = p.y.atan2(p.x);
+    let r = radius + amp * (freq * theta).sin();
+    rho - r
 }
 
 /// Signed distance to a regular hexagon centred at origin with flat
@@ -312,5 +399,69 @@ mod tests {
         // ~10 mm outside.
         let d3d = extrude_profile(&c, Vec3::ZERO, Vec3::Y, 10.0, Vec3::new(0.0, 20.0, 0.0));
         assert!(d3d > 9.0 && d3d < 11.0, "expected ~10, got {d3d}");
+    }
+
+    #[test]
+    fn rounded_square_corners_are_softer_than_box() {
+        let sharp = Profile::Square { half_side: 1.0 };
+        let soft = Profile::RoundedSquare {
+            half_side: 1.0,
+            corner_r: 0.4,
+        };
+        // Outside the sharp corner: rounded fillet still has material
+        // farther out along the diagonal than a hard box would.
+        assert!(soft.sdf(1.0, 1.0) > sharp.sdf(1.0, 1.0));
+    }
+
+    #[test]
+    fn wavy_circle_modulates_radius() {
+        let smooth = Profile::Circle { radius: 1.0 };
+        let wavy = Profile::WavyCircle {
+            radius: 1.0,
+            amp: 0.2,
+            freq: 6.0,
+        };
+        // At θ=π/12, sin(6·π/12)=sin(π/2)=1 → larger radius → more inside.
+        let lobe = std::f32::consts::PI / 12.0;
+        let lobe_x = lobe.cos();
+        let lobe_y = lobe.sin();
+        assert!(wavy.sdf(lobe_x, lobe_y) < smooth.sdf(lobe_x, lobe_y));
+        // At θ=π/4, sin(6·π/4)=sin(3π/2)=-1 → smaller radius → more outside.
+        let notch_x = (std::f32::consts::FRAC_PI_4).cos();
+        let notch_y = (std::f32::consts::FRAC_PI_4).sin();
+        assert!(wavy.sdf(notch_x, notch_y) > smooth.sdf(notch_x, notch_y));
+    }
+
+    #[test]
+    fn resized_scales_rounded_and_wavy() {
+        let r = Profile::RoundedSquare {
+            half_side: 1.0,
+            corner_r: 0.25,
+        }
+        .resized(2.0);
+        match r {
+            Profile::RoundedSquare {
+                half_side,
+                corner_r,
+            } => {
+                assert!((half_side - 2.0).abs() < 1e-5);
+                assert!((corner_r - 0.5).abs() < 1e-5);
+            }
+            _ => panic!("wrong variant"),
+        }
+        let w = Profile::WavyCircle {
+            radius: 1.0,
+            amp: 0.1,
+            freq: 8.0,
+        }
+        .resized(3.0);
+        match w {
+            Profile::WavyCircle { radius, amp, freq } => {
+                assert!((radius - 3.0).abs() < 1e-5);
+                assert!((amp - 0.3).abs() < 1e-5);
+                assert!((freq - 8.0).abs() < 1e-5);
+            }
+            _ => panic!("wrong variant"),
+        }
     }
 }

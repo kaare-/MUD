@@ -127,8 +127,9 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 
 10. `[x]` **Settings menus + workbench grid default on.**
     `Edit → Tool parameters…` (size / advance / smooth / magic clay /
-    symmetry) and `Edit → Preferences…` (grid, turntable period,
-    default settle softness). Workbench grid starts visible.
+    symmetry; circle wave / square corner radius) and
+    `Edit → Preferences…` (grid, turntable period, default settle
+    softness). Workbench grid starts visible.
 
 11. `[x]` **Layer visibility remesh fix.** Hiding despawns chunk
     meshes; showing again re-dirties allocated chunks so they
@@ -221,8 +222,10 @@ From `DESIGN.md`'s staged roadmap:
   selection to bench` / selection HUD. Rigid −Y drop of the selected
   piece only (`rest_component_on_bench`); keeps the pick. Ctrl+G still
   rests every floating piece.
-- `[ ]` **Advanced-mode tool parameters**: scraper blade profile,
-  loop shape, cookie-cutter corner-radius / wave modulation.
+- `[~]` **Advanced-mode tool parameters**: cookie-cutter corner-radius
+  / wave modulation shipped (`Edit → Tool parameters…` when circle or
+  square cutter is active). Scraper blade profile and loop shape stay
+  open until those tools exist.
 - `[ ]` **Pen tablet support** (Stage 3 target: pressure = depth,
   tilt = orientation for directional tools).
 

@@ -31,7 +31,7 @@ use glam::{Vec2 as GVec2, Vec3 as GVec3};
 
 use sculpt_core::Profile;
 
-use crate::sculpt::{clay_brush_center, SculptTool, ToolKind};
+use crate::sculpt::{clay_brush_center, CutterParams, SculptTool, ToolKind};
 use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// Marker component for the single preview entity.
@@ -43,7 +43,8 @@ pub struct ToolPreview;
 /// alone. Prevents allocating a fresh mesh every frame.
 #[derive(Resource, Default)]
 struct PreviewMeshState {
-    last: Option<(ToolKind, i32)>,
+    /// `(kind, size×10, corner_r×10, wave_amp×100, wave_freq)`.
+    last: Option<(ToolKind, i32, i32, i32, i32)>,
 }
 
 /// Pair of preview materials: the bright hover ghost + the dimmer
@@ -143,10 +144,18 @@ fn update_preview(
         return;
     };
 
-    // (1) Rebuild the mesh if the tool identity or size changed.
-    let signature = (tool.kind, (tool.size * 10.0).round() as i32);
+    // (1) Rebuild the mesh if the tool identity, size, or cutter
+    // shape params changed.
+    let p = tool.cutter_params;
+    let signature = (
+        tool.kind,
+        (tool.size * 10.0).round() as i32,
+        (p.corner_radius * 10.0).round() as i32,
+        (p.wave_amp * 100.0).round() as i32,
+        p.wave_freq.round() as i32,
+    );
     if state.last != Some(signature) {
-        let new_mesh = build_preview_mesh(tool.kind, tool.size);
+        let new_mesh = build_preview_mesh(tool.kind, tool.size, tool.cutter_params);
         meshes.insert(mesh3d.0.id(), new_mesh);
         state.last = Some(signature);
     }
@@ -282,7 +291,7 @@ fn hide(entity: Entity, q_visibility: &mut Query<&mut Visibility>) {
 }
 
 /// Build the preview mesh for the given tool state.
-fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
+fn build_preview_mesh(kind: ToolKind, size: f32, params: CutterParams) -> Mesh {
     match kind {
         // Both clay and smooth are radially-symmetric sphere
         // brushes at their `size` radius — the preview mesh is
@@ -294,7 +303,7 @@ fn build_preview_mesh(kind: ToolKind, size: f32) -> Mesh {
         // don't confuse it with a live brush.
         ToolKind::Select | ToolKind::Move => Sphere::new(2.5).mesh().uv(16, 12),
         ToolKind::Cutter(family) => {
-            let profile = family.profile(size);
+            let profile = family.profile(size, params);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)
         }
         // Wire cutter's cut direction is determined by the drag, so a

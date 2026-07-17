@@ -826,6 +826,42 @@ fn draw_dialogs(
                 if ui.checkbox(&mut sym, "Mirror symmetry (X = 0)").changed() {
                     actions.send(AppAction::ToggleSymmetry);
                 }
+                if matches!(
+                    tool.kind,
+                    ToolKind::Cutter(CutterFamily::Circle) | ToolKind::Cutter(CutterFamily::Square)
+                ) {
+                    ui.add_space(6.0);
+                    ui.heading("Cutter shape");
+                    match tool.kind {
+                        ToolKind::Cutter(CutterFamily::Square) => {
+                            let max_corner = tool.size * 0.95;
+                            ui.add(
+                                egui::Slider::new(
+                                    &mut tool.cutter_params.corner_radius,
+                                    0.0..=max_corner,
+                                )
+                                .suffix(" mm")
+                                .text("Corner radius"),
+                            );
+                            ui.small("0 = sharp square · higher rounds the corners.");
+                        }
+                        ToolKind::Cutter(CutterFamily::Circle) => {
+                            ui.add(
+                                egui::Slider::new(&mut tool.cutter_params.wave_amp, 0.0..=0.45)
+                                    .text("Wave amplitude"),
+                            );
+                            ui.add(
+                                egui::Slider::new(&mut tool.cutter_params.wave_freq, 2.0..=16.0)
+                                    .text("Wave count"),
+                            );
+                            ui.small(
+                                "Amplitude is a fraction of size (0 = smooth circle).\n\
+                                 Wave count is how many lobes around the outline.",
+                            );
+                        }
+                        _ => {}
+                    }
+                }
                 ui.small(
                     "Size also responds to [ ] / - = and Shift+scroll.\n\
                      Advance affects Clay bite and Paddle press depth.\n\
