@@ -1,12 +1,14 @@
 //! App-level glue for rigid rest and gravity settle.
 //!
-//! - `Ctrl+G` / `Sculpt → Rest pieces on bench` — rigid −Y drop only.
+//! - `Ctrl+G` / `Sculpt → Rest pieces on bench` — rigid −Y drop (all).
+//! - `Sculpt → Snap selection to bench` — drop the selected piece only.
 //! - `Ctrl+Shift+G` / `Sculpt → Settle (gravity)…` — drop floaters,
 //!   then soft clay collapses toward the bench (`PLASTIC_GRAVITY.md`).
 
 use bevy::prelude::*;
 use sculpt_core::{
-    label_components, rest_components_on_bench, settle_components_plastic, PlasticSettleParams,
+    label_components, rest_component_on_bench, rest_components_on_bench,
+    settle_components_plastic, PlasticSettleParams,
 };
 
 use crate::actions::AppAction;
@@ -79,6 +81,14 @@ fn handle_action(
                     &mut selection,
                 );
             }
+            AppAction::SnapSelectionToWorkbench => {
+                snap_selection_to_bench_now(
+                    &mut workpiece,
+                    &mut history,
+                    &mut stroke,
+                    &mut selection,
+                );
+            }
             AppAction::ShowSettleDialog => {
                 dialog.plasticity = settings.default_plasticity.clamp(0.0, 1.0);
                 dialog.open = true;
@@ -137,6 +147,72 @@ fn rest_on_bench_now(
     info!(
         "rest: dropped {} of {} pieces onto the workbench",
         summary.moved, summary.components
+    );
+}
+
+fn snap_selection_to_bench_now(
+    workpiece: &mut LayersState,
+    history: &mut UndoHistory,
+    stroke: &mut SculptStroke,
+    selection: &mut Selection,
+) {
+    if selection.picked_voxel.is_none() {
+        info!("snap: nothing selected");
+        return;
+    }
+    stroke.discard_live();
+
+    let labels = label_components(workpiece.grid());
+    let id = match selection.selected_id(&labels) {
+        Some(id) => id,
+        None => {
+            info!("snap: selected piece has been carved away");
+            return;
+        }
+    };
+    let Some((mn, _)) = labels.bounds_of(id) else {
+        return;
+    };
+    if mn.y == 0 {
+        info!("snap: selection is already on the bench");
+        return;
+    }
+    let drop = mn.y as i32;
+    let old_voxel = selection.picked_voxel;
+
+    let mut recorder = StrokeRecorder::default();
+    let summary = rest_component_on_bench(
+        workpiece.grid_mut(),
+        &labels,
+        id,
+        |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
+    );
+
+    let grid_res = workpiece.grid().res();
+    if let Some(region) = summary.dirty {
+        recorder.record_dirty_region(region, grid_res);
+        for c in region.touched_chunks(grid_res) {
+            workpiece.mark_dirty((c.x, c.y, c.z));
+        }
+    }
+    if let Some(entry) = recorder.finish(workpiece.grid(), workpiece.active_id()) {
+        history.push_stroke(entry);
+    }
+
+    selection.invalidate_labels();
+    // Keep the pick on the same material, shifted with the piece.
+    selection.picked_voxel = old_voxel.and_then(|(x, y, z)| {
+        let ny = y as i32 - drop;
+        if ny < 0 {
+            None
+        } else {
+            Some((x, ny as u32, z))
+        }
+    });
+
+    info!(
+        "snap: dropped selection by {} voxels onto the workbench",
+        drop
     );
 }
 

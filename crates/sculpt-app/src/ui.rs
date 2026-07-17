@@ -159,6 +159,12 @@ fn draw_ui(
                     actions.send(AppAction::RestPiecesOnBench);
                     ui.close_menu();
                 }
+                ui.add_enabled_ui(selection.picked_voxel.is_some(), |ui| {
+                    if menu_item(ui, "Snap selection to bench", "") {
+                        actions.send(AppAction::SnapSelectionToWorkbench);
+                        ui.close_menu();
+                    }
+                });
                 if menu_item(ui, "Settle (gravity)\u{2026}", "Ctrl+Shift+G") {
                     actions.send(AppAction::ShowSettleDialog);
                     ui.close_menu();
@@ -465,6 +471,9 @@ fn draw_selection_hud(
     };
     ui.label(text);
     ui.add_enabled_ui(has_selection, |ui| {
+        if ui.button("Snap to bench").clicked() {
+            actions.send(AppAction::SnapSelectionToWorkbench);
+        }
         if ui.button("Delete [Del]").clicked() {
             actions.send(AppAction::DeleteSelection);
         }

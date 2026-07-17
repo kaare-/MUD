@@ -150,6 +150,45 @@ where
     }
 }
 
+/// Drop a single labelled component onto the workbench (`iy = 0`).
+///
+/// Same rigid narrow-band shift as [`rest_components_on_bench`], but
+/// only for `id` — other floating pieces stay put. No-op when `id`
+/// is empty/unknown or already sitting on the bench.
+pub fn rest_component_on_bench<F>(
+    grid: &mut Grid,
+    labels: &ComponentField,
+    id: ComponentId,
+    on_pre_mutation: F,
+) -> RestSummary
+where
+    F: FnMut(u32, u32, u32, f32),
+{
+    let Some((mn, _)) = labels.bounds_of(id) else {
+        return RestSummary::default();
+    };
+    let low = mn.y;
+    if low == 0 {
+        return RestSummary {
+            components: 1,
+            moved: 0,
+            dirty: None,
+        };
+    }
+    let dirty = translate_component(
+        grid,
+        labels,
+        id,
+        IVec3::new(0, -(low as i32), 0),
+        on_pre_mutation,
+    );
+    RestSummary {
+        components: 1,
+        moved: u32::from(dirty.is_some()),
+        dirty,
+    }
+}
+
 /// Rigidly translate one component by `delta` voxels. Positive `y`
 /// lifts, negative drops; same for x and z. The workbench (`iy = 0`)
 /// is a hard floor — any part of the piece that would land at
@@ -487,6 +526,49 @@ mod tests {
         assert_eq!(summary.components, 0);
         assert_eq!(summary.moved, 0);
         assert!(summary.dirty.is_none());
+    }
+
+    #[test]
+    fn snap_one_piece_leaves_other_floaters_alone() {
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(10.0, 18.0, 16.0), 3.0);
+        add_sphere(&mut g, Vec3::new(22.0, 24.0, 16.0), 3.0);
+        let labels = label_components(&g);
+        assert_eq!(labels.component_count(), 2);
+        let target = labels.ids_by_size_desc()[0];
+        let other = labels.ids_by_size_desc()[1];
+        let other_low_before = labels.bounds_of(other).unwrap().0.y;
+        assert!(labels.bounds_of(target).unwrap().0.y > 0);
+        assert!(other_low_before > 0);
+
+        let summary = rest_component_on_bench(&mut g, &labels, target, |_, _, _, _| {});
+        assert_eq!(summary.moved, 1);
+
+        let labels_after = label_components(&g);
+        assert_eq!(labels_after.component_count(), 2);
+        let mut lows: Vec<u32> = labels_after
+            .ids_by_size_desc()
+            .into_iter()
+            .map(|id| labels_after.bounds_of(id).unwrap().0.y)
+            .collect();
+        lows.sort_unstable();
+        assert_eq!(lows[0], 0, "snapped piece should sit on the bench");
+        assert_eq!(
+            lows[1], other_low_before,
+            "unselected floater must keep its height"
+        );
+    }
+
+    #[test]
+    fn snap_piece_already_on_bench_is_a_noop() {
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(16.0, 4.0, 16.0), 5.0);
+        let labels = label_components(&g);
+        let id = labels.ids_by_size_desc()[0];
+        let before = g.to_dense();
+        let summary = rest_component_on_bench(&mut g, &labels, id, |_, _, _, _| {});
+        assert_eq!(summary.moved, 0);
+        assert_eq!(g.to_dense(), before);
     }
 
     /// The whole point of the rewrite: after a rest, the surface at

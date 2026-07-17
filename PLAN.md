@@ -206,7 +206,10 @@ From `DESIGN.md`'s staged roadmap:
 - `[ ]` **Watertightness check on export.**
 - `[ ]` **Camera bookmarks.**
 - `[ ]` **Recent files.**
-- `[ ]` **Snap-to-workbench** for a piece's base.
+- `[x]` **Snap-to-workbench** for a piece's base — `Sculpt → Snap
+  selection to bench` / selection HUD. Rigid −Y drop of the selected
+  piece only (`rest_component_on_bench`); keeps the pick. Ctrl+G still
+  rests every floating piece.
 - `[ ]` **Advanced-mode tool parameters**: scraper blade profile,
   loop shape, cookie-cutter corner-radius / wave modulation.
 - `[ ]` **Pen tablet support** (Stage 3 target: pressure = depth,
