@@ -121,10 +121,10 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 
 9. `[x]` **Gravity settle.** See `PLASTIC_GRAVITY.md`.
    `Sculpt → Settle (gravity)…` (`Ctrl+Shift+G`): (1) rigid-drop
-   every floating lump to the workbench, (2) soft clay sandpile-
-   collapses tall columns down onto the bench (not a surface peel).
-   Softness 0 = drop only; 1 = pancake. One undo stroke. Follow-ups:
-   elastic bow curves, multi-layer, volume-perfect redistribution.
+   floaters, (2) elastic bow on tall thin stalks, (3) soft sandpile
+   collapse / pancake. Softness 0 = drop only; mid = bow; 1 = pile
+   down. One undo stroke. Follow-ups: multi-layer, volume-perfect
+   redistribution.
 
 10. `[x]` **Settings menus + workbench grid default on.**
     `Edit → Tool parameters…` (size / advance / smooth / magic clay /

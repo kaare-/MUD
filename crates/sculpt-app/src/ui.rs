@@ -631,8 +631,8 @@ fn draw_dialogs(
                         .text("softness"),
                 );
                 ui.small(
-                    "Always drops floating lumps onto the workbench.\n\
-                     Soft clay collapses tall stalks and pancakes blobs.\n\
+                    "Drops floating lumps, bows tall stalks, then soft\n\
+                     clay can collapse / pancake onto the workbench.\n\
                      Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {
