@@ -75,6 +75,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Delete` / `Backspace` | Remove the selected piece |
 | `A` | Toggle **active-only** sculpting (only affects the selected piece) |
 | `Ctrl+G` | Rest every floating piece on the workbench (rigid drop, undoable) |
+| — | `Sculpt → Snap selection to bench` / HUD **Snap to bench** — drop the selected piece only |
 | `Ctrl+Shift+G` | Settle (gravity) — drop, sag first (eased), tip, splat; softness dialog |
 | `Ctrl+E` | Export STL — opens a Save-As dialog to pick a filename (Z-up, print-ready) |
 | `Ctrl+Shift+E` | Quick STL export with an auto-timestamped filename in CWD |

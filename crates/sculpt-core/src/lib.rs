@@ -28,7 +28,8 @@ pub use brush::{
 };
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
 pub use gravity::{
-    rest_components_on_bench, touched_region_for_translate, translate_component, RestSummary,
+    rest_component_on_bench, rest_components_on_bench, touched_region_for_translate,
+    translate_component, RestSummary,
 };
 pub use plastic::{
     settle_components_plastic, PlasticSettleParams, PlasticSettleSummary, DEFAULT_ITERATIONS,

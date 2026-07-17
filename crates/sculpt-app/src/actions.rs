@@ -69,6 +69,9 @@ pub enum AppAction {
     /// Drop every floating connected component onto the workbench
     /// (rigid gravity — no plastic deformation).
     RestPiecesOnBench,
+    /// Snap the currently-selected piece's base to the workbench.
+    /// No-op when nothing is selected or the piece is already down.
+    SnapSelectionToWorkbench,
     /// Pop up the gravity-settle dialog (softness slider).
     ShowSettleDialog,
     /// Run a gravity-settle burst at the given softness (0..1).
