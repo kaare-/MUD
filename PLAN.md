@@ -119,12 +119,22 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    Bottom / Front / Back / Left / Right` snap the orbit camera
    to a face-on preset; distance and target are preserved.
 
-9. `[~]` **Plastic gravity (gradual setting).** Spike shipped —
+9. `[x]` **Plastic gravity (gradual setting).** Spike shipped —
    see `PLASTIC_GRAVITY.md`. `Sculpt → Settle (plastic)…`
-   (`Ctrl+Shift+G`): column-squash under a footprint-aware height
-   limit, plasticity slider 0→1, one undo stroke. Not FEM; not
-   continuous sim. Follow-ups: curvature×load proxy, multi-layer,
-   volume-perfect redistribution.
+   (`Ctrl+Shift+G`): column-squash under footprint + absolute height
+   caps, plasticity slider 0→1, one undo stroke. Soft clay flares
+   squat forms too (not only needle towers). Not FEM; not continuous
+   sim. Follow-ups: curvature×load proxy, multi-layer, volume-perfect
+   redistribution.
+
+10. `[x]` **Settings menus + workbench grid default on.**
+    `Edit → Tool parameters…` (size / advance / smooth / magic clay /
+    symmetry) and `Edit → Preferences…` (grid, turntable period,
+    default settle plasticity). Workbench grid starts visible.
+
+11. `[x]` **Layer visibility remesh fix.** Hiding despawns chunk
+    meshes; showing again re-dirties allocated chunks so they
+    respawn (previously stayed invisible until the next sculpt).
 
 ---
 

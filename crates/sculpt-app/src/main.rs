@@ -53,6 +53,7 @@ mod primitives;
 mod project;
 mod sculpt;
 mod selection;
+mod settings;
 mod turntable;
 mod ui;
 mod undo;
@@ -90,6 +91,7 @@ fn main() {
         .add_plugins((
             actions::plugin,
             input_gate::plugin,
+            settings::plugin,
             camera::plugin,
             turntable::plugin,
             workpiece::plugin,
@@ -101,11 +103,10 @@ fn main() {
             primitives::plugin,
             selection::plugin,
             gravity::plugin,
-            view::plugin,
         ))
         // Bevy caps `Plugins` tuples at 15 entries; the rest of
         // the plugins live in a second call.
-        .add_plugins((move_tool::plugin, ui::plugin))
+        .add_plugins((view::plugin, move_tool::plugin, ui::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
         .run();

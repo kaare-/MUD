@@ -387,11 +387,23 @@ impl LayersState {
 
     /// Flip a layer's visibility. Hidden layers skip remesh / pick /
     /// export flatten. Returns `false` if `idx` is out of range.
+    ///
+    /// Showing a layer again marks every allocated chunk dirty so
+    /// [`remesh_dirty_chunks`] can respawn meshes that were despawned
+    /// while the layer was hidden.
     pub fn set_visible(&mut self, idx: usize, visible: bool) -> bool {
         let Some(layer) = self.layers.get_mut(idx) else {
             return false;
         };
+        if layer.visible == visible {
+            return true;
+        }
         layer.visible = visible;
+        if visible {
+            for c in layer.grid.allocated_chunk_coords() {
+                layer.dirty.insert((c.x, c.y, c.z));
+            }
+        }
         true
     }
 
@@ -790,6 +802,9 @@ fn build_mesh(extracted: sculpt_core::ExtractedMesh) -> Mesh {
 /// - geometry changes shape → update the existing mesh in place.
 /// - a hidden layer's chunks are despawned wholesale and skipped
 ///   while hidden, so an invisible layer costs nothing to render.
+///   [`LayersState::set_visible`] re-dirties allocated chunks when a
+///   layer is shown again so those meshes respawn without needing a
+///   sculpt edit.
 ///
 /// A chunk that goes dirty again later (any edit touching it calls
 /// `DirtyRegion::touched_chunks`, independent of whether it currently
@@ -810,9 +825,8 @@ fn remesh_dirty_chunks(
 
     for layer in state.layers.iter_mut() {
         if !layer.visible {
-            // Hidden: drop every rendered chunk (cheap — they'll
-            // respawn correctly if the layer becomes visible again,
-            // since nothing here touches `dirty`).
+            // Hidden: drop every rendered chunk. Showing the layer
+            // again re-dirties allocated coords in `set_visible`.
             if !layer.chunks.is_empty() {
                 for (_, entity) in layer.chunks.drain() {
                     commands.entity(entity).despawn();
@@ -1013,6 +1027,27 @@ mod tests {
         assert!(!state.rename_layer(0, "   "), "whitespace-only names rejected");
         assert!(state.set_visible(0, false));
         assert!(!state.layers()[0].visible);
+    }
+
+    #[test]
+    fn showing_a_hidden_layer_redirties_allocated_chunks() {
+        let mut state = LayersState::new_for_test(sphere(GVec3::new(16.0, 16.0, 16.0)));
+        // Simulate a settled remesh: no dirty keys, but the layer still
+        // has voxel data in allocated tiles.
+        state.layers[0].dirty.clear();
+        assert!(state.set_visible(0, false));
+        assert!(
+            state.layers[0].dirty.is_empty(),
+            "hiding must not invent dirty work"
+        );
+        assert!(state.set_visible(0, true));
+        let allocated = state.layers[0].grid.allocated_chunk_coords().len();
+        assert!(allocated > 0, "test sphere must allocate tiles");
+        assert_eq!(
+            state.layers[0].dirty.len(),
+            allocated,
+            "showing again must dirty every allocated chunk so remesh respawns meshes"
+        );
     }
 
     #[test]

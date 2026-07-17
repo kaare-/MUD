@@ -75,6 +75,12 @@ pub enum AppAction {
     SettlePlastic(f32),
     /// Flip the workbench grid overlay.
     ToggleWorkbenchGrid,
+    /// Explicitly show / hide the workbench grid (Preferences).
+    SetWorkbenchGrid(bool),
+    /// Pop up Edit → Tool parameters… (size, advance, smooth, etc.).
+    ShowToolSettingsDialog,
+    /// Pop up Edit → Preferences… (turntable, grid, settle defaults).
+    ShowPreferencesDialog,
     /// Snap the orbit camera to a standard preset (Top / Front /
     /// Left / Right / Back / Bottom / Perspective). Distance and
     /// target are preserved.

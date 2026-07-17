@@ -5,6 +5,7 @@
 use bevy::prelude::*;
 
 use crate::input_gate::UiCapturesInput;
+use crate::settings::AppSettings;
 use crate::workpiece::WorkpieceRoot;
 
 /// System set so sculpt can sample the piece transform *after* this
@@ -35,22 +36,23 @@ pub fn plugin(app: &mut App) {
 fn read_turntable_input(
     keys: Res<ButtonInput<KeyCode>>,
     ui_gate: Res<UiCapturesInput>,
+    settings: Res<AppSettings>,
     mut state: ResMut<TurntableState>,
 ) {
-    // One revolution in ~6.5 s — slower than the old ~4 s turn so
-    // add-while-rotating rings stay controllable, especially with
-    // small brushes.
-    const TARGET_SPEED: f32 = std::f32::consts::TAU / 6.5;
+    // Period comes from Preferences (default 6.5 s / rev) so
+    // add-while-rotating rings stay controllable with small brushes.
+    let period = settings.turntable_period_secs.clamp(2.0, 30.0);
+    let target_speed = std::f32::consts::TAU / period;
     if ui_gate.keyboard {
         state.angular_vel = 0.0;
         return;
     }
     let mut v = 0.0f32;
     if keys.pressed(KeyCode::KeyQ) {
-        v += TARGET_SPEED;
+        v += target_speed;
     }
     if keys.pressed(KeyCode::KeyE) {
-        v -= TARGET_SPEED;
+        v -= target_speed;
     }
     state.angular_vel = v;
 }

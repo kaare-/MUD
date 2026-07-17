@@ -12,6 +12,7 @@ use sculpt_core::{
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
 use crate::selection::Selection;
+use crate::settings::AppSettings;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::LayersState;
 
@@ -66,6 +67,7 @@ fn handle_action(
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<Selection>,
     mut dialog: ResMut<SettleDialogState>,
+    settings: Res<AppSettings>,
 ) {
     for a in events.read() {
         match a {
@@ -78,6 +80,7 @@ fn handle_action(
                 );
             }
             AppAction::ShowSettleDialog => {
+                dialog.plasticity = settings.default_plasticity.clamp(0.0, 1.0);
                 dialog.open = true;
             }
             AppAction::SettlePlastic(p) => {
