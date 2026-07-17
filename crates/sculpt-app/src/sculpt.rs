@@ -53,7 +53,7 @@ pub enum ToolKind {
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
-/// maps to a `Profile` via `profile(size)`.
+/// maps to a `Profile` via `profile(size, params)`.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum CutterFamily {
     Circle,
@@ -62,11 +62,54 @@ pub enum CutterFamily {
     Star5,
 }
 
+/// Optional shape tweaks for circle / square cutters (Edit → Tool
+/// parameters). Hex and star ignore these for now.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct CutterParams {
+    /// Square corner fillet in mm. `0` = sharp square.
+    pub corner_radius: f32,
+    /// Circle radial wave amplitude as a fraction of size (`0` = smooth).
+    pub wave_amp: f32,
+    /// Number of waves around a circle outline.
+    pub wave_freq: f32,
+}
+
+impl Default for CutterParams {
+    fn default() -> Self {
+        Self {
+            corner_radius: 0.0,
+            wave_amp: 0.0,
+            wave_freq: 6.0,
+        }
+    }
+}
+
 impl CutterFamily {
-    pub fn profile(self, size: f32) -> Profile {
+    pub fn profile(self, size: f32, params: CutterParams) -> Profile {
         match self {
-            CutterFamily::Circle => Profile::Circle { radius: size },
-            CutterFamily::Square => Profile::Square { half_side: size },
+            CutterFamily::Circle => {
+                let amp = params.wave_amp.clamp(0.0, 0.45);
+                if amp > 1e-4 {
+                    Profile::WavyCircle {
+                        radius: size,
+                        amp: amp * size,
+                        freq: params.wave_freq.clamp(2.0, 24.0),
+                    }
+                } else {
+                    Profile::Circle { radius: size }
+                }
+            }
+            CutterFamily::Square => {
+                let cr = params.corner_radius.clamp(0.0, size * 0.95);
+                if cr > 1e-4 {
+                    Profile::RoundedSquare {
+                        half_side: size,
+                        corner_r: cr,
+                    }
+                } else {
+                    Profile::Square { half_side: size }
+                }
+            }
             CutterFamily::Hexagon => Profile::Hexagon { radius: size },
             CutterFamily::Star5 => Profile::Star5 {
                 outer: size,
@@ -97,6 +140,9 @@ pub struct SculptTool {
     /// values give a gentle polish; 1.0 fully replaces each voxel
     /// with its neighbour average in one frame.
     pub smooth_strength: f32,
+    /// Cookie-cutter shape tweaks (corner radius / wave). Used when
+    /// `kind` is a circle or square cutter.
+    pub cutter_params: CutterParams,
 }
 
 impl Default for SculptTool {
@@ -107,6 +153,7 @@ impl Default for SculptTool {
             advance_per_step: 0.6,
             displace: true,
             smooth_strength: 0.35,
+            cutter_params: CutterParams::default(),
         }
     }
 }
@@ -626,7 +673,7 @@ fn apply_at(
             // is enough to punch through any Stage-2 workpiece.
             let half_length = workpiece.grid().extent().max_element() * 0.5;
             let cutter = CookieCutter {
-                profile: family.profile(tool.size),
+                profile: family.profile(tool.size, tool.cutter_params),
                 origin: hit,
                 axis: into_surface,
                 half_length,

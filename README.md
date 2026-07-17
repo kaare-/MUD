@@ -64,8 +64,8 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | Key | Tool |
 |---|---|
 | `1` | Add/Remove (default) |
-| `2` | Cookie cutter — circle |
-| `3` | Cookie cutter — square |
+| `2` | Cookie cutter — circle (Tool parameters: wave amplitude / count) |
+| `3` | Cookie cutter — square (Tool parameters: corner radius) |
 | `4` | Cookie cutter — hexagon |
 | `5` | Cookie cutter — star |
 | `6` | Wire cutter (LMB-drag slices along the drag line) |
