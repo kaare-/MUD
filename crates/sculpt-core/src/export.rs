@@ -46,8 +46,9 @@ use fast_surface_nets::ndshape::RuntimeShape;
 use fast_surface_nets::{surface_nets, SurfaceNetsBuffer};
 use glam::Vec3;
 
+use crate::dual_contour::extract_full_mesh_dc;
 use crate::grid::Grid;
-use crate::mesh::{cavity_brightness, ExtractedMesh};
+use crate::mesh::{cavity_brightness, ExtractedMesh, MesherKind};
 
 /// Result of an index-edge watertightness check on an [`ExtractedMesh`].
 ///
@@ -148,16 +149,23 @@ impl Orientation {
     }
 }
 
-/// Run Surface Nets over the entire grid in one pass. Returns a
-/// single indexed mesh in piece-local coordinates (mm), no chunk
-/// seams.
+/// Extract the full grid as one indexed mesh (no chunk seams).
 ///
-/// Contrast `mesh::extract_chunk`, which is designed for real-time
-/// per-chunk remeshing and has overlapping padding at every chunk
-/// border. That overlap is fine (invisible) for GPU rendering but
-/// produces double-covered geometry when concatenated, which fools
-/// slicer heuristics. STL wants one clean surface.
+/// Dispatches on [`MesherKind`]. Surface Nets is the historical
+/// default; Dual Contouring keeps sharper cube corners for export.
 pub fn extract_full_mesh(grid: &Grid) -> ExtractedMesh {
+    extract_full_mesh_with(grid, MesherKind::SurfaceNets)
+}
+
+/// Like [`extract_full_mesh`] but picks the isosurface algorithm.
+pub fn extract_full_mesh_with(grid: &Grid, kind: MesherKind) -> ExtractedMesh {
+    match kind {
+        MesherKind::SurfaceNets => extract_full_mesh_surface_nets(grid),
+        MesherKind::DualContouring => extract_full_mesh_dc(grid),
+    }
+}
+
+fn extract_full_mesh_surface_nets(grid: &Grid) -> ExtractedMesh {
     let res = grid.res();
     let vs = grid.voxel_size();
     let padded = [res.x + 2 * HALO, res.y + 2 * HALO, res.z + 2 * HALO];

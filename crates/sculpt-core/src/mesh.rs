@@ -2,7 +2,31 @@ use fast_surface_nets::ndshape::{ConstShape, ConstShape3u32};
 use fast_surface_nets::{surface_nets, SurfaceNetsBuffer};
 use glam::{UVec3, Vec3};
 
+use crate::dual_contour::extract_chunk_dc;
 use crate::grid::{ChunkCoord, Grid, CHUNK_SIZE};
+
+/// Which isosurface algorithm to use for viewport remesh / export.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub enum MesherKind {
+    /// Naive Surface Nets — fast, smooths sharp features.
+    #[default]
+    SurfaceNets,
+    /// Dual contouring with QEF — better cube corners / cuts.
+    DualContouring,
+}
+
+impl MesherKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::SurfaceNets => "Surface Nets",
+            Self::DualContouring => "Dual Contouring",
+        }
+    }
+
+    pub fn all() -> [Self; 2] {
+        [Self::SurfaceNets, Self::DualContouring]
+    }
+}
 
 /// Padded per-chunk sample size. Surface Nets needs one voxel of padding
 /// on every side so it can see across chunk boundaries. With
@@ -57,13 +81,26 @@ pub fn cavity_brightness(grid: &Grid, p: Vec3) -> f32 {
     (1.0 - 0.7 * occ).clamp(0.15, 1.0)
 }
 
+/// Extract a single chunk's mesh, dispatching on [`MesherKind`].
+pub fn extract_chunk_with(grid: &Grid, coord: ChunkCoord, kind: MesherKind) -> ExtractedMesh {
+    match kind {
+        MesherKind::SurfaceNets => extract_chunk_surface_nets(grid, coord),
+        MesherKind::DualContouring => extract_chunk_dc(grid, coord),
+    }
+}
+
+/// Extract a single chunk with the default Surface Nets mesher.
+pub fn extract_chunk(grid: &Grid, coord: ChunkCoord) -> ExtractedMesh {
+    extract_chunk_with(grid, coord, MesherKind::SurfaceNets)
+}
+
 /// Extract a single chunk's mesh from the grid using Naive Surface Nets.
 ///
 /// The output positions are in piece-local coordinates (mm), the
 /// normals are unit length in the same frame, and indices reference
 /// positions with clockwise winding matching the crate's convention
 /// (which is CCW when viewed from outside — the standard).
-pub fn extract_chunk(grid: &Grid, coord: ChunkCoord) -> ExtractedMesh {
+fn extract_chunk_surface_nets(grid: &Grid, coord: ChunkCoord) -> ExtractedMesh {
     let res = grid.res();
     let vs = grid.voxel_size();
 

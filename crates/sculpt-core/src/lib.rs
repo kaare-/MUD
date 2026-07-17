@@ -12,6 +12,7 @@
 pub mod brush;
 pub mod components;
 pub mod cutter;
+pub mod dual_contour;
 pub mod export;
 pub mod gravity;
 pub mod grid;
@@ -39,11 +40,13 @@ pub use cutter::{
     apply_wire_cutter_with_callback, CookieCutter, WireCutter,
 };
 pub use export::{
-    check_watertight, extract_full_mesh, stl_binary_size, write_stl_binary, Orientation,
+    check_watertight, extract_full_mesh, extract_full_mesh_with, stl_binary_size,
+    write_stl_binary, Orientation,
     WatertightReport,
 };
 pub use grid::{ChunkCoord, Grid, DirtyRegion, RegionSnapshot, CHUNK_SIZE};
-pub use mesh::{cavity_brightness, extract_chunk, ExtractedMesh};
+pub use dual_contour::{extract_chunk_dc, extract_full_mesh_dc};
+pub use mesh::{cavity_brightness, extract_chunk, extract_chunk_with, ExtractedMesh, MesherKind};
 pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
 pub use primitives::{apply_primitive, apply_primitive_with_callback, Primitive, PrimitiveKind};
 pub use profile::{extrude_profile, Profile};

@@ -33,6 +33,8 @@ use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::{AutosaveState, FileDialogState, RecentFiles};
+use sculpt_core::MesherKind;
+
 use crate::pen::PenState;
 use crate::sculpt::{
     tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind, SIZE_MAX, SIZE_MIN,
@@ -611,6 +613,7 @@ fn draw_dialogs(
     mut tool: ResMut<SculptTool>,
     symmetry: Res<SculptSymmetry>,
     mut app_settings: ResMut<AppSettings>,
+    mut workpiece: ResMut<LayersState>,
     grid_state: Res<WorkbenchGridState>,
     autosave: Res<AutosaveState>,
     mut export_notice: ResMut<ExportNotice>,
@@ -937,6 +940,24 @@ fn draw_dialogs(
                         .text("Cavity"),
                 );
                 ui.small("Crevice darkening from the SDF (smoothed φ − φ).");
+                ui.add_space(8.0);
+                ui.heading("Mesher");
+                let prev_mesher = app_settings.mesher;
+                egui::ComboBox::from_id_salt("mud_mesher_kind")
+                    .selected_text(app_settings.mesher.label())
+                    .show_ui(ui, |ui| {
+                        for kind in MesherKind::all() {
+                            ui.selectable_value(&mut app_settings.mesher, kind, kind.label());
+                        }
+                    });
+                if app_settings.mesher != prev_mesher {
+                    workpiece.redirty_all_meshes();
+                }
+                ui.small(
+                    "Surface Nets is smoother and cheaper.\n\
+                     Dual Contouring keeps sharper cube corners and cuts.\n\
+                     Also used for STL export.",
+                );
                 ui.add_space(8.0);
                 ui.heading("Pen / stylus");
                 ui.checkbox(

@@ -194,8 +194,9 @@ From `DESIGN.md`'s staged roadmap:
 - `[~]` **Sparse narrow-band SDF store** — now Track A in
   `SPARSE_THEN_LAYERS.md` (still dense 192³ until P1). Effective
   resolution / domain ceiling for detail work.
-- `[ ]` **Dual contouring** for sharp features. Marching cubes /
-  surface nets today round every corner.
+- `[x]` **Dual contouring** for sharp features. Preferences → Mesher
+  toggles Surface Nets (default) vs Dual Contouring (QEF). Viewport
+  remesh + STL export both honour the choice.
 - `[~]` **Merge on contact / weld.** Explicit user action — Track B
   Merge Down (`min` union). Not automatic on contact.
 - `[x]` **Matcap library + cavity shading.** Clay uses unlit matcap

@@ -87,6 +87,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | — | `View → Bookmarks` — save / restore camera poses (`~/.mud/bookmarks.txt`) |
 | — | `View → Matcap` / Preferences — clay matcap preset + cavity strength |
 | — | Preferences — stylus pressure → Clay / Paddle / Smooth depth |
+| — | Preferences — Mesher: Surface Nets or Dual Contouring |
 | — | Autosave — dirty worktable → `~/.mud/autosave.mudclay` (~90s); restore prompt on launch |
 
 All of the above are also reachable from the on-screen UI: the top

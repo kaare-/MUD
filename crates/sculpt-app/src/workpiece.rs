@@ -33,7 +33,9 @@ use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 use glam::{UVec3, Vec3 as GVec3};
 
-use sculpt_core::{extract_chunk, ChunkCoord, Grid};
+use sculpt_core::{extract_chunk_with, ChunkCoord, Grid};
+
+use crate::settings::AppSettings;
 
 use crate::actions::AppAction;
 use crate::matcap::{MatcapMaterial, MatcapState};
@@ -383,6 +385,20 @@ impl LayersState {
     /// if the user has since switched away from it.
     pub fn layer_by_id_mut(&mut self, id: LayerId) -> Option<&mut Layer> {
         self.layers.iter_mut().find(|l| l.id == id)
+    }
+
+    /// Mark every allocated chunk on every visible layer dirty so the
+    /// next remesh pass rebuilds geometry (e.g. after switching
+    /// [`MesherKind`] in Preferences).
+    pub fn redirty_all_meshes(&mut self) {
+        for layer in self.layers.iter_mut() {
+            if !layer.visible {
+                continue;
+            }
+            for c in layer.grid.allocated_chunk_coords() {
+                layer.dirty.insert((c.x, c.y, c.z));
+            }
+        }
     }
 
     /// Flip a layer's visibility. Hidden layers skip remesh / pick /
@@ -811,6 +827,7 @@ fn remesh_dirty_chunks(
     mut meshes: ResMut<Assets<Mesh>>,
     q_meshes: Query<&Mesh3d>,
     q_root: Query<Entity, With<WorkpieceRoot>>,
+    settings: Res<AppSettings>,
 ) {
     // Structural edits (delete / merge) queue orphaned chunk entities
     // here so they don't leak under WorkpieceRoot.
@@ -847,7 +864,7 @@ fn remesh_dirty_chunks(
 
         for key in batch {
             let coord = ChunkCoord::new(key.0, key.1, key.2);
-            let extracted = extract_chunk(&layer.grid, coord);
+            let extracted = extract_chunk_with(&layer.grid, coord, settings.mesher);
 
             if extracted.is_empty() {
                 if let Some(entity) = layer.chunks.remove(&key) {

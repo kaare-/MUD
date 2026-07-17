@@ -28,6 +28,7 @@
 //!   Bookmarks ........ View menu — save/restore camera poses
 //!   Matcap ........... View menu / Preferences — clay look + cavity
 //!   Pen pressure ..... stylus force → clay/paddle/smooth depth (Prefs)
+//!   Mesher ........... Prefs — Surface Nets or Dual Contouring
 //!   Autosave ......... ~/.mud/autosave.mudclay + recover-on-launch
 //!   Ctrl+Shift+G ..... settle (gravity) — drop + soft collapse dialog
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
