@@ -23,7 +23,7 @@
 //!   Delete / Backspace  remove the selected piece
 //!   A ................ toggle active-only sculpt gating
 //!   Ctrl+G ........... rest every floating piece on the workbench
-//!   Ctrl+Shift+G ..... settle (plastic) — plasticity dialog, then slump
+//!   Ctrl+Shift+G ..... settle (gravity) — drop + soft collapse dialog
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
 //!   M ................ toggle magic-clay (Add/Remove)

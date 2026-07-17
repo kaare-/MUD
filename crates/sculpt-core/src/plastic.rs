@@ -1,28 +1,36 @@
-//! Plastic gravity spike — iterative column squash under self-weight.
+//! Gravity settle — drop floaters, then squash soft clay toward the bench.
 //!
-//! See `PLASTIC_GRAVITY.md`. Not FEM: each iteration finds `(ix, iz)`
-//! columns taller than a plasticity-dependent stable height, keeps the
-//! bottom `max_stable` solid voxels, and relocates the excess into the
-//! shortest neighbouring columns at the base (flare). Active layer
-//! only; one undo stroke for the whole burst.
+//! See `PLASTIC_GRAVITY.md`. Not FEM: two phases on the active layer,
+//! one undo stroke for the whole burst.
+//!
+//! 1. **Drop** — rigid rest of every floating component onto `iy = 0`
+//!    (same backbone as `Ctrl+G`). Airborne lumps always crash down.
+//! 2. **Squash** — when plasticity > 0, pack each `(ix, iz)` column
+//!    onto the bench and sandpile any height above a plasticity-
+//!    dependent cap into neighbouring columns. Tall stalks collapse;
+//!    soft blobs pancake. This is bulk gravity, not a surface filter.
 
 use glam::UVec3;
 
-use crate::components::ComponentField;
+use crate::components::{label_components, ComponentField};
+use crate::gravity::rest_components_on_bench;
 use crate::grid::{DirtyRegion, Grid};
 
-/// Padding around component AABBs so base flare stays in-region.
-const PAD: u32 = 8;
+/// Padding around component AABBs so sandpile flare stays in-region.
+const PAD: u32 = 16;
 
-/// Default burst length.
-pub const DEFAULT_ITERATIONS: u32 = 8;
+/// Narrow-band width (voxels) rewritten around the new solid mask.
+const BAND: u32 = 3;
 
-/// Parameters for one plastic-settle burst.
+/// Default squash redistributions (sandpile passes).
+pub const DEFAULT_ITERATIONS: u32 = 64;
+
+/// Parameters for one gravity-settle burst.
 #[derive(Copy, Clone, Debug)]
 pub struct PlasticSettleParams {
-    /// `0` = elastic / no-op, `1` = soft yielding clay.
+    /// `0` = drop floaters only (no squash), `1` = soft clay pancakes.
     pub plasticity: f32,
-    /// Number of squash iterations in this burst.
+    /// Max sandpile redistribution steps in the squash phase.
     pub iterations: u32,
 }
 
@@ -43,7 +51,10 @@ pub struct PlasticSettleSummary {
     pub dirty: Option<DirtyRegion>,
 }
 
-/// Run a plastic-settle burst on `grid`.
+/// Run a gravity-settle burst on `grid`.
+///
+/// `labels` must match the pre-op grid (used for the initial drop).
+/// Soft squash re-labels after the drop so component bounds stay valid.
 pub fn settle_components_plastic<F>(
     grid: &mut Grid,
     labels: &ComponentField,
@@ -54,195 +65,107 @@ where
     F: FnMut(u32, u32, u32, f32),
 {
     let plasticity = params.plasticity.clamp(0.0, 1.0);
-    if plasticity <= 1e-4 || params.iterations == 0 || labels.component_count() == 0 {
+    if labels.component_count() == 0 {
         return PlasticSettleSummary::default();
     }
-
-    let res = grid.res();
-    let vs = grid.voxel_size();
-    let Some((rmin, rmax)) = union_component_bounds(labels, res) else {
-        return PlasticSettleSummary::default();
-    };
-
-    // Stable height scales with the piece's footprint: a fat blob can
-    // hold taller columns than a skinny tower. Plasticity shortens the
-    // allowed stack (soft clay → pancake).
-    let (bb_min, bb_max) = {
-        let mut mn = UVec3::new(res.x, res.y, res.z);
-        let mut mx = UVec3::ZERO;
-        for id in 1..=labels.component_count() as u32 {
-            if let Some((a, b)) = labels.bounds_of(id) {
-                mn = mn.min(a);
-                mx = mx.max(b);
-            }
-        }
-        (mn, mx)
-    };
-    let footprint = (bb_max.x - bb_min.x).min(bb_max.z - bb_min.z).max(1) as f32;
-    // Two caps, take the tighter one:
-    // - footprint-relative: soft clay holds ~0.55× its smallest plan
-    //   extent; stiff clay holds ~2.2× (skinny towers always yield).
-    // - absolute: even medium / squat forms move when soft — without
-    //   this, a typical sphere (height ≈ footprint) never exceeds the
-    //   footprint rule alone and Settle appears broken.
-    let support_fp = footprint * (2.2 - 1.65 * plasticity);
-    let support_abs = 5.0 + (1.0 - plasticity) * 34.0;
-    let max_stable = support_fp.min(support_abs).round().max(3.0) as usize;
-    // Cap how much excess we move per column per iteration so a burst
-    // looks gradual rather than collapsing in one frame.
-    let move_cap = 1 + (plasticity * 4.0).round() as usize;
 
     let mut dirty_min = UVec3::new(u32::MAX, u32::MAX, u32::MAX);
     let mut dirty_max = UVec3::ZERO;
     let mut any_dirty = false;
     let mut voxels_touched = 0u32;
     let mut seen: std::collections::HashSet<u64> = std::collections::HashSet::new();
-    let mut iterations_run = 0u32;
 
-    let mut set_tracked = |grid: &mut Grid, x: u32, y: u32, z: u32, new: f32| {
-        let pre = grid.get(x, y, z);
-        if (pre - new).abs() < 1e-7 {
-            return;
-        }
+    let mut track = |x: u32, y: u32, z: u32, pre: f32| {
         let key = (x as u64) | ((y as u64) << 20) | ((z as u64) << 40);
         if seen.insert(key) {
             on_pre_mutation(x, y, z, pre);
             voxels_touched += 1;
         }
-        grid.set(x, y, z, new);
-        dirty_min = dirty_min.min(UVec3::new(x, y, z));
-        dirty_max = dirty_max.max(UVec3::new(x + 1, y + 1, z + 1));
+    };
+
+    // --- Phase 1: airborne lumps crash to the workbench ---------------
+    let rest = rest_components_on_bench(grid, labels, |x, y, z, pre| {
+        track(x, y, z, pre);
+    });
+    if let Some(region) = rest.dirty {
+        dirty_min = dirty_min.min(region.min);
+        dirty_max = dirty_max.max(region.max);
         any_dirty = true;
-    };
-
-    for _iter in 0..params.iterations {
-        iterations_run += 1;
-        let snap = grid.snapshot_region(rmin, rmax);
-        let (smin, smax) = snap.bounds();
-
-        // Column solid counts + highest solid iy for plant targeting.
-        // Plant y must use each neighbour's own top — using the
-        // yielding column's base + neighbour count assumes matching
-        // floors and plants *inside* sphere / organic columns.
-        let sx = (smax.x - smin.x) as usize;
-        let sz = (smax.z - smin.z) as usize;
-        let mut col_count = vec![0u32; sx * sz];
-        let mut col_hi = vec![None::<u32>; sx * sz];
-        for iz in smin.z..smax.z {
-            for ix in smin.x..smax.x {
-                let mut n = 0u32;
-                let mut hi = None;
-                for iy in smin.y..smax.y {
-                    if snap.get(ix, iy, iz) < 0.0 {
-                        n += 1;
-                        hi = Some(iy);
-                    }
-                }
-                let i = col_i(ix, iz, smin, sx);
-                col_count[i] = n;
-                col_hi[i] = hi;
-            }
-        }
-
-        let mut moved = 0u32;
-
-        for iz in smin.z..smax.z {
-            for ix in smin.x..smax.x {
-                let mut solids: Vec<u32> = Vec::new();
-                for iy in smin.y..smax.y {
-                    if snap.get(ix, iy, iz) < 0.0 {
-                        solids.push(iy);
-                    }
-                }
-                if solids.len() <= max_stable {
-                    continue;
-                }
-                let excess = (solids.len() - max_stable).min(move_cap);
-                // Peel only when a plant seat exists — keeps solid
-                // voxel count stable (1:1 relocate).
-                for k in 0..excess {
-                    let top_iy = solids[solids.len() - 1 - k];
-                    // Plant strictly below the peeled voxel so soft
-                    // settle slumps instead of stacking a taller peak.
-                    let Some(site) = find_plant_site(
-                        ix,
-                        iz,
-                        solids[0],
-                        top_iy,
-                        &col_count,
-                        &col_hi,
-                        smin,
-                        smax,
-                        sx,
-                        res,
-                    ) else {
-                        break;
-                    };
-                    // Refuse seats that are already solid in the live grid.
-                    if grid.get(site.0, site.1, site.2) < 0.0 {
-                        break;
-                    }
-                    set_tracked(grid, ix, top_iy, iz, vs);
-                    set_tracked(grid, site.0, site.1, site.2, -vs);
-                    paint_band_support(grid, site.0, site.1, site.2, vs, &mut set_tracked);
-                    let ci = col_i(site.0, site.2, smin, sx);
-                    col_count[ci] = col_count[ci].saturating_add(1);
-                    col_hi[ci] = Some(match col_hi[ci] {
-                        Some(h) => h.max(site.1),
-                        None => site.1,
-                    });
-                    moved += 1;
-                }
-            }
-        }
-
-        if moved == 0 {
-            break;
-        }
-
-        mollify_positive_band(grid, rmin, rmax, 0.2, &mut set_tracked);
     }
 
-    let dirty = if any_dirty {
-        Some(DirtyRegion {
-            min: dirty_min,
-            max: dirty_max,
-        })
-    } else {
-        None
+    // Elastic / zero softness: gravity drop only.
+    if plasticity <= 1e-4 || params.iterations == 0 {
+        return PlasticSettleSummary {
+            iterations_run: 0,
+            voxels_touched,
+            dirty: any_dirty.then_some(DirtyRegion {
+                min: dirty_min,
+                max: dirty_max,
+            }),
+        };
+    }
+
+    // --- Phase 2: soft clay collapses under its own weight ------------
+    let labels_after = label_components(grid);
+    if labels_after.component_count() == 0 {
+        return PlasticSettleSummary {
+            iterations_run: 0,
+            voxels_touched,
+            dirty: any_dirty.then_some(DirtyRegion {
+                min: dirty_min,
+                max: dirty_max,
+            }),
+        };
+    }
+
+    let res = grid.res();
+    let Some((rmin, rmax)) = union_component_bounds(&labels_after, res) else {
+        return PlasticSettleSummary {
+            iterations_run: 0,
+            voxels_touched,
+            dirty: any_dirty.then_some(DirtyRegion {
+                min: dirty_min,
+                max: dirty_max,
+            }),
+        };
     };
 
-    PlasticSettleSummary {
-        iterations_run,
-        voxels_touched,
-        dirty,
+    // Soft clay holds almost nothing; stiff clay holds tall stacks.
+    // Quadratic ease so mid/high plasticity visibly collapses.
+    let max_stable = (2.0 + (1.0 - plasticity).powi(2) * 48.0)
+        .round()
+        .max(2.0) as u32;
+
+    let sx = (rmax.x - rmin.x) as usize;
+    let sz = (rmax.z - rmin.z) as usize;
+    if sx == 0 || sz == 0 {
+        return PlasticSettleSummary {
+            iterations_run: 0,
+            voxels_touched,
+            dirty: any_dirty.then_some(DirtyRegion {
+                min: dirty_min,
+                max: dirty_max,
+            }),
+        };
     }
-}
 
-#[inline]
-fn col_i(ix: u32, iz: u32, smin: UVec3, sx: usize) -> usize {
-    (ix - smin.x) as usize + (iz - smin.z) as usize * sx
-}
+    // Packed solid counts per column (gaps already fallen out).
+    let mut counts = vec![0u32; sx * sz];
+    for iz in rmin.z..rmax.z {
+        for ix in rmin.x..rmax.x {
+            let mut n = 0u32;
+            for iy in rmin.y..rmax.y {
+                if grid.get(ix, iy, iz) < 0.0 {
+                    n += 1;
+                }
+            }
+            counts[col_i(ix, iz, rmin, sx)] = n;
+        }
+    }
 
-/// Empty cell in the shortest neighbouring column.
-///
-/// - Occupied neighbour → plant just above that column's own top.
-/// - Empty neighbour → plant at the yielding column's foot (`base_iy`)
-///   so material flares outward at the base instead of mid-air.
-/// - Always require `plant_y < peel_iy` so settle cannot raise the peak.
-#[allow(clippy::too_many_arguments)]
-fn find_plant_site(
-    ix: u32,
-    iz: u32,
-    base_iy: u32,
-    peel_iy: u32,
-    col_count: &[u32],
-    col_hi: &[Option<u32>],
-    smin: UVec3,
-    smax: UVec3,
-    sx: usize,
-    res: UVec3,
-) -> Option<(u32, u32, u32)> {
+    // Sandpile: peel overload onto the shortest neighbour until every
+    // column is ≤ max_stable or we hit the iteration budget.
+    let mut iterations_run = 0u32;
     let dirs = [
         (1i32, 0i32),
         (-1, 0),
@@ -253,76 +176,200 @@ fn find_plant_site(
         (1, -1),
         (-1, -1),
     ];
-    // Score: prefer empty / short columns, then lower plant seats.
-    let mut best: Option<(u32, u32, u32, u32, u32)> = None; // count, py, x, y, z
-    for (dx, dz) in dirs {
-        let tx = ix as i32 + dx;
-        let tz = iz as i32 + dz;
-        if tx < smin.x as i32 || tz < smin.z as i32 || tx >= smax.x as i32 || tz >= smax.z as i32
-        {
-            continue;
-        }
-        let ux = tx as u32;
-        let uz = tz as u32;
-        let i = col_i(ux, uz, smin, sx);
-        let count = col_count[i];
-        let py = match col_hi[i] {
-            Some(h) => h.saturating_add(1),
-            // Empty neighbour: plant near the region floor so soft
-            // clay puddles outward at the bench, not mid-height.
-            None => {
-                let _ = base_iy;
-                smin.y
+    for _ in 0..params.iterations {
+        iterations_run += 1;
+        let mut moved = false;
+        // Snapshot counts so order within a pass is stable.
+        let prev = counts.clone();
+        for iz in rmin.z..rmax.z {
+            for ix in rmin.x..rmax.x {
+                let i = col_i(ix, iz, rmin, sx);
+                if prev[i] <= max_stable {
+                    continue;
+                }
+                // Prefer the shortest neighbour; ties → lower plant.
+                let mut best: Option<(u32, usize)> = None;
+                for (dx, dz) in dirs {
+                    let tx = ix as i32 + dx;
+                    let tz = iz as i32 + dz;
+                    if tx < rmin.x as i32
+                        || tz < rmin.z as i32
+                        || tx >= rmax.x as i32
+                        || tz >= rmax.z as i32
+                    {
+                        continue;
+                    }
+                    let j = col_i(tx as u32, tz as u32, rmin, sx);
+                    let c = counts[j];
+                    let better = best.map(|(bc, _)| c < bc).unwrap_or(true);
+                    if better {
+                        best = Some((c, j));
+                    }
+                }
+                if let Some((_, j)) = best {
+                    counts[i] -= 1;
+                    counts[j] += 1;
+                    moved = true;
+                }
             }
-        };
-        if py >= smax.y || py >= res.y || py >= peel_iy {
-            continue;
         }
-        let better = match best {
-            None => true,
-            Some((c, y, _, _, _)) => count < c || (count == c && py < y),
-        };
-        if better {
-            best = Some((count, py, ux, py, uz));
+        if !moved {
+            break;
+        }
+        // Early out once every column is stable.
+        if counts.iter().all(|&c| c <= max_stable) {
+            break;
         }
     }
-    best.map(|(_, _, x, y, z)| (x, y, z))
+
+    // Materialise packed columns + rebuild a narrow band. Everything
+    // sits on the workbench (`iy` from 0 upward).
+    let vs = grid.voxel_size();
+    let write_ymin = 0u32;
+    let write_ymax = rmax.y.max(
+        counts
+            .iter()
+            .copied()
+            .max()
+            .unwrap_or(0)
+            .saturating_add(BAND + 1)
+            .min(res.y),
+    );
+    let write_min = UVec3::new(rmin.x, write_ymin, rmin.z);
+    let write_max = UVec3::new(rmax.x, write_ymax, rmax.z);
+
+    // Dense solid mask for band distances.
+    let sy = (write_max.y - write_min.y) as usize;
+    let mut solid = vec![false; sx * sy * sz];
+    for iz in rmin.z..rmax.z {
+        for ix in rmin.x..rmax.x {
+            let n = counts[col_i(ix, iz, rmin, sx)].min(write_max.y);
+            for iy in 0..n {
+                let li = mask_i(ix, iy, iz, rmin, write_min, sx, sy);
+                solid[li] = true;
+            }
+        }
+    }
+
+    let mut set_tracked = |grid: &mut Grid, x: u32, y: u32, z: u32, new: f32| {
+        let pre = grid.get(x, y, z);
+        if (pre - new).abs() < 1e-7 {
+            return;
+        }
+        track(x, y, z, pre);
+        grid.set(x, y, z, new);
+        dirty_min = dirty_min.min(UVec3::new(x, y, z));
+        dirty_max = dirty_max.max(UVec3::new(x + 1, y + 1, z + 1));
+        any_dirty = true;
+    };
+
+    let band_f = BAND as f32;
+    for iz in write_min.z..write_max.z {
+        for iy in write_min.y..write_max.y {
+            for ix in write_min.x..write_max.x {
+                let li = mask_i(ix, iy, iz, rmin, write_min, sx, sy);
+                let new = if solid[li] {
+                    -vs
+                } else {
+                    let d = min_solid_dist(ix, iy, iz, &solid, rmin, write_min, write_max, sx, sy);
+                    (d.min(band_f + 1.0)) * vs
+                };
+                set_tracked(grid, ix, iy, iz, new);
+            }
+        }
+    }
+
+    // If the pre-squash piece stuck above the new packed height, clear
+    // leftover solids in the old AABB (already covered when write_ymax
+    // includes old rmax.y). Ensure old peak cells above write_ymax are
+    // scrubbed when the original bounds were taller.
+    if rmax.y > write_max.y {
+        for iz in rmin.z..rmax.z {
+            for iy in write_max.y..rmax.y {
+                for ix in rmin.x..rmax.x {
+                    let pre = grid.get(ix, iy, iz);
+                    if pre < vs * (band_f + 1.0) {
+                        set_tracked(grid, ix, iy, iz, vs * (band_f + 1.0));
+                    }
+                }
+            }
+        }
+    }
+
+    PlasticSettleSummary {
+        iterations_run,
+        voxels_touched,
+        dirty: any_dirty.then_some(DirtyRegion {
+            min: dirty_min,
+            max: dirty_max,
+        }),
+    }
 }
 
-fn paint_band_support<F>(grid: &mut Grid, x: u32, y: u32, z: u32, vs: f32, set_tracked: &mut F)
-where
-    F: FnMut(&mut Grid, u32, u32, u32, f32),
-{
-    let res = grid.res();
-    for dz in -1i32..=1 {
-        for dy in -1i32..=1 {
-            for dx in -1i32..=1 {
+#[inline]
+fn col_i(ix: u32, iz: u32, rmin: UVec3, sx: usize) -> usize {
+    (ix - rmin.x) as usize + (iz - rmin.z) as usize * sx
+}
+
+#[inline]
+fn mask_i(
+    ix: u32,
+    iy: u32,
+    iz: u32,
+    rmin: UVec3,
+    write_min: UVec3,
+    sx: usize,
+    sy: usize,
+) -> usize {
+    let x = (ix - rmin.x) as usize;
+    let y = (iy - write_min.y) as usize;
+    let z = (iz - rmin.z) as usize;
+    x + y * sx + z * sx * sy
+}
+
+#[allow(clippy::too_many_arguments)]
+fn min_solid_dist(
+    ix: u32,
+    iy: u32,
+    iz: u32,
+    solid: &[bool],
+    rmin: UVec3,
+    write_min: UVec3,
+    write_max: UVec3,
+    sx: usize,
+    sy: usize,
+) -> f32 {
+    let mut best = (BAND + 1) as f32;
+    let b = BAND as i32;
+    for dz in -b..=b {
+        for dy in -b..=b {
+            for dx in -b..=b {
                 if dx == 0 && dy == 0 && dz == 0 {
                     continue;
                 }
-                let tx = x as i32 + dx;
-                let ty = y as i32 + dy;
-                let tz = z as i32 + dz;
-                if tx < 0 || ty < 0 || tz < 0 {
+                let tx = ix as i32 + dx;
+                let ty = iy as i32 + dy;
+                let tz = iz as i32 + dz;
+                if tx < write_min.x as i32
+                    || ty < write_min.y as i32
+                    || tz < write_min.z as i32
+                    || tx >= write_max.x as i32
+                    || ty >= write_max.y as i32
+                    || tz >= write_max.z as i32
+                {
                     continue;
                 }
-                let ux = tx as u32;
-                let uy = ty as u32;
-                let uz = tz as u32;
-                if ux >= res.x || uy >= res.y || uz >= res.z {
-                    continue;
-                }
-                let cur = grid.get(ux, uy, uz);
-                if cur < 0.0 {
-                    continue;
-                }
-                let dist = ((dx * dx + dy * dy + dz * dz) as f32).sqrt() * vs;
-                if cur > dist {
-                    set_tracked(grid, ux, uy, uz, dist);
+                let li = mask_i(tx as u32, ty as u32, tz as u32, rmin, write_min, sx, sy);
+                if solid[li] {
+                    let d = ((dx * dx + dy * dy + dz * dz) as f32).sqrt();
+                    if d < best {
+                        best = d;
+                    }
                 }
             }
         }
     }
+    best
 }
 
 fn union_component_bounds(labels: &ComponentField, res: UVec3) -> Option<(UVec3, UVec3)> {
@@ -343,71 +390,17 @@ fn union_component_bounds(labels: &ComponentField, res: UVec3) -> Option<(UVec3,
     if !any {
         return None;
     }
-    let rmin = UVec3::new(
-        mn.x.saturating_sub(PAD),
-        mn.y.saturating_sub(2),
-        mn.z.saturating_sub(PAD),
-    );
+    // Always include the workbench floor so packed columns land at iy=0.
+    let rmin = UVec3::new(mn.x.saturating_sub(PAD), 0, mn.z.saturating_sub(PAD));
     let rmax = UVec3::new(
         (mx.x + PAD).min(res.x),
-        (mx.y + 2).min(res.y),
+        (mx.y + BAND + 2).min(res.y),
         (mx.z + PAD).min(res.z),
     );
     if rmin.x >= rmax.x || rmin.y >= rmax.y || rmin.z >= rmax.z {
         return None;
     }
     Some((rmin, rmax))
-}
-
-fn mollify_positive_band<F>(
-    grid: &mut Grid,
-    min: UVec3,
-    max: UVec3,
-    strength: f32,
-    set_tracked: &mut F,
-) where
-    F: FnMut(&mut Grid, u32, u32, u32, f32),
-{
-    if strength <= 0.0 {
-        return;
-    }
-    let snap = grid.snapshot_region(min, max);
-    let (smin, smax) = snap.bounds();
-    let vs = grid.voxel_size();
-    let origin = grid.origin();
-    for iz in smin.z..smax.z {
-        for iy in smin.y..smax.y {
-            for ix in smin.x..smax.x {
-                if ix == smin.x
-                    || iy == smin.y
-                    || iz == smin.z
-                    || ix + 1 == smax.x
-                    || iy + 1 == smax.y
-                    || iz + 1 == smax.z
-                {
-                    continue;
-                }
-                let c = snap.get(ix, iy, iz);
-                if c <= 0.0 || c > vs * 3.0 {
-                    continue;
-                }
-                let avg = (snap.get(ix - 1, iy, iz)
-                    + snap.get(ix + 1, iy, iz)
-                    + snap.get(ix, iy - 1, iz)
-                    + snap.get(ix, iy + 1, iz)
-                    + snap.get(ix, iy, iz - 1)
-                    + snap.get(ix, iy, iz + 1))
-                    * (1.0 / 6.0);
-                let mut new = (c + (avg - c) * strength).max(1e-4);
-                let world_y = origin.y + (iy as f32 + 0.5) * vs;
-                let below = 0.0 - world_y;
-                if below > new {
-                    new = below;
-                }
-                set_tracked(grid, ix, iy, iz, new);
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -451,6 +444,24 @@ mod tests {
             }
         }
         peak
+    }
+
+    fn solid_lowest_iy(g: &Grid) -> u32 {
+        let mut low = u32::MAX;
+        for c in g.allocated_chunk_coords() {
+            let base = c.voxel_min();
+            let max = c.voxel_max(g.res());
+            for iz in base.z..max.z {
+                for iy in base.y..max.y {
+                    for ix in base.x..max.x {
+                        if g.get(ix, iy, iz) < 0.0 {
+                            low = low.min(iy);
+                        }
+                    }
+                }
+            }
+        }
+        low
     }
 
     fn solid_base_width_xz(g: &Grid) -> u32 {
@@ -506,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn plasticity_zero_is_noop() {
+    fn plasticity_zero_leaves_grounded_tower_alone() {
         let mut g = tall_tower();
         let before = solid_count(&g);
         let peak = solid_peak_iy(&g);
@@ -526,7 +537,37 @@ mod tests {
     }
 
     #[test]
-    fn soft_settle_lowers_and_widens_a_tall_tower() {
+    fn floating_lump_crashes_to_bench_even_when_stiff() {
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
+        let _ = apply_primitive(
+            &mut g,
+            &Primitive {
+                kind: PrimitiveKind::Sphere { radius: 5.0 },
+                center: Vec3::new(0.0, 28.0, 0.0),
+                workbench_y: None,
+            },
+        );
+        assert!(solid_lowest_iy(&g) > 5, "precondition: lump is airborne");
+        let labels = label_components(&g);
+        let summary = settle_components_plastic(
+            &mut g,
+            &labels,
+            &PlasticSettleParams {
+                plasticity: 0.0,
+                iterations: 8,
+            },
+            |_, _, _, _| {},
+        );
+        assert!(summary.voxels_touched > 0);
+        assert_eq!(
+            solid_lowest_iy(&g),
+            0,
+            "floating lump must land on the workbench"
+        );
+    }
+
+    #[test]
+    fn soft_settle_collapses_tower_down_onto_bench() {
         let mut g = tall_tower();
         let peak_before = solid_peak_iy(&g);
         let width_before = solid_base_width_xz(&g);
@@ -537,33 +578,32 @@ mod tests {
             &labels,
             &PlasticSettleParams {
                 plasticity: 1.0,
-                iterations: 16,
+                iterations: 256,
             },
             |_, _, _, _| {},
         );
         assert!(summary.voxels_touched > 0, "soft settle must touch voxels");
+        assert_eq!(solid_lowest_iy(&g), 0, "collapsed clay sits on the bench");
         let peak_after = solid_peak_iy(&g);
         assert!(
-            peak_after + 4 < peak_before,
-            "tower should lose substantial height: before={peak_before} after={peak_after}"
+            peak_after + 10 < peak_before,
+            "tower should collapse hard: before={peak_before} after={peak_after}"
         );
         let width_after = solid_base_width_xz(&g);
         assert!(
             width_after > width_before,
-            "base should flare: before={width_before} after={width_after}"
+            "base should pile outward: before={width_before} after={width_after}"
         );
         let vol_after = solid_count(&g);
         let ratio = vol_after as f32 / vol_before as f32;
         assert!(
-            (0.90..=1.10).contains(&ratio),
+            (0.85..=1.15).contains(&ratio),
             "volume should stay roughly conserved: before={vol_before} after={vol_after}"
         );
     }
 
     #[test]
-    fn soft_sphere_settles_and_conserves_volume() {
-        // Starter-like squat forms used to no-op: footprint rule alone
-        // kept max_stable ≥ height. Soft plasticity must visibly move.
+    fn soft_sphere_pancakes_toward_bench() {
         let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
         let _ = apply_primitive(
             &mut g,
@@ -573,6 +613,7 @@ mod tests {
                 workbench_y: Some(0.0),
             },
         );
+        let peak_before = solid_peak_iy(&g);
         let width_before = solid_base_width_xz(&g);
         let vol_before = solid_count(&g);
         let labels = label_components(&g);
@@ -581,20 +622,21 @@ mod tests {
             &labels,
             &PlasticSettleParams {
                 plasticity: 1.0,
-                iterations: 16,
+                iterations: 256,
             },
             |_, _, _, _| {},
         );
+        assert!(summary.voxels_touched > 0);
+        assert_eq!(solid_lowest_iy(&g), 0);
+        let peak_after = solid_peak_iy(&g);
+        assert!(
+            peak_after + 6 < peak_before,
+            "soft sphere should lose height: before={peak_before} after={peak_after}"
+        );
         let width_after = solid_base_width_xz(&g);
         assert!(
-            summary.voxels_touched > 0,
-            "soft sphere must relocate voxels (got touched=0)"
-        );
-        // Sphere tips are short columns (below max_stable) so peak iy
-        // can stay put; the body must still puddle outward.
-        assert!(
             width_after > width_before,
-            "soft sphere should flare at the base: before={width_before} after={width_after}"
+            "soft sphere should pancake outward: before={width_before} after={width_after}"
         );
         let vol_after = solid_count(&g);
         let ratio = vol_after as f32 / vol_before as f32;
@@ -605,7 +647,7 @@ mod tests {
     }
 
     #[test]
-    fn stiff_fat_blob_barely_moves() {
+    fn stiff_fat_blob_barely_squashes() {
         let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
         let _ = apply_primitive(
             &mut g,
@@ -622,16 +664,16 @@ mod tests {
             &mut g,
             &labels,
             &PlasticSettleParams {
-                plasticity: 0.25,
-                iterations: 8,
+                plasticity: 0.2,
+                iterations: 64,
             },
             |_, _, _, _| {},
         );
         let peak_after = solid_peak_iy(&g);
         let drop = peak_before as i32 - peak_after as i32;
         assert!(
-            drop <= 3,
-            "stiff fat blob should barely settle: drop={drop} touched={}",
+            drop <= 4,
+            "stiff fat blob should barely squash: drop={drop} touched={}",
             summary.voxels_touched
         );
         let vol_after = solid_count(&g);

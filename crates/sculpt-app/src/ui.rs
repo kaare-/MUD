@@ -159,7 +159,7 @@ fn draw_ui(
                     actions.send(AppAction::RestPiecesOnBench);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Settle (plastic)\u{2026}", "Ctrl+Shift+G") {
+                if menu_item(ui, "Settle (gravity)\u{2026}", "Ctrl+Shift+G") {
                     actions.send(AppAction::ShowSettleDialog);
                     ui.close_menu();
                 }
@@ -617,22 +617,22 @@ fn draw_dialogs(
         }
     }
 
-    // Plastic settle dialog — plasticity slider, then one-shot burst.
+    // Gravity settle dialog — softness slider, then one-shot burst.
     if settle_state.open {
         let mut commit: Option<Option<f32>> = None;
-        egui::Window::new("Settle (plastic)")
+        egui::Window::new("Settle (gravity)")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Plasticity (elastic → soft clay):");
+                ui.label("Softness under gravity (stiff → soft clay):");
                 ui.add(
                     egui::Slider::new(&mut settle_state.plasticity, 0.0..=1.0)
-                        .text("plasticity"),
+                        .text("softness"),
                 );
                 ui.small(
-                    "Soft clay slumps and flares at the base.\n\
-                     Lower plasticity keeps squat forms steadier.\n\
+                    "Always drops floating lumps onto the workbench.\n\
+                     Soft clay collapses tall stalks and pancakes blobs.\n\
                      Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {
@@ -721,12 +721,12 @@ fn draw_dialogs(
                 );
                 ui.small("Hold Q / E to rotate. Longer = slower.");
                 ui.add_space(8.0);
-                ui.heading("Settle (plastic)");
+                ui.heading("Settle (gravity)");
                 ui.add(
                     egui::Slider::new(&mut app_settings.default_plasticity, 0.0..=1.0)
-                        .text("Default plasticity"),
+                        .text("Default softness"),
                 );
-                ui.small("Pre-fills Sculpt → Settle (plastic)…");
+                ui.small("Pre-fills Sculpt → Settle (gravity)…");
                 ui.add_space(6.0);
                 if ui.button("Close").clicked() {
                     close = true;

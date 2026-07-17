@@ -13,7 +13,7 @@ use crate::actions::AppAction;
 pub struct AppSettings {
     /// Seconds for one full turntable revolution while Q or E is held.
     pub turntable_period_secs: f32,
-    /// Plasticity pre-filled when opening Settle (plastic)….
+    /// Softness pre-filled when opening Settle (gravity)….
     pub default_plasticity: f32,
 }
 
