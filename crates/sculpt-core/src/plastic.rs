@@ -301,7 +301,7 @@ fn tip_unstable(
     *voxels = dedup_voxels(next);
 }
 
-fn drop_solids_to_bench(voxels: &mut Vec<LabeledVoxel>) {
+fn drop_solids_to_bench(voxels: &mut [LabeledVoxel]) {
     let groups = group_by_id(voxels);
     for (_id, idxs) in groups {
         let mut min_y = u32::MAX;
