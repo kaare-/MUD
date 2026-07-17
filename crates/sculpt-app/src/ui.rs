@@ -631,8 +631,8 @@ fn draw_dialogs(
                         .text("softness"),
                 );
                 ui.small(
-                    "Drops floating lumps, bows tall stalks, then soft\n\
-                     clay can collapse / pancake onto the workbench.\n\
+                    "Drop → tip tall pieces → bow stalks → thick splat.\n\
+                     Softness 0 = drop only; high = volumetric mound.\n\
                      Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {

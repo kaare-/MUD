@@ -120,11 +120,10 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    to a face-on preset; distance and target are preserved.
 
 9. `[x]` **Gravity settle.** See `PLASTIC_GRAVITY.md`.
-   `Sculpt → Settle (gravity)…` (`Ctrl+Shift+G`): (1) rigid-drop
-   floaters, (2) elastic bow on tall thin stalks, (3) soft sandpile
-   collapse / pancake. Softness 0 = drop only; mid = bow; 1 = pile
-   down. One undo stroke. Follow-ups: multi-layer, volume-perfect
-   redistribution.
+   `Sculpt → Settle (gravity)…` (`Ctrl+Shift+G`): drop → tip tall
+   pieces → bow stalks → thick volumetric splat (not surface
+   erosion). Softness 0 = drop only. One undo stroke. Follow-ups:
+   multi-layer, richer rest poses.
 
 10. `[x]` **Settings menus + workbench grid default on.**
     `Edit → Tool parameters…` (size / advance / smooth / magic clay /

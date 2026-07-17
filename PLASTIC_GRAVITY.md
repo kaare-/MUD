@@ -1,80 +1,64 @@
 # Gravity settle — spike design
 
-Status: **drop + elastic bow + soft squash**.
+Status: **drop → tip → bow → volumetric splat**.
 
 ## Goal
 
-Tunable gravity on the active layer:
+Tunable gravity on the active layer that reads as clay, not erosion:
 
-- Floating lumps **crash onto the workbench**.
-- Tall thin stalks **bow** (elastic lean) under mid softness.
-- Soft clay can still **collapse / pancake** onto the bench.
-- Softness slider `plasticity ∈ [0, 1]` = drop-only → bow + pancake.
+1. Floating lumps **crash onto the workbench**.
+2. Tall unstable pieces **tip over** (90° lay-down) when soft enough.
+3. Remaining slender stalks **bow** (quadratic shear).
+4. Soft clay **splats** into a thick mound (never a 1-voxel sheet).
 
-Falsifiers:
+Softness `plasticity ∈ [0, 1]`: drop-only → tip/bow → thick splat.
 
-1. An airborne blob lands with its lowest solid at `iy = 0`, even at
-   softness `0`.
-2. A thin tower at mid softness (`≈ 0.35`) keeps most of its height
-   but its tip COM shifts sideways (bow).
-3. The same tower loses substantial height and gains base width at
-   softness `1`.
-4. Softness `0` leaves a grounded tower unchanged.
-5. A soft sphere on the bench loses height and widens (pancake).
-6. A stiff fat blob (`softness ≈ 0.2`) barely squashes / does not bow.
-7. Solid voxel count stays within ~15% (approximate conservation).
+## Falsifiers
 
-## Non-goals (spike)
+1. Airborne blob lands at `iy = 0` even at softness `0`.
+2. Soft tower tips and/or splats — loses height, footprint stays wide,
+   max column height ≥ 4 (thick mound).
+3. Mid-soft slender stalk tips or bows (does not stay a rigid needle).
+4. Soft sphere becomes a shorter thick splat.
+5. Stiff fat blob (`≈ 0.12`) barely moves.
+6. Volume stays within ~25% (despike may trim needles).
 
-- FEM / MPM / PBD / continuous sim / spring rebound
-- Rest-pose rotation / tipping onto a face
+## Non-goals
+
+- FEM / MPM / PBD / continuous sim
+- Perfect rest-pose onto an arbitrary face (tip is a 90° lay-down)
 - Multi-layer settle in one op
-- Exact volume-preserving Poisson redistribution
 
 ## Algorithm
 
-### Phase 1 — Drop
+### 1 — Drop
+Rigid rest (`Ctrl+G` backbone).
 
-Same rigid rest as `Ctrl+G`: every connected component translates by
-`−min_iy` so it touches the workbench.
+### 2 — Tip
+If height/footprint is large and softness ≥ 0.2: rotate 90° about Z
+through the centroid so height folds into X, then re-drop to `iy = 0`.
 
-### Phase 2 — Elastic bow (softness > 0)
+### 3 — Bow
+Still-slender upright leftovers: lateral `shift = amp · (y/H)²`.
 
-For each **slender** component (`height / footprint ≥ 1.35`):
-
-1. Pick a lean direction (existing top-vs-base lean, else `+X`).
-2. Shear solid voxels laterally with `shift = amp · (y / H)²`.
-3. `amp` scales with softness × aspect; capped so consecutive rows
-   stay roughly connected.
-4. Close internal column gaps without crushing cantilevers to the floor.
-
-Fat / squat forms skip this phase.
-
-### Phase 3 — Squash (softness > 0)
-
-1. Stable height `max_stable = 2 + (1 − softness)² × 48`.
-2. Sandpile while any column’s **solid count** or **peak height**
-   exceeds `max_stable` (peak matters after bow — tip cantilevers are
-   often 1-voxel columns high above the bench).
-3. Rewrite the touched region from the solid mask and rebuild a
-   3-voxel narrow band.
+### 4 — Splat (softness ≥ 0.25)
+1. Bench-pack every column.
+2. Target mound height from `cbrt(volume)` × softness (min 4 voxels).
+3. Spread overflow into neighbours / rings.
+4. Laplacian equalise the height field → dome, not spikes.
+5. Despike (drop 0–1 neighbour needles).
+6. Rewrite SDF from the solid mask with a clean distance band.
 
 ## UX
 
 | | |
 |---|---|
 | Menu | `Sculpt → Settle (gravity)…` |
-| Hotkey | `Ctrl+Shift+G` (rigid Rest stays `Ctrl+G`) |
-| Control | Softness slider (default from Preferences) |
+| Hotkey | `Ctrl+Shift+G` |
+| Control | Softness slider |
 | Scope | Active layer · one undo stroke |
 
-## Relationship to rigid Rest
+## Implementation
 
-`Ctrl+G` = phase 1 only. Settle always includes phase 1, then bow +
-squash when softness > 0.
-
-## Implementation map
-
-- `crates/sculpt-core/src/plastic.rs` — drop + bow + sandpile + tests
-- `crates/sculpt-app/src/gravity.rs` — hotkey / action / undo
-- `actions` / `ui` — menu + softness dialog
+- `crates/sculpt-core/src/plastic.rs`
+- `crates/sculpt-app/src/gravity.rs` / `ui.rs`
