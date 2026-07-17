@@ -8,6 +8,10 @@
 //! (multi-layer). Older files become a one-layer scene. On success
 //! the live stack is replaced, chunk entities are despawned, and
 //! the undo history is cleared.
+//!
+//! **Autosave** writes dirty work to `~/.mud/autosave.mudclay` on a
+//! ~90s timer (skips mid-stroke / dialogs). If that file is present
+//! at launch, a Restore / Discard prompt offers crash recovery.
 
 use std::fs::{self, File};
 use std::io::{BufReader, BufWriter};
@@ -28,17 +32,113 @@ use crate::workpiece::LayersState;
 /// Cap for the Open Recent list (and on-disk MRU).
 pub const MAX_RECENT_FILES: usize = 8;
 
+/// Seconds between dirty-gated autosave writes.
+pub const AUTOSAVE_INTERVAL_SECS: f32 = 90.0;
+
 pub fn plugin(app: &mut App) {
     app.init_resource::<FileDialogState>();
     app.init_resource::<RecentFiles>();
+    app.init_resource::<AutosaveState>();
     app.add_systems(
         Update,
         (
             emit_project_hotkeys,
             handle_project_actions,
             handle_dialog_actions,
+            tick_autosave,
         ),
     );
+}
+
+/// Crash-recovery autosave: single-slot `~/.mud/autosave.mudclay`.
+///
+/// Writes on a repeating timer when the undo journal says the
+/// document is dirty. Skips mid-stroke and while file dialogs are
+/// open. On launch, if that file exists, [`AutosaveState::recovery_pending`]
+/// triggers a Restore / Discard dialog.
+#[derive(Resource)]
+pub struct AutosaveState {
+    timer: Timer,
+    /// True when an autosave file was found at startup (or left
+    /// behind after a crash) and the user hasn't dismissed it yet.
+    pub recovery_pending: bool,
+}
+
+impl Default for AutosaveState {
+    fn default() -> Self {
+        Self {
+            timer: Timer::from_seconds(AUTOSAVE_INTERVAL_SECS, TimerMode::Repeating),
+            recovery_pending: autosave_path().is_file(),
+        }
+    }
+}
+
+impl AutosaveState {
+    pub fn any_modal(&self) -> bool {
+        self.recovery_pending
+    }
+}
+
+/// `~/.mud/autosave.mudclay` (creates the directory lazily on write).
+pub fn autosave_path() -> PathBuf {
+    mud_config_dir().join("autosave.mudclay")
+}
+
+fn mud_config_dir() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    match home {
+        Some(h) => h.join(".mud"),
+        None => PathBuf::from("."),
+    }
+}
+
+fn clear_autosave_file() {
+    let path = autosave_path();
+    if path.is_file() {
+        if let Err(e) = fs::remove_file(&path) {
+            warn!("couldn't remove autosave {}: {e}", path.display());
+        }
+    }
+}
+
+fn workpiece_has_material(workpiece: &LayersState) -> bool {
+    workpiece
+        .layers()
+        .iter()
+        .any(|layer| layer.grid.allocated_tile_count() > 0)
+}
+
+fn tick_autosave(
+    time: Res<Time>,
+    mut autosave: ResMut<AutosaveState>,
+    mut history: ResMut<UndoHistory>,
+    workpiece: Res<LayersState>,
+    stroke: Res<SculptStroke>,
+    dialogs: Res<FileDialogState>,
+) {
+    autosave.timer.tick(time.delta());
+    if !autosave.timer.just_finished() {
+        return;
+    }
+    if autosave.recovery_pending || dialogs.any_open() {
+        return;
+    }
+    if stroke.recorder.is_some() {
+        return;
+    }
+    if !history.is_dirty() || !workpiece_has_material(&workpiece) {
+        return;
+    }
+    let path = autosave_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    if save_to_path(&workpiece, &path) {
+        history.mark_clean();
+        info!("autosave wrote {}", path.display());
+    }
 }
 
 /// Most-recently-used `.mudclay` paths for `File → Open Recent`.
@@ -267,11 +367,15 @@ fn handle_project_actions(
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<crate::selection::Selection>,
     mut recent: ResMut<RecentFiles>,
+    mut autosave: ResMut<AutosaveState>,
 ) {
     for a in events.read() {
         match a {
             AppAction::NewWorkpiece => {
                 clear_worktable(&mut workpiece, &mut history, &mut stroke);
+                history.mark_clean();
+                clear_autosave_file();
+                autosave.recovery_pending = false;
                 selection.picked_voxel = None;
                 selection.invalidate_labels();
             }
@@ -279,17 +383,26 @@ fn handle_project_actions(
                 let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
                 if save_to_path(&workpiece, &path) {
                     recent.record(&path);
+                    history.mark_clean();
+                    clear_autosave_file();
+                    autosave.recovery_pending = false;
                 }
             }
             AppAction::SaveProjectAs(path) => {
                 if save_to_path(&workpiece, path) {
                     recent.record(path);
+                    history.mark_clean();
+                    clear_autosave_file();
+                    autosave.recovery_pending = false;
                 }
             }
             AppAction::LoadNewestProject => match newest_mudclay_in_cwd() {
                 Some(p) => {
                     if load_from_path(&p, &mut workpiece, &mut history, &mut stroke) {
                         recent.record(&p);
+                        history.mark_clean();
+                        clear_autosave_file();
+                        autosave.recovery_pending = false;
                     }
                     selection.picked_voxel = None;
                     selection.invalidate_labels();
@@ -297,13 +410,38 @@ fn handle_project_actions(
                 None => warn!("no mud-sculpt-*.mudclay files in the working directory"),
             },
             AppAction::OpenProject(path) => {
+                // Opening the autosave itself shouldn't treat it as a
+                // normal project open that clears recovery.
+                let is_autosave = path == &autosave_path();
                 if load_from_path(path, &mut workpiece, &mut history, &mut stroke) {
-                    recent.record(path);
+                    if !is_autosave {
+                        recent.record(path);
+                        clear_autosave_file();
+                        autosave.recovery_pending = false;
+                    }
+                    history.mark_clean();
                 }
                 selection.picked_voxel = None;
                 selection.invalidate_labels();
             }
             AppAction::ClearRecentFiles => recent.clear(),
+            AppAction::RestoreAutosave => {
+                let path = autosave_path();
+                if load_from_path(&path, &mut workpiece, &mut history, &mut stroke) {
+                    history.mark_clean();
+                    autosave.recovery_pending = false;
+                    info!("restored crash-recovery autosave");
+                } else {
+                    warn!("couldn't restore autosave at {}", path.display());
+                }
+                selection.picked_voxel = None;
+                selection.invalidate_labels();
+            }
+            AppAction::DiscardAutosave => {
+                clear_autosave_file();
+                autosave.recovery_pending = false;
+                info!("discarded crash-recovery autosave");
+            }
             _ => {}
         }
     }
@@ -576,5 +714,17 @@ mod tests {
         assert_eq!(load_recent_list(&store), paths);
         save_recent_list(&store, &[]);
         assert!(load_recent_list(&store).is_empty());
+    }
+
+    #[test]
+    fn autosave_path_lives_under_mud_config_dir() {
+        let path = autosave_path();
+        assert_eq!(
+            path.file_name().and_then(|s| s.to_str()),
+            Some("autosave.mudclay")
+        );
+        assert!(path
+            .parent()
+            .is_some_and(|p| p.ends_with(".mud") || p == Path::new(".")));
     }
 }

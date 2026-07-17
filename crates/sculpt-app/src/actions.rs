@@ -50,6 +50,10 @@ pub enum AppAction {
     OpenProject(PathBuf),
     /// Clear the Open Recent MRU list.
     ClearRecentFiles,
+    /// Restore the crash-recovery autosave into the worktable.
+    RestoreAutosave,
+    /// Discard the crash-recovery autosave file.
+    DiscardAutosave,
     /// Pop up the Save-As dialog. UI-only affordance; keyboard has
     /// Ctrl+Shift+S.
     ShowSaveAsDialog,
