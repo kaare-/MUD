@@ -129,7 +129,7 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
 10. `[x]` **Settings menus + workbench grid default on.**
     `Edit → Tool parameters…` (size / advance / smooth / magic clay /
     symmetry) and `Edit → Preferences…` (grid, turntable period,
-    default settle plasticity). Workbench grid starts visible.
+    default settle softness). Workbench grid starts visible.
 
 11. `[x]` **Layer visibility remesh fix.** Hiding despawns chunk
     meshes; showing again re-dirties allocated chunks so they
