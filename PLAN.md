@@ -187,6 +187,32 @@ Suggested PR stack (see doc for acceptance checks):
 
 ---
 
+## Next track — clay feel (locked 2026-07-17)
+
+Full plan: **`CLAY_FEEL.md`**.
+
+**Order: true Press displace first, then vocabulary, then Pull /
+paddle / one remove tool.** Architecture and Stage-4 chrome are ahead
+of the material model; Clay today is soft Add/Remove with a bulge
+heuristic, not DESIGN §2.4 volume redistribution.
+
+Priority stack:
+
+1. `[ ]` **P0** — Press displace v1 (`∆V⁻` → recruit → redistance).
+2. `[ ]` **P1** — Rename / reframe: Press / Pull / Carve; no magic-clay
+   toggle as the story.
+3. `[ ]` **P2** — Pull semantics (recruit-from-surroundings) and/or
+   explicit Deposit for coils.
+4. `[ ]` **P3** — Paddle → displace (same pipeline).
+5. `[ ]` **P4** — One sharp remove tool (knife or scraper).
+6. `[ ]` **P5** — Feel amplifiers (tilt, tool-SDF ghost, pressure
+   retune). Only after P0–P2.
+
+Falsifiable bar: strangers say the clay “pushes back,” not “carves
+foam.”
+
+---
+
 ## Design-doc obligations still owed
 
 From `DESIGN.md`'s staged roadmap:
