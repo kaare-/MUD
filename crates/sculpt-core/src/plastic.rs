@@ -1,15 +1,17 @@
-//! Gravity settle — drop, tip, bow, then a volumetric splat.
+//! Gravity settle — drop, tip, arch-sag, then a volumetric splat.
 //!
 //! See `PLASTIC_GRAVITY.md`. Not FEM. One undo stroke on the active
 //! layer.
 //!
 //! 1. **Drop** — rigid rest onto `iy = 0` (same as `Ctrl+G`).
-//! 2. **Tip** — tall unstable pieces rotate 90° to lie down, then
-//!    re-drop.
-//! 3. **Bow** — remaining slender stalks shear with a quadratic lean.
-//! 4. **Splat** — soft clay compresses into a thick mound (not a
-//!    1-voxel sheet) and the solid mask is smoothed before the SDF
-//!    rewrite so the result reads as clay, not surface erosion.
+//! 2. **Tip** — tall unstable pieces rotate 90° to lie down (soft only).
+//! 3. **Arch sag** — voxels far from bench support (graph distance)
+//!    ease downward so long thin branches form an arch; works at low
+//!    softness. No column-packing (that used to snap arches apart).
+//! 4. **Splat** — soft clay compresses into a thick mound.
+//!
+//! The solid→SDF rewrite runs only when tip/sag/splat changed geometry,
+//! so a tiny softness value doesn't sandblast the surface.
 
 use std::collections::{HashMap, HashSet};
 
@@ -148,13 +150,15 @@ where
         };
     }
 
-    // --- Phase 2: tip tall unstable pieces onto their side ------------
-    tip_unstable(&mut voxels, plasticity, rmin, rmax, res);
-    drop_solids_to_bench(&mut voxels);
+    // --- Phase 2: tip tall unstable pieces (soft clay only) -----------
+    let mut changed = tip_unstable(&mut voxels, plasticity, rmin, rmax, res);
+    if changed {
+        drop_solids_to_bench(&mut voxels);
+    }
 
-    // --- Phase 3: elastic bow on remaining slender stalks -------------
-    apply_elastic_bow(&mut voxels, plasticity, rmin, rmax, res);
-    fill_column_gaps(&mut voxels);
+    // --- Phase 3: arch sag (long thin branches bow toward the bench) -
+    // Runs even at very low softness — that was the missing behaviour.
+    changed |= apply_arch_sag(&mut voxels, plasticity, res);
 
     // --- Phase 4: volumetric splat (thick mound, not a paper sheet) ---
     let iterations_run = if params.iterations == 0 || plasticity < 0.25 {
@@ -162,21 +166,26 @@ where
     } else {
         let steps = volumetric_splat(&mut voxels, plasticity, params.iterations, rmin, rmax);
         smooth_solid_mask(&mut voxels, rmin, rmax);
+        changed = true;
         steps
     };
 
-    // --- Write smoothed occupancy → SDF --------------------------------
-    write_solids_to_grid(
-        grid,
-        &voxels,
-        rmin,
-        rmax,
-        res,
-        &mut track,
-        &mut dirty_min,
-        &mut dirty_max,
-        &mut any_dirty,
-    );
+    // Only rewrite the SDF when tip/sag/splat actually moved solids.
+    // Rewriting an unchanged mask was sandblasting the surface into
+    // the "erosion" look even at softness 0.01.
+    if changed {
+        write_solids_to_grid(
+            grid,
+            &voxels,
+            rmin,
+            rmax,
+            res,
+            &mut track,
+            &mut dirty_min,
+            &mut dirty_max,
+            &mut any_dirty,
+        );
+    }
 
     PlasticSettleSummary {
         iterations_run,
@@ -225,19 +234,21 @@ fn group_by_id(voxels: &[LabeledVoxel]) -> HashMap<ComponentId, Vec<usize>> {
 
 /// Tip components whose height dominates the footprint (unstable
 /// towers / stalks). Softness gates how eager we are to tip.
+/// Returns whether any component actually tipped.
 fn tip_unstable(
     voxels: &mut Vec<LabeledVoxel>,
     plasticity: f32,
     rmin: UVec3,
     rmax: UVec3,
     res: UVec3,
-) {
-    // Need a bit of softness before tipping — stiff clay stands.
-    if plasticity < 0.2 {
-        return;
+) -> bool {
+    // Tip is a big posture change — keep it off for light settle.
+    if plasticity < 0.35 {
+        return false;
     }
     let groups = group_by_id(voxels);
     let mut next = voxels.clone();
+    let mut any = false;
     for (id, idxs) in groups {
         if idxs.is_empty() {
             continue;
@@ -273,19 +284,17 @@ fn tip_unstable(
         let foot = ex.max(ez);
         // Only tip when clearly taller than wide, and softer clay tips
         // slightly stubbier pieces too.
-        let tip_aspect = 2.4 - plasticity * 0.7; // p=1 → 1.7, p=0.2 → 2.26
+        let tip_aspect = 2.4 - plasticity * 0.7; // p=1 → 1.7, p=0.35 → 2.15
         if ey < tip_aspect * foot || ey < 10.0 {
             continue;
         }
 
-        // Rotate 90° about Z through the centroid: (x,y,z) →
-        // (cx - (y-cy), cy + (x-cx), z). Height folds into X.
+        // Rotate 90° about Z through the centroid: height folds into X.
         for &i in &idxs {
             let v = voxels[i];
             let rx = v.x as f32 - cx;
             let ry = v.y as f32 - cy;
             let rz = v.z as f32 - cz;
-            // 90° around Z: (rx,ry,rz) → (-ry, rx, rz)
             let nx = (cx - ry).round() as i32;
             let ny = (cy + rx).round() as i32;
             let nz = (cz + rz).round() as i32;
@@ -296,9 +305,12 @@ fn tip_unstable(
                 id,
             };
         }
+        any = true;
     }
-    // Dedup collisions (two voxels → one cell keeps one).
-    *voxels = dedup_voxels(next);
+    if any {
+        *voxels = dedup_voxels(next);
+    }
+    any
 }
 
 fn drop_solids_to_bench(voxels: &mut [LabeledVoxel]) {
@@ -317,130 +329,209 @@ fn drop_solids_to_bench(voxels: &mut [LabeledVoxel]) {
     }
 }
 
-fn apply_elastic_bow(
-    voxels: &mut Vec<LabeledVoxel>,
-    plasticity: f32,
-    rmin: UVec3,
-    rmax: UVec3,
-    res: UVec3,
-) {
+/// Sag voxels toward the bench by graph-distance from support.
+///
+/// Bench-touching solids are anchors (t = 0). Tips of long thin
+/// branches are far in the solid graph (t → 1) and drop by
+/// `tip_sag · t²`, so a light settle bows an arch instead of
+/// snapping the branch into falling sections.
+fn apply_arch_sag(voxels: &mut Vec<LabeledVoxel>, plasticity: f32, res: UVec3) -> bool {
+    if voxels.is_empty() {
+        return false;
+    }
+
+    // Per-component so separate lumps don't borrow each other's support.
     let groups = group_by_id(voxels);
     let mut next = voxels.clone();
-    for (id, idxs) in groups {
-        let mut min_x = u32::MAX;
-        let mut max_x = 0u32;
-        let mut min_y = u32::MAX;
-        let mut max_y = 0u32;
-        let mut min_z = u32::MAX;
-        let mut max_z = 0u32;
-        let mut bot_cx = 0.0f32;
-        let mut bot_cz = 0.0f32;
-        let mut bot_n = 0.0f32;
-        let mut top_cx = 0.0f32;
-        let mut top_cz = 0.0f32;
-        let mut top_n = 0.0f32;
-        for &i in &idxs {
-            let v = voxels[i];
-            min_x = min_x.min(v.x);
-            max_x = max_x.max(v.x);
-            min_y = min_y.min(v.y);
-            max_y = max_y.max(v.y);
-            min_z = min_z.min(v.z);
-            max_z = max_z.max(v.z);
-        }
-        let height = max_y.saturating_sub(min_y).saturating_add(1);
-        let footprint = (max_x - min_x + 1).min(max_z - min_z + 1).max(1);
-        let aspect = height as f32 / footprint as f32;
-        // After tip, most towers are already laid down. Bow only the
-        // still-slender upright leftovers.
-        if aspect < 1.5 || height < 10 {
+    let mut any_sag = false;
+    let dirs6 = [
+        (1i32, 0, 0),
+        (-1, 0, 0),
+        (0, 1, 0),
+        (0, -1, 0),
+        (0, 0, 1),
+        (0, 0, -1),
+    ];
+
+    for (_id, idxs) in groups {
+        if idxs.len() < 8 {
             continue;
         }
-        let y_bot = min_y + (height / 4).max(1);
-        let y_top = max_y.saturating_sub((height / 4).max(1));
+
+        let mut key_to_local: HashMap<(u32, u32, u32), usize> = HashMap::new();
         for &i in &idxs {
             let v = voxels[i];
-            if v.y <= y_bot {
-                bot_cx += v.x as f32;
-                bot_cz += v.z as f32;
-                bot_n += 1.0;
-            }
-            if v.y >= y_top {
-                top_cx += v.x as f32;
-                top_cz += v.z as f32;
-                top_n += 1.0;
+            key_to_local.insert((v.x, v.y, v.z), i);
+        }
+
+        // Bench anchors (xz) + BFS distance through the solid.
+        let mut anchors: Vec<(u32, u32)> = Vec::new();
+        let mut dist: HashMap<(u32, u32, u32), u32> = HashMap::new();
+        let mut queue: std::collections::VecDeque<(u32, u32, u32)> =
+            std::collections::VecDeque::new();
+        for &i in &idxs {
+            let v = voxels[i];
+            if v.y == 0 {
+                anchors.push((v.x, v.z));
+                dist.insert((v.x, v.y, v.z), 0);
+                queue.push_back((v.x, v.y, v.z));
             }
         }
-        let (dir_x, dir_z) = lean_direction(bot_cx, bot_cz, bot_n, top_cx, top_cz, top_n);
-        let amp = (plasticity * (aspect - 1.0) * 2.4)
-            .clamp(0.0, height as f32 * 0.4);
-        if amp < 0.75 {
+        if queue.is_empty() || anchors.is_empty() {
+            // No bench contact inside this component — leave it; the
+            // drop phase already handled true floaters.
             continue;
         }
-        let h = height.max(1) as f32;
+        while let Some((x, y, z)) = queue.pop_front() {
+            let d0 = dist[&(x, y, z)];
+            for (dx, dy, dz) in dirs6 {
+                let nx = x as i32 + dx;
+                let ny = y as i32 + dy;
+                let nz = z as i32 + dz;
+                if nx < 0 || ny < 0 || nz < 0 {
+                    continue;
+                }
+                let key = (nx as u32, ny as u32, nz as u32);
+                if !key_to_local.contains_key(&key) || dist.contains_key(&key) {
+                    continue;
+                }
+                dist.insert(key, d0 + 1);
+                queue.push_back(key);
+            }
+        }
+
+        // True branch/cantilever: far horizontally from any bench
+        // footprint. Fat blobs (spheres) have small horiz even at the
+        // crown, so they stay put at light settle.
+        let horiz_of = |x: u32, z: u32| -> u32 {
+            anchors
+                .iter()
+                .map(|&(ax, az)| {
+                    let dx = (x as i32 - ax as i32).unsigned_abs();
+                    let dz = (z as i32 - az as i32).unsigned_abs();
+                    dx.max(dz)
+                })
+                .min()
+                .unwrap_or(0)
+        };
+
+        let mut max_cantilever = 0u32;
         for &i in &idxs {
             let v = voxels[i];
-            let t = (v.y.saturating_sub(min_y) as f32) / h;
-            let shift = (amp * t * t).round() as i32;
-            let nx = (v.x as i32 + dir_x * shift).clamp(rmin.x as i32, rmax.x as i32 - 1);
-            let nz = (v.z as i32 + dir_z * shift).clamp(rmin.z as i32, rmax.z as i32 - 1);
+            let Some(&d) = dist.get(&(v.x, v.y, v.z)) else {
+                continue;
+            };
+            let h = horiz_of(v.x, v.z);
+            if h >= 8 && d > v.y.saturating_add(3) {
+                max_cantilever = max_cantilever.max(d);
+            }
+        }
+        if max_cantilever < 14 {
+            continue;
+        }
+
+        // Tip drop in voxels. Even p=0.01 on a long branch bows a little.
+        let reach = (max_cantilever as f32 / 18.0).clamp(0.85, 2.8);
+        let tip_sag = ((1.25 + plasticity * 26.0) * reach)
+            .min(solid_peak_of(&idxs, voxels) as f32 * 0.85)
+            .max(1.0);
+
+        for &i in &idxs {
+            let v = voxels[i];
+            let Some(&d) = dist.get(&(v.x, v.y, v.z)) else {
+                continue;
+            };
+            let h = horiz_of(v.x, v.z);
+            if h < 8 || d <= v.y.saturating_add(3) {
+                continue;
+            }
+            let t = d as f32 / max_cantilever as f32;
+            let dy = (tip_sag * t * t).round() as i32;
+            if dy <= 0 {
+                continue;
+            }
+            let ny = (v.y as i32 - dy).max(0) as u32;
+            if ny != v.y {
+                any_sag = true;
+            }
             next[i] = LabeledVoxel {
-                x: (nx as u32).min(res.x.saturating_sub(1)),
-                y: v.y,
-                z: (nz as u32).min(res.z.saturating_sub(1)),
-                id,
+                x: v.x.min(res.x.saturating_sub(1)),
+                y: ny.min(res.y.saturating_sub(1)),
+                z: v.z.min(res.z.saturating_sub(1)),
+                id: v.id,
             };
         }
     }
+
+    if !any_sag {
+        return false;
+    }
     *voxels = dedup_voxels(next);
+    // Seal 1-voxel gaps opened by discrete sag so arches don't break
+    // into floating crumbs.
+    reseal_arch_gaps(voxels);
+    true
 }
 
-fn lean_direction(
-    bot_cx: f32,
-    bot_cz: f32,
-    bot_n: f32,
-    top_cx: f32,
-    top_cz: f32,
-    top_n: f32,
-) -> (i32, i32) {
-    if bot_n > 0.0 && top_n > 0.0 {
-        let dx = top_cx / top_n - bot_cx / bot_n;
-        let dz = top_cz / top_n - bot_cz / bot_n;
-        if dx * dx + dz * dz > 0.25 {
-            if dx.abs() >= dz.abs() {
-                return (if dx >= 0.0 { 1 } else { -1 }, 0);
-            }
-            return (0, if dz >= 0.0 { 1 } else { -1 });
-        }
-    }
-    (1, 0)
+fn solid_peak_of(idxs: &[usize], voxels: &[LabeledVoxel]) -> u32 {
+    idxs.iter().map(|&i| voxels[i].y).max().unwrap_or(0)
 }
 
-/// Pack each column from its own floor (closes shear gaps; keeps
-/// cantilevers from slamming to y=0 before splat decides).
-fn fill_column_gaps(voxels: &mut Vec<LabeledVoxel>) {
-    let mut cols: HashMap<(u32, u32, ComponentId), Vec<u32>> = HashMap::new();
+/// If sag opened a 1-cell gap between two solids of the same id, fill
+/// the midpoint so the branch stays one piece (arch, not crumbs).
+fn reseal_arch_gaps(voxels: &mut Vec<LabeledVoxel>) {
+    let set: HashSet<(u32, u32, u32)> = voxels.iter().map(|v| (v.x, v.y, v.z)).collect();
+    let mut id_at: HashMap<(u32, u32, u32), ComponentId> = HashMap::new();
     for v in voxels.iter() {
-        cols.entry((v.x, v.z, v.id)).or_default().push(v.y);
+        id_at.insert((v.x, v.y, v.z), v.id);
     }
-    let mut next = Vec::with_capacity(voxels.len());
-    for ((x, z, id), mut ys) in cols {
-        ys.sort_unstable();
-        ys.dedup();
-        if ys.is_empty() {
-            continue;
-        }
-        let floor = ys[0];
-        for (i, _) in ys.iter().enumerate() {
-            next.push(LabeledVoxel {
-                x,
-                y: floor + i as u32,
-                z,
-                id,
+    let mut add: Vec<LabeledVoxel> = Vec::new();
+    let dirs = [
+        (2i32, 0, 0),
+        (-2, 0, 0),
+        (0, 2, 0),
+        (0, -2, 0),
+        (0, 0, 2),
+        (0, 0, -2),
+    ];
+    for v in voxels.iter() {
+        for (dx, dy, dz) in dirs {
+            let tx = v.x as i32 + dx;
+            let ty = v.y as i32 + dy;
+            let tz = v.z as i32 + dz;
+            if tx < 0 || ty < 0 || tz < 0 {
+                continue;
+            }
+            let far = (tx as u32, ty as u32, tz as u32);
+            if !set.contains(&far) {
+                continue;
+            }
+            if id_at.get(&far).copied() != Some(v.id) {
+                continue;
+            }
+            let mx = (v.x as i32 + tx) / 2;
+            let my = (v.y as i32 + ty) / 2;
+            let mz = (v.z as i32 + tz) / 2;
+            if mx < 0 || my < 0 || mz < 0 {
+                continue;
+            }
+            let mid = (mx as u32, my as u32, mz as u32);
+            if set.contains(&mid) {
+                continue;
+            }
+            add.push(LabeledVoxel {
+                x: mid.0,
+                y: mid.1,
+                z: mid.2,
+                id: v.id,
             });
         }
     }
-    *voxels = next;
+    if add.is_empty() {
+        return;
+    }
+    voxels.extend(add);
+    *voxels = dedup_voxels(std::mem::take(voxels));
 }
 
 /// Compress soft clay into a **thick** mound: bench-pack, cap peak
@@ -1103,60 +1194,6 @@ mod tests {
         cols.values().copied().max().unwrap_or(0)
     }
 
-    fn top_com_x(g: &Grid) -> f32 {
-        let peak = solid_peak_iy(g);
-        let low = solid_lowest_iy(g);
-        let cut = low + ((peak - low) * 3 / 4);
-        let mut sx = 0.0f32;
-        let mut n = 0.0f32;
-        for c in g.allocated_chunk_coords() {
-            let base = c.voxel_min();
-            let max = c.voxel_max(g.res());
-            for iz in base.z..max.z {
-                for iy in base.y..max.y {
-                    for ix in base.x..max.x {
-                        if iy >= cut && g.get(ix, iy, iz) < 0.0 {
-                            sx += ix as f32;
-                            n += 1.0;
-                        }
-                    }
-                }
-            }
-        }
-        if n <= 0.0 {
-            0.0
-        } else {
-            sx / n
-        }
-    }
-
-    fn base_com_x(g: &Grid) -> f32 {
-        let peak = solid_peak_iy(g);
-        let low = solid_lowest_iy(g);
-        let cut = low + ((peak - low) / 4).max(1);
-        let mut sx = 0.0f32;
-        let mut n = 0.0f32;
-        for c in g.allocated_chunk_coords() {
-            let base = c.voxel_min();
-            let max = c.voxel_max(g.res());
-            for iz in base.z..max.z {
-                for iy in base.y..max.y {
-                    for ix in base.x..max.x {
-                        if iy <= cut && g.get(ix, iy, iz) < 0.0 {
-                            sx += ix as f32;
-                            n += 1.0;
-                        }
-                    }
-                }
-            }
-        }
-        if n <= 0.0 {
-            0.0
-        } else {
-            sx / n
-        }
-    }
-
     fn tall_tower() -> Grid {
         let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
         for iy in 0..28 {
@@ -1269,38 +1306,119 @@ mod tests {
     }
 
     #[test]
-    fn mid_softness_bows_or_tips_a_slender_stalk() {
-        // Slightly shorter/wider than the tip threshold so tip may
-        // skip and bow can show — or tip lays it down. Either way the
-        // upright needle must not survive unchanged.
+    fn light_settle_sags_a_long_branch_into_an_arch() {
+        // Trunk on the bench + a long thin horizontal branch. At very
+        // low softness the tip should ease down (arch), not snap into
+        // falling crumbs or sandblast the surface.
         let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
-        for iy in 0..22 {
-            for iz in 30..34 {
-                for ix in 30..34 {
+        // Trunk.
+        for iy in 0..10 {
+            for iz in 28..34 {
+                for ix in 16..22 {
                     g.set(ix, iy, iz, -1.0);
                 }
             }
         }
-        let peak_before = solid_peak_iy(&g);
-        let base_x = base_com_x(&g);
+        // Branch out along +X at mid height.
+        for ix in 22..52 {
+            for iy in 7..10 {
+                for iz in 29..33 {
+                    g.set(ix, iy, iz, -1.0);
+                }
+            }
+        }
+        let tip_y_before = {
+            let mut peak = 0u32;
+            for iy in 0..64u32 {
+                for iz in 29..33 {
+                    if g.get(50, iy, iz) < 0.0 {
+                        peak = peak.max(iy);
+                    }
+                }
+            }
+            peak
+        };
+        assert!(tip_y_before >= 7, "precondition: branch tip is raised");
+        let vol_before = solid_count(&g);
         let labels = label_components(&g);
+        assert_eq!(labels.component_count(), 1, "trunk+branch are one piece");
         let summary = settle_components_plastic(
             &mut g,
             &labels,
             &PlasticSettleParams {
-                plasticity: 0.45,
-                iterations: 64,
+                plasticity: 0.05,
+                iterations: 16,
             },
             |_, _, _, _| {},
         );
-        assert!(summary.voxels_touched > 0);
-        let lean = (top_com_x(&g) - base_com_x(&g)).abs();
-        let peak_after = solid_peak_iy(&g);
-        let tipped = peak_after + 6 < peak_before;
-        let bowed = lean >= 1.5;
+        assert!(summary.voxels_touched > 0, "light sag should rewrite geometry");
+        let tip_y_after = {
+            let mut peak = 0u32;
+            let mut any = false;
+            for ix in 48..54u32 {
+                for iy in 0..64u32 {
+                    for iz in 28..34 {
+                        if g.get(ix, iy, iz) < 0.0 {
+                            peak = peak.max(iy);
+                            any = true;
+                        }
+                    }
+                }
+            }
+            assert!(any, "branch tip must still exist (not dissolve)");
+            peak
+        };
         assert!(
-            tipped || bowed,
-            "stalk should tip or bow: peak {peak_before}→{peak_after}, lean={lean}, base_x={base_x}"
+            tip_y_after < tip_y_before,
+            "branch tip should sag toward the bench: before={tip_y_before} after={tip_y_after}"
+        );
+        // Root still on the bench.
+        assert_eq!(solid_lowest_iy(&g), 0);
+        // Still one connected piece — not crumbs in the air.
+        let labels_after = label_components(&g);
+        assert_eq!(
+            labels_after.component_count(),
+            1,
+            "arch sag must not shatter the branch into separate pieces"
+        );
+        let vol_after = solid_count(&g);
+        let ratio = vol_after as f32 / vol_before as f32;
+        assert!(
+            (0.85..=1.2).contains(&ratio),
+            "volume drift: before={vol_before} after={vol_after}"
+        );
+    }
+
+    #[test]
+    fn tiny_softness_without_cantilevers_does_not_sandblast() {
+        // A grounded blob with no long branches: softness 0.01 should
+        // match a pure drop (no solid-mask rewrite / erosion).
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::new(-32.0, 0.0, -32.0));
+        let _ = apply_primitive(
+            &mut g,
+            &Primitive {
+                kind: PrimitiveKind::Sphere { radius: 8.0 },
+                center: Vec3::new(0.0, 8.0, 0.0),
+                workbench_y: Some(0.0),
+            },
+        );
+        let labels = label_components(&g);
+        let _ = rest_components_on_bench(&mut g, &labels, |_, _, _, _| {});
+        let before = g.to_dense();
+        let labels = label_components(&g);
+        let _ = settle_components_plastic(
+            &mut g,
+            &labels,
+            &PlasticSettleParams {
+                plasticity: 0.01,
+                iterations: 8,
+            },
+            |_, _, _, _| {},
+        );
+        assert_eq!(
+            g.to_dense(),
+            before,
+            "no cantilever → tiny softness must not sandblast the surface"
         );
     }
 

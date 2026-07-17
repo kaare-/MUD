@@ -631,8 +631,8 @@ fn draw_dialogs(
                         .text("softness"),
                 );
                 ui.small(
-                    "Drop → tip tall pieces → bow stalks → thick splat.\n\
-                     Softness 0 = drop only; high = volumetric mound.\n\
+                    "Drop → tip (soft) → arch-sag branches → thick splat.\n\
+                     Low softness bows long thin branches into arches.\n\
                      Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {
