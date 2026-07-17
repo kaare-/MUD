@@ -191,25 +191,23 @@ Suggested PR stack (see doc for acceptance checks):
 
 Full plan: **`CLAY_FEEL.md`**.
 
-**Order: true Press displace first, then vocabulary, then Pull /
-paddle / one remove tool.** Architecture and Stage-4 chrome are ahead
-of the material model; Clay today is soft Add/Remove with a bulge
-heuristic, not DESIGN §2.4 volume redistribution.
+**Order: new Press tool first, then Pull, then palette UX.** Keep
+existing **Add/Remove as-is** (soft CSG, magic clay, coils). Do not
+rename or replace it — Press/Pull are additional finger tools with
+real §2.4 volume redistribution.
 
 Priority stack:
 
-1. `[ ]` **P0** — Press displace v1 (`∆V⁻` → recruit → redistance).
-2. `[ ]` **P1** — Rename / reframe: Press / Pull / Carve; no magic-clay
-   toggle as the story.
-3. `[ ]` **P2** — Pull semantics (recruit-from-surroundings) and/or
-   explicit Deposit for coils.
-4. `[ ]` **P3** — Paddle → displace (same pipeline).
+1. `[ ]` **P0** — New **Press** tool (`∆V⁻` → recruit → redistance).
+2. `[ ]` **P1** — New **Pull** tool (inverse recruit).
+3. `[ ]` **P2** — Palette / shortcuts / ghosts (keep `1` = Add/Remove).
+4. `[ ]` **P3** — Paddle → displace (optional; after Press feels good).
 5. `[ ]` **P4** — One sharp remove tool (knife or scraper).
 6. `[ ]` **P5** — Feel amplifiers (tilt, tool-SDF ghost, pressure
-   retune). Only after P0–P2.
+   retune on Press/Pull). Only after P0–P1.
 
-Falsifiable bar: strangers say the clay “pushes back,” not “carves
-foam.”
+Falsifiable bar: with Press selected, clay “pushes back.” Add/Remove
+may still feel like deposit/carve — that’s intentional.
 
 ---
 

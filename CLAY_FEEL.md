@@ -3,12 +3,21 @@
 Companion to `DESIGN.md` §2.4 / §4 Stage 1 and `PLAN.md`.
 
 **Thesis:** the platform (SDF, tools chrome, layers, export) is ahead of
-the material model. Next work closes the gap to *intention-simulating
-clay* — especially true Press / Pull — before more Stage-4 product
-features.
+the material model. Next work adds *true* Press / Pull displace tools
+beside the existing Clay Add/Remove — not by replacing it.
 
-**Falsifiable bar (DESIGN Stage 1):** a stranger should describe the
-material as “pushing back,” not “carving foam / gluing blobs.”
+**Product call (locked 2026-07-17):**
+
+- **Keep Add / Remove as it is** — soft CSG, magic-clay bulge, Shift+LMB
+  add, empty-bench coils, side-column rings. It stays the fast “blob /
+  carve / deposit” tool (`ToolKind::Clay`, palette `1`).
+- **Add new Press and Pull tools** — DESIGN §2.4 volume redistribution
+  (`∆V` → recruit → redistance). Workshop finger tools, separate palette
+  entries and shortcuts.
+
+**Falsifiable bar:** with Press selected, a stranger should say the
+material “pushes back,” not “carves foam.” Add/Remove can keep feeling
+like deposit / eraser — that’s fine; it’s a different job.
 
 ---
 
@@ -16,168 +25,184 @@ material as “pushing back,” not “carving foam / gluing blobs.”
 
 | P | Item | Why first | Exit criterion |
 |---|------|-----------|----------------|
-| **P0** | **Press displace v1** — real `∆V⁻` → recruit → redistance on Clay LMB | Without this, nothing else reads as clay | Pushing a face leaves a rim of conserved volume; soft clay no longer “melts away” |
-| **P1** | **Tool vocabulary realign** — Press / Pull / Carve (remove); drop magic-clay as a user story | DESIGN forbids hidden polarity + mid-stroke displace toggles | UI/logs say Press/Pull/Carve; Shift is not “add mode”; magic clay is not a toggle |
-| **P2** | **Pull semantics** — recruit-from-surroundings *or* explicit Deposit/coil | Current “Pull” is soft union Add | Pull thins the neighbourhood; Deposit is named and separate if we keep coil-building |
-| **P3** | **Paddle → displace** | DESIGN: paddle displaces; today it carves a disk | Pressing a flat squeezes a rim, doesn’t delete a cylinder of clay |
-| **P4** | **One sharp remove tool** (knife *or* scraper) | Proves per-tool Displace vs Remove beside Press | Cut/shave removes volume; no recruitment; dual-contour edges stay crisp |
-| **P5** | **Polish that serves feel** — tilt→orientation, ghost = tool SDF, pressure→engagement depth on Press | Amplifies P0–P4; doesn’t replace them | Directional tools lean with stylus; ghost matches stamp |
+| **P0** | **New Press tool** — `∆V⁻` → recruit → redistance; LMB depresses | Core clay thesis; Add/Remove unchanged | Pressing a face leaves a conserved rim; volume roughly held |
+| **P1** | **New Pull tool** — inverse: grow outward, thin the neighbourhood | Completes the finger pair | Pull raises a bump and draws from surroundings |
+| **P2** | **Palette / UX** — slots, shortcuts, ghosts, HUD hints for Press/Pull | Discoverable without touching Add/Remove | `1` still Add/Remove; Press/Pull have clear labels + ghosts |
+| **P3** | **Paddle → displace** (optional follow-on) | DESIGN paddle displaces; today it carves | Flat press squeezes a rim (or leave paddle as carve if Press covers flats) |
+| **P4** | **One sharp remove tool** (knife *or* scraper) | Hand-tool remove beside Press | Cut/shave removes volume; no recruitment |
+| **P5** | **Feel amplifiers** — tilt→orientation, pressure→Press depth, tool-SDF ghosts | Amplifies P0–P1 | Stylus lean / depth feel right on Press/Pull |
 
-Anything below P5 stays in `PLAN.md` / deferred unless it unblocks P0–P4.
+Anything below P5 stays in `PLAN.md` / deferred unless it unblocks P0–P1.
 
 ---
 
-## P0 — Press displace v1 (spike → ship)
+## Tool map (target)
 
-### Current behaviour (baseline)
+| Tool | Role | Volume |
+|------|------|--------|
+| **Add/Remove** (existing) | Deposit blobs / soft carve / coils | Not conserved (CSG ± magic bulge) |
+| **Press** (new) | Finger push — displace into the surface | Conserved via rim recruit |
+| **Pull** (new) | Finger pull — displace outward | Conserved via neighbourhood draw |
+| Cookie / wire (/ knife) | Remove | Gone — no recruit |
+| Smooth | Mollify φ | N/A |
+| Paddle | Flat press — prefer displace later (P3) | Today: remove disk |
 
-Clay LMB → `BrushMode::Press` → soft/hard subtract CSG + optional rim
-bulge (`brush.rs`). No volume measurement, no conserved redistribute,
-no redistancing. Names are historical: Press ≈ remove, Pull ≈ add.
+Add/Remove keeps `M` magic-clay and Shift polarity. Press/Pull do **not**
+reuse that toggle; displace is their nature.
 
-### Target algorithm (DESIGN §2.4, minimal)
+---
 
-Per stamp while Press is engaged:
+## P0 — New Press tool (spike → ship)
 
-1. Snapshot φ in the brush AABB (or use pre-mutation undo samples).
-2. Apply primary edit (depress / soft intersection with tool SDF).
-3. Measure `∆V⁻` = volume that crossed into air this stamp
-   (`∫ max(0, φ_after − φ_before)` over cells that left the solid, or
-   equivalent voxel count × `voxel_size³`).
+### Baseline left alone
+
+`ToolKind::Clay` + `brush.rs` `BrushMode::Press`/`Pull` paths stay. Do
+not rewrite Add/Remove to “become” Press.
+
+### New tool sketch
+
+- New `ToolKind::Press` (name TBD in code; UI label **Press**).
+- Continuous LMB (like Clay/Smooth/Paddle).
+- Sphere (or soft finger) footprint; `advance_per_step` / pen pressure =
+  engagement depth.
+- Core API: e.g. `apply_press_displace` (new), not a flag on
+  `SphereBrush` that changes Add/Remove.
+
+### Algorithm (DESIGN §2.4, minimal)
+
+Per stamp:
+
+1. Snapshot φ in the brush AABB.
+2. Primary edit — depress surface (soft intersection with tool SDF).
+3. Measure `∆V⁻` (volume that left the solid this stamp).
 4. If `∆V⁻ > ε`, redistribute `+∆V⁻` into a **recruitment kernel**:
-   surface band around the contact, weighted by sideways / behind the
-   press direction (reuse the existing bulge bias as a weight prior).
-5. Local redistance / fast sweep in the dirty region so φ stays a
-   distance field.
-6. Mark chunks dirty as today.
+   surface band around contact, weighted sideways / behind the press
+   direction.
+5. Local redistance / fast sweep in the dirty region.
+6. Mark chunks dirty; undo journals pre-mutation samples as today.
 
-Removal tools (cookie, wire, future knife) **skip** steps 4–5’s
-recruitment (edit only).
+Cookie / wire / Add-Remove **never** call the recruit step.
 
-### Spike checklist (answer before polishing)
+### Spike checklist
 
-- `[ ]` Can we measure `∆V` cheaply enough at 1.5 mm / interactive rates?
-- `[ ]` Does a simple weighted surface band beat the current bulge
-  heuristic in a side-by-side “push the side of a blob” test?
-- `[ ]` Does skipping redistance break the next stamp / mesher badly
-  enough that redistance is mandatory in v1?
-- `[ ]` Symmetry: recruit on both sides of the mirror plane.
+- `[ ]` `∆V` cheap enough at 1.5 mm / interactive rates?
+- `[ ]` Weighted surface band beats “looks like a bulge” in a side-by-side
+  push test vs Add/Remove magic clay?
+- `[ ]` Is local redistance mandatory in v1?
+- `[ ]` Symmetry mirrors Press correctly (both sides recruit).
 
 ### Non-goals for P0
 
-- Full Poisson solve on the surface (band weights are enough for v1).
+- Changing Add/Remove behaviour or shortcuts.
+- Full surface Poisson solve.
 - Thumb / roller / multi-finger.
-- Perfect global volume conservation (local stamp conservation is the bar).
+- Perfect global volume conservation (per-stamp local is the bar).
 
 ### Suggested files
 
-- `crates/sculpt-core/src/brush.rs` — Press path + `∆V` / recruit
-- New helpers: volume measure + redistance (keep Bevy-free in core)
-- `crates/sculpt-app/src/sculpt.rs` — wire depth/pressure into engagement
-- Tests: conserved volume within tolerance on a unit sphere press;
-  removal tools still lose volume
+- New core module or `brush.rs` sibling: press displace + volume +
+  redistance helpers (Bevy-free).
+- `sculpt-app`: `ToolKind::Press`, palette entry, `apply_at` / preview /
+  size knobs shared where sensible.
+- Tests: volume within tolerance on a sphere press; Clay Add/Remove
+  regression suite still green unchanged.
 
 ---
 
-## P1 — Vocabulary & interaction realign
+## P1 — New Pull tool
 
-Do **after** P0 proves displace, so rename isn’t lipstick on CSG.
+Inverse of Press:
 
-| Today | Target |
-|-------|--------|
-| Tool: Add/Remove | Tool: **Press** (displace) |
-| Shift+LMB Add | **Pull** (P2) or separate **Deposit** |
-| Magic clay toggle | Gone as UX; displace is Press’s nature |
-| LMB carve foam | Separate **Carve** / Remove brush *or* only cutters remove |
+1. Primary edit grows the surface outward under the finger.
+2. Measure `∆V⁺` gained in the contact.
+3. Remove that volume from a surrounding surface recruitment band
+   (thin the neighbourhood).
+4. Redistance locally.
 
-Shortcuts proposal (adjust when implementing):
-
-- `1` Press (default)
-- Shift held or `1` dual-mode → Pull once P2 lands
-- Carve on its own palette slot if we keep a spherical remove
-
-Update README / HUD copy to workshop words (DESIGN §5).
+Same size / pressure / symmetry wiring as Press. Empty-bench Pull is a
+no-op or soft fail — **Deposit stays on Add/Remove** (Shift+LMB on the
+bench).
 
 ---
 
-## P2 — Pull vs Deposit
+## P2 — Palette / UX
 
-**Decision gate after P0:**
+Ship with or right after P0/P1 so the tools aren’t hidden.
 
-- **A — True Pull:** inverse of Press — grow outward, recruit *from*
-  surrounding surface (thins nearby clay). Matches DESIGN “finger-pull.”
-- **B — Deposit stays:** keep soft-union coil/bench build as **Deposit**
-  (or Coil), clearly not displace. Press/Pull are the finger pair;
-  Deposit is workshop “add a snake of clay.”
+Suggested layout (adjust when implementing; **do not steal `1`**):
 
-Recommendation: **both** eventually — Pull = A, Deposit = today’s Add
-for empty-bench / coil workflows. Ship A first if volume math from P0
-inverts cleanly; otherwise ship B rename immediately so we stop lying.
+| Key | Tool |
+|-----|------|
+| `1` | Add/Remove (unchanged) |
+| new | **Press** |
+| new | **Pull** |
+| … | existing cutters / wire / smooth / paddle / select / move |
+
+Options if the digit row is full: shift Press/Pull onto a second row,
+toolbar-only, or renumber less-used tools — decide at implement time.
+HUD hint: “Press displaces · Add/Remove deposits or carves.”
+
+Ghost: sphere (or finger) at engagement depth, distinct tint from
+Add/Remove so the two jobs don’t look identical.
 
 ---
 
-## P3 — Paddle displace
+## P3 — Paddle displace (optional)
 
-Same `∆V` + recruit pipeline as Press, tool SDF = disk / half-space
-footprint. Primary edit flattens; rim receives volume. Workbench clip
-unchanged.
+Same `∆V` pipeline as Press; tool SDF = disk / half-space. Only worth
+it if Press doesn’t already cover “make a flat.” Can stay carve until
+Press feels good.
 
 ---
 
 ## P4 — One removal tool
 
-Pick **knife** (thin box / wedge cut along stroke) *or* **scraper**
-(blade profile shave). Must:
+Knife (thin box / wedge along stroke) *or* scraper (blade shave):
 
-- Remove with **no** recruitment
-- Read as a physical ghost (profile extrusion)
-- Look sharp under Dual Contouring
+- Remove, **no** recruitment
+- Physical ghost
+- Sharp under Dual Contouring
 
-Cookie + wire already prove remove; this proves *hand-tool* remove next
-to Press so the mental model sticks.
-
----
-
-## P5 — Feel amplifiers (only after P0–P2)
-
-1. Pen **tilt → tool orientation** for knife/scraper/paddle.
-2. Ghost preview = actual tool SDF footprint (not only sphere/prism).
-3. Pressure → **engagement depth** of Press (already partly wired to
-   advance); retune once displace exists.
-4. Reference images on the workbench (PLAN Stage 4) — useful, not clay.
+Cookie + wire already remove; this is the hand-tool counterpart next
+to Press.
 
 ---
 
-## Explicitly later / don’t cut in front of P0–P4
+## P5 — Feel amplifiers (after P0–P1)
 
-- More matcaps, bookmarks, recent-files polish
+1. Pen tilt → orientation for knife/scraper/paddle.
+2. Ghost = tool SDF footprint.
+3. Pressure → Press/Pull engagement depth (retune; Add/Remove can keep
+   current pressure→advance mapping).
+4. Reference images — useful, not clay.
+
+---
+
+## Explicitly later / don’t cut in front of P0–P1
+
+- Rewriting or renaming Add/Remove
+- Killing the magic-clay toggle on Add/Remove
+- More matcap / bookmark polish
 - Automatic weld-on-contact
-- Per-piece transforms / full scene graph
-- Scraper blade library / loop shape params (need the tools first)
-- Colour, VR, collab, print services (DESIGN defer)
+- Per-piece transforms
+- Colour, VR, collab, print services
 
 ---
 
 ## How to run this track
 
-1. Spike P0 on a branch off the current tip; keep Surface Nets for speed
-   while iterating; DC optional for evaluating sharp rims.
-2. Land P0 behind a short A/B if needed (`displace_v2` pref) then make
-   it default and delete the bulge-only path.
-3. P1 rename in the same PR as “displace is default” or immediately after.
-4. P2 decision note in this file (A/B) before coding Pull.
-5. Update `PLAN.md` checkboxes as each P lands; keep this file as the
-   ordered track.
+1. Spike P0 as a **new** tool beside Clay; A/B in-app: same blob, Press
+   vs Add/Remove LMB.
+2. Land Press when the Stage-1 “pushes back” test passes.
+3. P1 Pull reuses Press’s measure/recruit/redistance helpers (inverted).
+4. P2 palette polish can land in the Press PR or immediately after.
+5. Update `PLAN.md` checkboxes as each P lands.
 
 ---
 
 ## Success snapshot
 
-When P0–P2 are done, the product pitch matches the code:
+> **Add/Remove** builds and carves quickly (coils, soft CSG).
+> **Press** moves clay. **Pull** draws clay. Cutters take clay away.
 
-> Press clay and it moves. Pull clay and it comes with you.
-> Cutters and knives take clay away. The workbench and turntable
-> stay out of the way.
-
-Until then, keep calling today’s Clay tool Add/Remove in docs — it’s
-honest.
+Two jobs, two tools — no need to make one brush pretend to be both.
