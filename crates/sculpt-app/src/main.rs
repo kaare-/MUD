@@ -27,6 +27,7 @@
 //!   Open Recent ...... File menu MRU (persisted under ~/.mud/)
 //!   Bookmarks ........ View menu — save/restore camera poses
 //!   Matcap ........... View menu / Preferences — clay look + cavity
+//!   Pen pressure ..... stylus force → clay/paddle/smooth depth (Prefs)
 //!   Autosave ......... ~/.mud/autosave.mudclay + recover-on-launch
 //!   Ctrl+Shift+G ..... settle (gravity) — drop + soft collapse dialog
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
@@ -54,6 +55,7 @@ mod gravity;
 mod input_gate;
 mod matcap;
 mod move_tool;
+mod pen;
 mod preview;
 mod primitives;
 mod project;
@@ -113,7 +115,7 @@ fn main() {
         ))
         // Bevy caps `Plugins` tuples at 15 entries; the rest of
         // the plugins live in a second call.
-        .add_plugins((view::plugin, move_tool::plugin, ui::plugin))
+        .add_plugins((view::plugin, move_tool::plugin, pen::plugin, ui::plugin))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
         .run();

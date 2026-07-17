@@ -21,7 +21,9 @@ use sculpt_core::{
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::pen::PenState;
 use crate::selection::Selection;
+use crate::settings::AppSettings;
 use crate::turntable::TurntableState;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::{LayersState, WorkpieceRoot};
@@ -272,6 +274,8 @@ fn sculpt_input(
     q_piece: Query<&Transform, With<WorkpieceRoot>>,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
+    pen: Res<PenState>,
+    settings: Res<AppSettings>,
     ui_gate: Res<UiCapturesInput>,
     turntable: Res<TurntableState>,
     mut workpiece: ResMut<LayersState>,
@@ -370,6 +374,8 @@ fn sculpt_input(
     let is_add_early = is_clay_early
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
+    let depth_scale = pen.depth_scale(settings.pressure_to_depth);
+
     // Bench-coil lock: once this stroke has deposited on an empty
     // workbench, keep stamping at bench height for the rest of the
     // stroke. Dense Q/E spacing lands the next ray on the previous
@@ -384,6 +390,7 @@ fn sculpt_input(
             &tool,
             turntable.angular_vel,
             symmetry.enabled,
+            depth_scale,
             hit_g,
             dir_g,
         );
@@ -403,6 +410,7 @@ fn sculpt_input(
                     &tool,
                     turntable.angular_vel,
                     symmetry.enabled,
+                    depth_scale,
                     hit_g,
                     dir_g,
                 );
@@ -484,6 +492,7 @@ fn sculpt_input(
         tool.kind,
         &tool,
         keys.as_ref(),
+        depth_scale,
         hit,
         into_surface,
         dir_g,
@@ -498,6 +507,7 @@ fn sculpt_input(
             tool.kind,
             &tool,
             keys.as_ref(),
+            depth_scale,
             mirrored_hit,
             mirrored_dir,
             mirrored_view,
@@ -622,6 +632,7 @@ fn apply_at(
     kind: ToolKind,
     tool: &SculptTool,
     keys: &ButtonInput<KeyCode>,
+    depth_scale: f32,
     hit: GVec3,
     into_surface: GVec3,
     view_dir: GVec3,
@@ -642,13 +653,13 @@ fn apply_at(
             };
             // BrushMode::Pull = add, Press = remove (historical names in
             // sculpt-core). Placement matches the ghost via
-            // `clay_brush_center`.
+            // `clay_brush_center`. Stylus pressure scales advance (depth).
             let center = clay_brush_center(
                 hit,
                 into_surface,
                 view_dir,
                 tool.size,
-                tool.advance_per_step,
+                tool.advance_per_step * depth_scale,
                 adding,
             );
             let brush = SphereBrush {
@@ -671,6 +682,7 @@ fn apply_at(
             // Cutter cuts along the surface normal, symmetric around
             // the click point. A half-length of half the grid extent
             // is enough to punch through any Stage-2 workpiece.
+            // Cutters are binary punches — pressure does not apply.
             let half_length = workpiece.grid().extent().max_element() * 0.5;
             let cutter = CookieCutter {
                 profile: family.profile(tool.size, tool.cutter_params),
@@ -691,7 +703,7 @@ fn apply_at(
             let brush = SmoothBrush {
                 center: hit,
                 radius: tool.size,
-                strength: tool.smooth_strength,
+                strength: tool.smooth_strength * depth_scale,
                 workbench_y: Some(0.0),
             };
             if let Some(rec) = recorder.as_mut() {
@@ -707,7 +719,7 @@ fn apply_at(
             // holding the button gradually flattens the piece to a
             // deeper plane. `normal` points *outward* from the
             // workpiece (opposite the surface's into-direction).
-            let advance = tool.advance_per_step;
+            let advance = tool.advance_per_step * depth_scale;
             let paddle = Paddle {
                 center: hit + into_surface * advance,
                 normal: -into_surface,
@@ -762,6 +774,7 @@ fn empty_bench_add(
     tool: &SculptTool,
     angular_vel: f32,
     symmetric: bool,
+    depth_scale: f32,
     ray_origin_local: GVec3,
     ray_dir_local: GVec3,
 ) {
@@ -790,28 +803,37 @@ fn empty_bench_add(
     // the ray hits this stroke's clay (top-view turntable coils).
     stroke.paint_plane = None;
     stroke.bench_paint = true;
-    stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, bench);
+    stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, depth_scale, bench);
     if symmetric {
         let mirrored = GVec3::new(-bench.x, 0.0, bench.z);
-        stamp_bench_blob(workpiece, stroke.recorder.as_mut(), tool, mirrored);
+        stamp_bench_blob(
+            workpiece,
+            stroke.recorder.as_mut(),
+            tool,
+            depth_scale,
+            mirrored,
+        );
     }
     stroke.last_clay_hit = Some(bench);
 }
 
 /// Stamp a single Add sphere resting on the bench at the given
 /// (x, 0, z). Splits out the actual sculpt-core call so the mirrored
-/// stamp reuses it.
+/// stamp reuses it. `depth_scale` shrinks the mound under light pen
+/// pressure (amount ≈ depth when there is no surface to bite into).
 fn stamp_bench_blob(
     workpiece: &mut LayersState,
     mut recorder: Option<&mut StrokeRecorder>,
     tool: &SculptTool,
+    depth_scale: f32,
     bench: GVec3,
 ) {
     let grid_res = workpiece.grid().res();
-    let center = GVec3::new(bench.x, tool.size, bench.z);
+    let radius = tool.size * depth_scale;
+    let center = GVec3::new(bench.x, radius, bench.z);
     let brush = SphereBrush {
         center,
-        radius: tool.size,
+        radius,
         mode: BrushMode::Pull,
         direction: GVec3::new(0.0, -1.0, 0.0),
         displace: tool.displace,
@@ -1176,6 +1198,7 @@ mod tests {
             &tool,
             0.0,
             false,
+            1.0,
             GVec3::new(10.0, 40.0, 0.0),
             GVec3::new(0.0, -1.0, 0.0),
         );
@@ -1207,6 +1230,7 @@ mod tests {
                 &tool,
                 1.0, // turning → denser spacing path
                 false,
+                1.0,
                 GVec3::new(x, 40.0, z),
                 GVec3::new(0.0, -1.0, 0.0),
             );
@@ -1228,7 +1252,7 @@ mod tests {
         let mut workpiece = empty_bench_workpiece();
         let tool = tool_sized(8.0);
         let bench = GVec3::new(0.0, 0.0, 0.0);
-        stamp_bench_blob(&mut workpiece, None, &tool, bench);
+        stamp_bench_blob(&mut workpiece, None, &tool, 1.0, bench);
         let after_bench = solid_peak_y(workpiece.grid());
 
         let into = GVec3::new(0.0, -1.0, 0.0);

@@ -20,6 +20,9 @@ pub struct AppSettings {
     pub matcap: MatcapPreset,
     /// How strongly crevice darkening (SDF cavity) is applied, `0..=1`.
     pub cavity_strength: f32,
+    /// When true, stylus / touch force scales clay bite, paddle
+    /// advance, and smooth strength. Mouse stays at full depth.
+    pub pressure_to_depth: bool,
 }
 
 impl Default for AppSettings {
@@ -30,6 +33,7 @@ impl Default for AppSettings {
             default_plasticity: 0.7,
             matcap: MatcapPreset::Clay,
             cavity_strength: 0.65,
+            pressure_to_depth: true,
         }
     }
 }

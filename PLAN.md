@@ -226,8 +226,9 @@ From `DESIGN.md`'s staged roadmap:
   / wave modulation shipped (`Edit → Tool parameters…` when circle or
   square cutter is active). Scraper blade profile and loop shape stay
   open until those tools exist.
-- `[ ]` **Pen tablet support** (Stage 3 target: pressure = depth,
-  tilt = orientation for directional tools).
+- `[~]` **Pen tablet support** — pressure → depth shipped for Clay /
+  Paddle / Smooth (`PenState` from `TouchInput` force; mouse = 1.0).
+  Toggle in Preferences. Tilt → orientation still open.
 
 ---
 

@@ -33,6 +33,7 @@ use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::{AutosaveState, FileDialogState, RecentFiles};
+use crate::pen::PenState;
 use crate::sculpt::{
     tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind, SIZE_MAX, SIZE_MIN,
 };
@@ -60,6 +61,7 @@ fn draw_ui(
     mut contexts: EguiContexts,
     tool: Res<SculptTool>,
     symmetry: Res<SculptSymmetry>,
+    pen: Res<PenState>,
     selection: Res<Selection>,
     mut workpiece: ResMut<LayersState>,
     grid_state: Res<WorkbenchGridState>,
@@ -345,6 +347,14 @@ fn draw_ui(
                     actions.send(AppAction::ToggleMagicClay);
                 }
             });
+            if app_settings.pressure_to_depth {
+                ui.separator();
+                if pen.from_stylus {
+                    ui.label(format!("Pen: {:.0}%", pen.pressure * 100.0));
+                } else {
+                    ui.small("Pen: mouse (full depth)");
+                }
+            }
             ui.separator();
             let active_idx = workpiece.active_index();
             let layer_n = active_idx + 1;
@@ -927,6 +937,17 @@ fn draw_dialogs(
                         .text("Cavity"),
                 );
                 ui.small("Crevice darkening from the SDF (smoothed φ − φ).");
+                ui.add_space(8.0);
+                ui.heading("Pen / stylus");
+                ui.checkbox(
+                    &mut app_settings.pressure_to_depth,
+                    "Pressure controls depth",
+                );
+                ui.small(
+                    "Stylus / touch force scales Clay bite, Paddle advance,\n\
+                     and Smooth strength. Mouse always uses full depth.\n\
+                     (Tilt → orientation is not wired yet.)",
+                );
                 ui.add_space(6.0);
                 if ui.button("Close").clicked() {
                     close = true;
