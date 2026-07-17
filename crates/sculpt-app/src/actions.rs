@@ -15,6 +15,7 @@ use std::path::PathBuf;
 
 use bevy::prelude::*;
 
+use crate::matcap::MatcapPreset;
 use crate::primitives::PrimitiveShape;
 use crate::sculpt::ToolKind;
 use crate::view::ViewPreset;
@@ -100,6 +101,8 @@ pub enum AppAction {
     RestoreCameraBookmark(usize),
     /// Clear every saved camera bookmark.
     ClearCameraBookmarks,
+    /// Select a built-in clay matcap preset.
+    SetMatcap(MatcapPreset),
     /// Rigidly translate the selected component by `(dx, dy, dz)`
     /// millimetres. No-op when nothing is selected.
     MoveSelection(Vec3),

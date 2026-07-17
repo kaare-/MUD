@@ -43,7 +43,7 @@ pub use export::{
     WatertightReport,
 };
 pub use grid::{ChunkCoord, Grid, DirtyRegion, RegionSnapshot, CHUNK_SIZE};
-pub use mesh::{extract_chunk, ExtractedMesh};
+pub use mesh::{cavity_brightness, extract_chunk, ExtractedMesh};
 pub use paddle::{apply_paddle, apply_paddle_with_callback, Paddle};
 pub use primitives::{apply_primitive, apply_primitive_with_callback, Primitive, PrimitiveKind};
 pub use profile::{extrude_profile, Profile};

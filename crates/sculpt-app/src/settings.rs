@@ -7,6 +7,7 @@
 use bevy::prelude::*;
 
 use crate::actions::AppAction;
+use crate::matcap::MatcapPreset;
 
 /// General software preferences (Edit → Preferences…).
 #[derive(Resource, Clone)]
@@ -15,6 +16,10 @@ pub struct AppSettings {
     pub turntable_period_secs: f32,
     /// Softness pre-filled when opening Settle (gravity)….
     pub default_plasticity: f32,
+    /// Clay matcap preset (View → Matcap / Preferences).
+    pub matcap: MatcapPreset,
+    /// How strongly crevice darkening (SDF cavity) is applied, `0..=1`.
+    pub cavity_strength: f32,
 }
 
 impl Default for AppSettings {
@@ -23,6 +28,8 @@ impl Default for AppSettings {
             // Matches the previous hard-coded ~6.5 s / rev.
             turntable_period_secs: 6.5,
             default_plasticity: 0.7,
+            matcap: MatcapPreset::Clay,
+            cavity_strength: 0.65,
         }
     }
 }
@@ -49,6 +56,7 @@ pub fn plugin(app: &mut App) {
 fn handle_settings_actions(
     mut events: EventReader<AppAction>,
     mut dialogs: ResMut<SettingsDialogState>,
+    mut settings: ResMut<AppSettings>,
     keys: Res<ButtonInput<KeyCode>>,
 ) {
     for a in events.read() {
@@ -60,6 +68,9 @@ fn handle_settings_actions(
             AppAction::ShowPreferencesDialog => {
                 dialogs.prefs_open = true;
                 dialogs.tool_open = false;
+            }
+            AppAction::SetMatcap(preset) => {
+                settings.matcap = *preset;
             }
             _ => {}
         }

@@ -47,7 +47,7 @@ use fast_surface_nets::{surface_nets, SurfaceNetsBuffer};
 use glam::Vec3;
 
 use crate::grid::Grid;
-use crate::mesh::ExtractedMesh;
+use crate::mesh::{cavity_brightness, ExtractedMesh};
 
 /// Result of an index-edge watertightness check on an [`ExtractedMesh`].
 ///
@@ -211,9 +211,15 @@ pub fn extract_full_mesh(grid: &Grid) -> ExtractedMesh {
         })
         .collect();
 
+    let cavity: Vec<f32> = positions
+        .iter()
+        .map(|p| cavity_brightness(grid, Vec3::from(*p)))
+        .collect();
+
     ExtractedMesh {
         positions,
         normals: buffer.normals,
+        cavity,
         indices: buffer.indices,
     }
 }
@@ -332,6 +338,7 @@ mod tests {
         let mesh = ExtractedMesh {
             positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
             normals: vec![[0.0, 0.0, 1.0]; 3],
+            cavity: vec![1.0; 3],
             indices: vec![0, 1, 2],
         };
         let report = check_watertight(&mesh);
@@ -352,6 +359,7 @@ mod tests {
                 [0.5, 0.0, -1.0],
             ],
             normals: vec![[0.0, 1.0, 0.0]; 5],
+            cavity: vec![1.0; 5],
             indices: vec![0, 1, 2, 0, 1, 3, 0, 1, 4],
         };
         let report = check_watertight(&mesh);

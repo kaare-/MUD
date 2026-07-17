@@ -197,8 +197,10 @@ From `DESIGN.md`'s staged roadmap:
   surface nets today round every corner.
 - `[~]` **Merge on contact / weld.** Explicit user action — Track B
   Merge Down (`min` union). Not automatic on contact.
-- `[ ]` **Matcap library + cavity shading.** One matcap right now;
-  cavity term (`smoothed(φ) − φ`) is cheap.
+- `[x]` **Matcap library + cavity shading.** Clay uses unlit matcap
+  (Clay / Soft grey / Porcelain / Slate — procedural). Cavity from
+  `smoothed(φ) − φ` baked into mesh UV.x; strength in Preferences /
+  View → Matcap.
 - `[~]` **Multi-piece scene** — Track B Layers (same-domain, hide /
   show). Per-piece transforms still deferred.
 - `[ ]` **Reference images pinned to the workbench** (Stage 4).
