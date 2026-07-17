@@ -36,6 +36,7 @@ use glam::{UVec3, Vec3 as GVec3};
 use sculpt_core::{extract_chunk, ChunkCoord, Grid};
 
 use crate::actions::AppAction;
+use crate::matcap::{MatcapMaterial, MatcapState};
 use crate::selection::Selection;
 use crate::undo::{DeleteLayerEntry, SculptStroke, UndoHistory};
 
@@ -107,10 +108,9 @@ pub struct Layer {
     dirty: HashSet<(u32, u32, u32)>,
     /// Material every chunk entity in this layer is spawned with.
     /// Cached here so `remesh_dirty_chunks` can spawn newly-occupied
-    /// chunks without a separate `Assets<StandardMaterial>` write
-    /// pass tangled into chunk lookup. Shared across layers for now
-    /// (no per-layer colour yet — not asked for).
-    material: Handle<StandardMaterial>,
+    /// chunks without a separate materials write pass. Shared across
+    /// layers — one matcap look for the whole stack.
+    material: Handle<MatcapMaterial>,
 }
 
 /// Detached copy of a layer's durable state (id / name / visibility /
@@ -121,7 +121,7 @@ pub struct LayerSnapshot {
     pub id: LayerId,
     pub name: String,
     pub visible: bool,
-    pub material: Handle<StandardMaterial>,
+    pub material: Handle<MatcapMaterial>,
     pub grid: Grid,
 }
 
@@ -146,7 +146,7 @@ impl Layer {
         self.dirty.insert(key);
     }
 
-    fn new(id: LayerId, name: impl Into<String>, grid: Grid, material: Handle<StandardMaterial>) -> Self {
+    fn new(id: LayerId, name: impl Into<String>, grid: Grid, material: Handle<MatcapMaterial>) -> Self {
         let num_chunks = grid.num_chunks();
         let mut dirty = HashSet::new();
         for cz in 0..num_chunks.z {
@@ -229,7 +229,7 @@ impl LayersState {
     /// The active layer's chunk material, cloned so a new layer can
     /// be spawned with a visually-matching colour without reaching
     /// into `Layer`'s private field.
-    pub fn active_material(&self) -> Handle<StandardMaterial> {
+    pub fn active_material(&self) -> Handle<MatcapMaterial> {
         self.layers[self.active].material.clone()
     }
 
@@ -256,7 +256,7 @@ impl LayersState {
     pub fn push_new_layer(
         &mut self,
         grid: Grid,
-        material: Handle<StandardMaterial>,
+        material: Handle<MatcapMaterial>,
         name: impl Into<String>,
     ) -> LayerId {
         let id = self.next_id;
@@ -679,7 +679,10 @@ impl std::fmt::Display for GridSwapError {
 }
 
 pub fn plugin(app: &mut App) {
-    app.add_systems(Startup, spawn_workpiece);
+    app.add_systems(
+        Startup,
+        spawn_workpiece.after(crate::matcap::setup_matcaps),
+    );
     app.add_systems(Update, (handle_layer_actions, remesh_dirty_chunks).chain());
 }
 
@@ -744,10 +747,7 @@ fn handle_layer_actions(
     }
 }
 
-fn spawn_workpiece(
-    mut commands: Commands,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+fn spawn_workpiece(mut commands: Commands, matcaps: Res<MatcapState>) {
     // Grid is centered on X/Z. Y=0 is the workbench, so the grid's Y
     // origin is also 0 — the piece rests on the workbench.
     let extent = RES as f32 * VOXEL_MM;
@@ -761,19 +761,12 @@ fn spawn_workpiece(
         40.0,
     );
 
-    let material = materials.add(StandardMaterial {
-        base_color: Color::srgb(0.78, 0.55, 0.42),
-        perceptual_roughness: 0.85,
-        metallic: 0.0,
-        ..default()
-    });
-
     commands.spawn((WorkpieceRoot, Transform::default(), Visibility::default()));
 
     // No chunk entities spawned up front — every chunk coord starts
     // dirty and `remesh_dirty_chunks` spawns an entity only for the
     // ones that turn out to have geometry (see the module doc).
-    let layer = Layer::new(0, "Layer 1", grid, material);
+    let layer = Layer::new(0, "Layer 1", grid, matcaps.material.clone());
 
     commands.insert_resource(LayersState {
         layers: vec![layer],
@@ -788,8 +781,10 @@ fn build_mesh(extracted: sculpt_core::ExtractedMesh) -> Mesh {
         PrimitiveTopology::TriangleList,
         RenderAssetUsages::default(),
     );
+    let uvs: Vec<[f32; 2]> = extracted.cavity.iter().map(|&c| [c, 0.0]).collect();
     mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, extracted.positions);
     mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, extracted.normals);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
     mesh.insert_indices(Indices::U32(extracted.indices));
     mesh
 }

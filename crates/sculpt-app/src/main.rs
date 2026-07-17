@@ -26,6 +26,7 @@
 //!   Snap selection ... Sculpt menu / HUD — drop selected piece only
 //!   Open Recent ...... File menu MRU (persisted under ~/.mud/)
 //!   Bookmarks ........ View menu — save/restore camera poses
+//!   Matcap ........... View menu / Preferences — clay look + cavity
 //!   Autosave ......... ~/.mud/autosave.mudclay + recover-on-launch
 //!   Ctrl+Shift+G ..... settle (gravity) — drop + soft collapse dialog
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
@@ -51,6 +52,7 @@ mod camera;
 mod export;
 mod gravity;
 mod input_gate;
+mod matcap;
 mod move_tool;
 mod preview;
 mod primitives;
@@ -98,6 +100,7 @@ fn main() {
             settings::plugin,
             camera::plugin,
             turntable::plugin,
+            matcap::plugin,
             workpiece::plugin,
             undo::plugin,
             sculpt::plugin,

@@ -38,6 +38,7 @@ use crate::sculpt::{
 };
 use crate::selection::Selection;
 use crate::settings::{AppSettings, SettingsDialogState};
+use crate::matcap::MatcapPreset;
 use crate::view::{CameraBookmarks, ViewPreset, WorkbenchGridState};
 use crate::workpiece::LayersState;
 
@@ -65,6 +66,7 @@ fn draw_ui(
     mut move_state: ResMut<MoveState>,
     recent: Res<RecentFiles>,
     bookmarks: Res<CameraBookmarks>,
+    app_settings: Res<AppSettings>,
     mut actions: EventWriter<AppAction>,
     mut app_exit: EventWriter<AppExit>,
 ) {
@@ -229,6 +231,20 @@ fn draw_ui(
                         ui.close_menu();
                     }
                 }
+                ui.separator();
+                ui.menu_button("Matcap", |ui| {
+                    for preset in MatcapPreset::all() {
+                        let label = if app_settings.matcap == preset {
+                            format!("{} ✓", preset.label())
+                        } else {
+                            preset.label().to_string()
+                        };
+                        if menu_item(ui, &label, "") {
+                            actions.send(AppAction::SetMatcap(preset));
+                            ui.close_menu();
+                        }
+                    }
+                });
                 ui.separator();
                 ui.menu_button("Bookmarks", |ui| {
                     if menu_item(ui, "Save Current", "") {
@@ -854,6 +870,27 @@ fn draw_dialogs(
                         .text("Default softness"),
                 );
                 ui.small("Pre-fills Sculpt → Settle (gravity)…");
+                ui.add_space(8.0);
+                ui.heading("Shading");
+                ui.horizontal(|ui| {
+                    ui.label("Matcap:");
+                    egui::ComboBox::from_id_salt("mud_matcap_preset")
+                        .selected_text(app_settings.matcap.label())
+                        .show_ui(ui, |ui| {
+                            for preset in MatcapPreset::all() {
+                                ui.selectable_value(
+                                    &mut app_settings.matcap,
+                                    preset,
+                                    preset.label(),
+                                );
+                            }
+                        });
+                });
+                ui.add(
+                    egui::Slider::new(&mut app_settings.cavity_strength, 0.0..=1.0)
+                        .text("Cavity"),
+                );
+                ui.small("Crevice darkening from the SDF (smoothed φ − φ).");
                 ui.add_space(6.0);
                 if ui.button("Close").clicked() {
                     close = true;
