@@ -206,7 +206,9 @@ From `DESIGN.md`'s staged roadmap:
   `~/.mud/autosave.mudclay` every ~90s (skips mid-stroke / dialogs).
   On launch, Restore / Discard if that file exists. Cleared on Save /
   Load / New.
-- `[ ]` **Watertightness check on export.**
+- `[x]` **Watertightness check on export.** Index-edge adjacency on
+  the extracted mesh (open + non-manifold edges). Logs pass/fail;
+  still writes the STL; one-shot Export notice reports the result.
 - `[x]` **Camera bookmarks.** `View → Bookmarks` — save current orbit
   pose (target / distance / yaw / pitch), restore from list (max 8),
   persisted at `~/.mud/bookmarks.txt`.

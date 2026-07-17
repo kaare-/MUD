@@ -39,6 +39,7 @@
 //! game engines that stayed Y-up), pass `Orientation::YupAsIs` to
 //! the writer.
 
+use std::collections::HashMap;
 use std::io::{self, Write};
 
 use fast_surface_nets::ndshape::RuntimeShape;
@@ -47,6 +48,77 @@ use glam::Vec3;
 
 use crate::grid::Grid;
 use crate::mesh::ExtractedMesh;
+
+/// Result of an index-edge watertightness check on an [`ExtractedMesh`].
+///
+/// A mesh is considered watertight when every undirected edge is shared
+/// by exactly two triangles (no open boundaries, no non-manifold fans).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WatertightReport {
+    pub verts: u32,
+    pub edges: u32,
+    pub faces: u32,
+    pub open_edges: u32,
+    pub nonmanifold_edges: u32,
+    /// Euler characteristic `V − E + F` (info only — multi-shell
+    /// closed meshes can be watertight with χ ≠ 2).
+    pub euler: i32,
+}
+
+impl WatertightReport {
+    pub fn is_watertight(self) -> bool {
+        self.faces > 0 && self.open_edges == 0 && self.nonmanifold_edges == 0
+    }
+}
+
+/// Count open / non-manifold edges on an indexed triangle mesh.
+///
+/// Uses vertex **indices** (not float positions), so it matches the
+/// shared-vertex Surface Nets mesh we export from — not the duplicated
+/// triangle-soup STL on disk.
+pub fn check_watertight(mesh: &ExtractedMesh) -> WatertightReport {
+    let faces = (mesh.indices.len() / 3) as u32;
+    let verts = mesh.positions.len() as u32;
+    if faces == 0 {
+        return WatertightReport {
+            verts,
+            edges: 0,
+            faces: 0,
+            open_edges: 0,
+            nonmanifold_edges: 0,
+            euler: verts as i32,
+        };
+    }
+
+    let mut edge_count: HashMap<(u32, u32), u32> = HashMap::new();
+    for tri in mesh.indices.chunks_exact(3) {
+        let a = tri[0];
+        let b = tri[1];
+        let c = tri[2];
+        for (i, j) in [(a, b), (b, c), (c, a)] {
+            let key = if i <= j { (i, j) } else { (j, i) };
+            *edge_count.entry(key).or_default() += 1;
+        }
+    }
+    let edges = edge_count.len() as u32;
+    let mut open_edges = 0u32;
+    let mut nonmanifold_edges = 0u32;
+    for count in edge_count.values() {
+        match *count {
+            1 => open_edges += 1,
+            2 => {}
+            _ => nonmanifold_edges += 1,
+        }
+    }
+    WatertightReport {
+        verts,
+        edges,
+        faces,
+        open_edges,
+        nonmanifold_edges,
+        euler: verts as i32 - edges as i32 + faces as i32,
+    }
+}
 
 /// One voxel of positive-SDF padding around the grid. Surface Nets
 /// walks cells (each cell covers 2×2×2 samples), so with the halo we
@@ -236,6 +308,58 @@ mod tests {
         // internals so we don't assert it, just sanity-check that
         // there is a substantial surface.
         assert!(mesh.indices.len() > 300);
+    }
+
+    #[test]
+    fn sphere_export_mesh_is_watertight() {
+        let g = Grid::from_sphere(
+            UVec3::new(32, 32, 32),
+            1.0,
+            Vec3::ZERO,
+            Vec3::new(16.0, 16.0, 16.0),
+            8.0,
+        );
+        let mesh = extract_full_mesh(&g);
+        let report = check_watertight(&mesh);
+        assert!(
+            report.is_watertight(),
+            "closed sphere should be watertight: {report:?}"
+        );
+    }
+
+    #[test]
+    fn single_triangle_has_open_edges() {
+        let mesh = ExtractedMesh {
+            positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            normals: vec![[0.0, 0.0, 1.0]; 3],
+            indices: vec![0, 1, 2],
+        };
+        let report = check_watertight(&mesh);
+        assert!(!report.is_watertight());
+        assert_eq!(report.open_edges, 3);
+        assert_eq!(report.nonmanifold_edges, 0);
+    }
+
+    #[test]
+    fn edge_shared_by_three_triangles_is_nonmanifold() {
+        // Three triangles around a common edge 0–1.
+        let mesh = ExtractedMesh {
+            positions: vec![
+                [0.0, 0.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.5, 1.0, 0.0],
+                [0.5, 0.0, 1.0],
+                [0.5, 0.0, -1.0],
+            ],
+            normals: vec![[0.0, 1.0, 0.0]; 5],
+            indices: vec![0, 1, 2, 0, 1, 3, 0, 1, 4],
+        };
+        let report = check_watertight(&mesh);
+        assert!(!report.is_watertight());
+        assert!(
+            report.nonmanifold_edges >= 1,
+            "edge 0-1 shared by 3 tris: {report:?}"
+        );
     }
 
     #[test]
