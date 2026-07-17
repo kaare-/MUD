@@ -36,10 +36,10 @@ Rigid rest (`Ctrl+G` backbone).
 ### 3 — Arch sag (any softness > 0)
 Per component, BFS from bench-touching solids. Sag only voxels that are
 **horizontally far** from the bench footprint (true cantilevers /
-branches) — not sphere crowns. Tip drop `� from the bench footprint (true cantilevers /
-branches) — not sphere crowns. Tip drop `∝ softness · t²` where `t` is
-normalised support-graph distance. Reseal 1-voxel gaps so the arch
-doesn’t shatter into crumbs. **No column packing** (that snapped arches).
+branches) — not sphere crowns. Tip drop scales with softness · t²
+where `t` is normalised support-graph distance. Reseal 1-voxel gaps
+so the arch doesn’t shatter into crumbs. **No column packing**
+(that snapped arches).
 
 ### 4 — Splat (softness ≥ 0.25)
 Bench-pack → target mound height from volume → spread + equalise →
