@@ -32,7 +32,7 @@ use crate::gravity::SettleDialogState;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
-use crate::project::{FileDialogState, RecentFiles};
+use crate::project::{AutosaveState, FileDialogState, RecentFiles};
 use crate::sculpt::{
     tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind, SIZE_MAX, SIZE_MIN,
 };
@@ -586,9 +586,34 @@ fn draw_dialogs(
     symmetry: Res<SculptSymmetry>,
     mut app_settings: ResMut<AppSettings>,
     grid_state: Res<WorkbenchGridState>,
+    autosave: Res<AutosaveState>,
     mut actions: EventWriter<AppAction>,
 ) {
     let ctx = contexts.ctx_mut();
+
+    // Crash-recovery prompt — shown once when an autosave file was
+    // left behind from a previous session.
+    if autosave.recovery_pending {
+        egui::Window::new("Recover unsaved work?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(
+                    "An autosave from a previous session was found.\n\
+                     Restore it onto the worktable, or discard it?",
+                );
+                ui.small(format!("{}", crate::project::autosave_path().display()));
+                ui.horizontal(|ui| {
+                    if ui.button("Restore").clicked() {
+                        actions.send(AppAction::RestoreAutosave);
+                    }
+                    if ui.button("Discard").clicked() {
+                        actions.send(AppAction::DiscardAutosave);
+                    }
+                });
+            });
+    }
 
     // Save-As dialog. Egui doesn't have a first-class modal concept,
     // so we anchor to the centre, disable resize/collapse, and rely
@@ -988,11 +1013,15 @@ fn publish_ui_capture(
     prim: Res<PrimitiveDialogState>,
     settle: Res<SettleDialogState>,
     settings: Res<SettingsDialogState>,
+    autosave: Res<AutosaveState>,
     mut gate: ResMut<UiCapturesInput>,
 ) {
     let ctx = contexts.ctx_mut();
-    let modal =
-        dialogs.any_open() || prim.open.is_some() || settle.open || settings.any_open();
+    let modal = dialogs.any_open()
+        || prim.open.is_some()
+        || settle.open
+        || settings.any_open()
+        || autosave.any_modal();
     gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
         modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());

@@ -146,6 +146,10 @@ fn pack_key(x: u32, y: u32, z: u32) -> u64 {
 pub struct UndoHistory {
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
+    /// Document-level dirty bit for autosave. Set on every journaled
+    /// edit (and undo/redo); cleared after a successful Save / Load /
+    /// New / autosave write.
+    dirty: bool,
 }
 
 impl UndoHistory {
@@ -169,6 +173,7 @@ impl UndoHistory {
         if self.undo.len() > MAX_HISTORY {
             self.undo.remove(0);
         }
+        self.dirty = true;
     }
 
     /// Wipe all history. Used when we replace the grid wholesale
@@ -178,6 +183,18 @@ impl UndoHistory {
     pub fn clear(&mut self) {
         self.undo.clear();
         self.redo.clear();
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.dirty
+    }
+
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    pub fn mark_clean(&mut self) {
+        self.dirty = false;
     }
 
     #[cfg(test)]
@@ -253,6 +270,7 @@ fn handle_undo_redo_input(
         if let Some(entry) = history.undo.pop() {
             undo_entry(&entry, &mut workpiece);
             history.redo.push(entry);
+            history.mark_dirty();
             selection.invalidate_labels();
         }
     } else if want_redo {
@@ -262,6 +280,7 @@ fn handle_undo_redo_input(
             if history.undo.len() > MAX_HISTORY {
                 history.undo.remove(0);
             }
+            history.mark_dirty();
             selection.invalidate_labels();
         }
     }

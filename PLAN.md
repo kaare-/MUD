@@ -202,7 +202,10 @@ From `DESIGN.md`'s staged roadmap:
 - `[~]` **Multi-piece scene** — Track B Layers (same-domain, hide /
   show). Per-piece transforms still deferred.
 - `[ ]` **Reference images pinned to the workbench** (Stage 4).
-- `[ ]` **Autosave / crash recovery** (Stage 4).
+- `[x]` **Autosave / crash recovery** (Stage 4). Dirty-gated write to
+  `~/.mud/autosave.mudclay` every ~90s (skips mid-stroke / dialogs).
+  On launch, Restore / Discard if that file exists. Cleared on Save /
+  Load / New.
 - `[ ]` **Watertightness check on export.**
 - `[x]` **Camera bookmarks.** `View → Bookmarks` — save current orbit
   pose (target / distance / yaw / pitch), restore from list (max 8),
