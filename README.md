@@ -75,7 +75,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Delete` / `Backspace` | Remove the selected piece |
 | `A` | Toggle **active-only** sculpting (only affects the selected piece) |
 | `Ctrl+G` | Rest every floating piece on the workbench (rigid drop, undoable) |
-| `Ctrl+Shift+G` | Settle (plastic) — slump tall forms; plasticity dialog |
+| `Ctrl+Shift+G` | Settle (gravity) — drop, sag first (eased), tip, splat; softness dialog |
 | `Ctrl+E` | Export STL — opens a Save-As dialog to pick a filename (Z-up, print-ready) |
 | `Ctrl+Shift+E` | Quick STL export with an auto-timestamped filename in CWD |
 | `Ctrl+S` | Save the current piece as a native `.mudclay` project file (auto-timestamped) |
@@ -84,9 +84,11 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Ctrl+Shift+O` | Quick-reopen the most recently modified project |
 
 All of the above are also reachable from the on-screen UI: the top
-**File** menu (Save / Load / Export STL / Quit), the left **Tools**
-palette (click a tool to pick it up), and the bottom status strip
-(click the *Symmetry* / *Magic clay* readouts to toggle them).
+**File** / **Edit** / **Sculpt** / **View** menus (`Edit → Tool
+parameters…`, `Edit → Preferences…`, workbench grid under View), the
+left **Tools** palette (click a tool to pick it up), and the bottom
+status strip (click the *Symmetry* / *Magic clay* readouts to toggle
+them). The workbench grid is on by default.
 
 `Esc` to quit.
 

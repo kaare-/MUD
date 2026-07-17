@@ -2,9 +2,9 @@
 //!
 //! Adds panels around the 3D viewport:
 //!
-//! - **Top**: menu bar with a `File` dropdown (Save / Load / Export
-//!   STL / Quit). Shortcut hints inline so keyboard-inclined users
-//!   learn the shortcuts by using the menu.
+//! - **Top**: menu bar with `File`, `Edit` (tool parameters /
+//!   preferences), `Sculpt`, and `View`. Shortcut hints inline so
+//!   keyboard-inclined users learn the shortcuts by using the menu.
 //! - **Left**: tool palette — one button per [`ToolKind`], current
 //!   tool highlighted. Includes the 1–8 shortcut in the label so the
 //!   two paths are self-teaching.
@@ -33,8 +33,11 @@ use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::FileDialogState;
-use crate::sculpt::{tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind};
+use crate::sculpt::{
+    tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind, SIZE_MAX, SIZE_MIN,
+};
 use crate::selection::Selection;
+use crate::settings::{AppSettings, SettingsDialogState};
 use crate::view::{ViewPreset, WorkbenchGridState};
 use crate::workpiece::LayersState;
 
@@ -113,6 +116,16 @@ fn draw_ui(
                     actions.send(AppAction::Quit);
                 }
             });
+            ui.menu_button("Edit", |ui| {
+                if menu_item(ui, "Tool parameters\u{2026}", "") {
+                    actions.send(AppAction::ShowToolSettingsDialog);
+                    ui.close_menu();
+                }
+                if menu_item(ui, "Preferences\u{2026}", "") {
+                    actions.send(AppAction::ShowPreferencesDialog);
+                    ui.close_menu();
+                }
+            });
             ui.menu_button("Sculpt", |ui| {
                 if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
                     actions.send(AppAction::ShowInsertPrimitiveDialog);
@@ -146,7 +159,7 @@ fn draw_ui(
                     actions.send(AppAction::RestPiecesOnBench);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Settle (plastic)\u{2026}", "Ctrl+Shift+G") {
+                if menu_item(ui, "Settle (gravity)\u{2026}", "Ctrl+Shift+G") {
                     actions.send(AppAction::ShowSettleDialog);
                     ui.close_menu();
                 }
@@ -481,11 +494,17 @@ fn draw_selection_hud(
 /// - **Open** shows the list of `.mudclay` files in the CWD (newest
 ///   first by mtime), plus Open / Cancel. Single click selects,
 ///   double click opens.
+#[allow(clippy::too_many_arguments)]
 fn draw_dialogs(
     mut contexts: EguiContexts,
     mut state: ResMut<FileDialogState>,
     mut prim_state: ResMut<PrimitiveDialogState>,
     mut settle_state: ResMut<SettleDialogState>,
+    mut settings_dialogs: ResMut<SettingsDialogState>,
+    mut tool: ResMut<SculptTool>,
+    symmetry: Res<SculptSymmetry>,
+    mut app_settings: ResMut<AppSettings>,
+    grid_state: Res<WorkbenchGridState>,
     mut actions: EventWriter<AppAction>,
 ) {
     let ctx = contexts.ctx_mut();
@@ -598,22 +617,23 @@ fn draw_dialogs(
         }
     }
 
-    // Plastic settle dialog — plasticity slider, then one-shot burst.
+    // Gravity settle dialog — softness slider, then one-shot burst.
     if settle_state.open {
         let mut commit: Option<Option<f32>> = None;
-        egui::Window::new("Settle (plastic)")
+        egui::Window::new("Settle (gravity)")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("Plasticity (elastic → soft clay):");
+                ui.label("Softness under gravity (stiff → soft clay):");
                 ui.add(
                     egui::Slider::new(&mut settle_state.plasticity, 0.0..=1.0)
-                        .text("plasticity"),
+                        .text("softness"),
                 );
                 ui.small(
-                    "Tall thin forms slump and flare at the base.\n\
-                     Fat resting blobs barely move. One undo stroke.",
+                    "Drop → sag first (eased in) → tip → thick splat.\n\
+                     Even soft clay bows before it tips or pancakes.\n\
+                     Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {
                     if ui.button("Settle").clicked() {
@@ -632,6 +652,88 @@ fn draw_dialogs(
                 settle_state.open = false;
             }
             None => {}
+        }
+    }
+
+    // Tool parameters — live-edit the active tool knobs.
+    if settings_dialogs.tool_open {
+        let mut close = false;
+        egui::Window::new("Tool parameters")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Active tool: {}", tool_label(tool.kind)));
+                ui.add_space(6.0);
+                ui.add(
+                    egui::Slider::new(&mut tool.size, SIZE_MIN..=SIZE_MAX)
+                        .suffix(" mm")
+                        .text("Size"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut tool.advance_per_step, 0.05..=3.0)
+                        .text("Advance / step"),
+                );
+                ui.add(
+                    egui::Slider::new(&mut tool.smooth_strength, 0.05..=1.0)
+                        .text("Smooth strength"),
+                );
+                ui.checkbox(&mut tool.displace, "Magic clay (soft CSG / bulge)");
+                let mut sym = symmetry.enabled;
+                if ui.checkbox(&mut sym, "Mirror symmetry (X = 0)").changed() {
+                    actions.send(AppAction::ToggleSymmetry);
+                }
+                ui.small(
+                    "Size also responds to [ ] / - = and Shift+scroll.\n\
+                     Advance affects Clay bite and Paddle press depth.\n\
+                     Smooth strength is Smooth-tool only.",
+                );
+                ui.add_space(4.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            settings_dialogs.tool_open = false;
+        }
+    }
+
+    // Preferences — turntable, grid, settle default.
+    if settings_dialogs.prefs_open {
+        let mut close = false;
+        let mut grid_on = grid_state.visible;
+        egui::Window::new("Preferences")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.heading("Workbench");
+                if ui.checkbox(&mut grid_on, "Show workbench grid").changed() {
+                    actions.send(AppAction::SetWorkbenchGrid(grid_on));
+                }
+                ui.small("10 mm major lines · also View → Workbench grid.");
+                ui.add_space(8.0);
+                ui.heading("Turntable");
+                ui.add(
+                    egui::Slider::new(&mut app_settings.turntable_period_secs, 2.0..=30.0)
+                        .suffix(" s")
+                        .text("Seconds per revolution"),
+                );
+                ui.small("Hold Q / E to rotate. Longer = slower.");
+                ui.add_space(8.0);
+                ui.heading("Settle (gravity)");
+                ui.add(
+                    egui::Slider::new(&mut app_settings.default_plasticity, 0.0..=1.0)
+                        .text("Default softness"),
+                );
+                ui.small("Pre-fills Sculpt → Settle (gravity)…");
+                ui.add_space(6.0);
+                if ui.button("Close").clicked() {
+                    close = true;
+                }
+            });
+        if close {
+            settings_dialogs.prefs_open = false;
         }
     }
 
@@ -804,10 +906,12 @@ fn publish_ui_capture(
     dialogs: Res<FileDialogState>,
     prim: Res<PrimitiveDialogState>,
     settle: Res<SettleDialogState>,
+    settings: Res<SettingsDialogState>,
     mut gate: ResMut<UiCapturesInput>,
 ) {
     let ctx = contexts.ctx_mut();
-    let modal = dialogs.any_open() || prim.open.is_some() || settle.open;
+    let modal =
+        dialogs.any_open() || prim.open.is_some() || settle.open || settings.any_open();
     gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
         modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());

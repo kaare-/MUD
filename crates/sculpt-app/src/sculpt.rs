@@ -964,8 +964,8 @@ fn stamp_wire(
 /// Minimum and maximum tool size in mm. Below the min the sculpt
 /// footprint is smaller than a voxel; above the max it dwarfs the
 /// starter primitive.
-const SIZE_MIN: f32 = 2.0;
-const SIZE_MAX: f32 = 60.0;
+pub const SIZE_MIN: f32 = 2.0;
+pub const SIZE_MAX: f32 = 60.0;
 /// Per-keystroke size step. `SIZE_STEP_UP` = `1 / SIZE_STEP_DOWN` so
 /// pressing "smaller then bigger" returns you to the same size.
 const SIZE_STEP_DOWN: f32 = 0.85;

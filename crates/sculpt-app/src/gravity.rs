@@ -1,8 +1,8 @@
-//! App-level glue for rigid rest and plastic settle.
+//! App-level glue for rigid rest and gravity settle.
 //!
-//! - `Ctrl+G` / `Sculpt → Rest pieces on bench` — rigid −Y drop.
-//! - `Ctrl+Shift+G` / `Sculpt → Settle (plastic)…` — column-squash
-//!   burst (`PLASTIC_GRAVITY.md`).
+//! - `Ctrl+G` / `Sculpt → Rest pieces on bench` — rigid −Y drop only.
+//! - `Ctrl+Shift+G` / `Sculpt → Settle (gravity)…` — drop floaters,
+//!   then soft clay collapses toward the bench (`PLASTIC_GRAVITY.md`).
 
 use bevy::prelude::*;
 use sculpt_core::{
@@ -12,14 +12,15 @@ use sculpt_core::{
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
 use crate::selection::Selection;
+use crate::settings::AppSettings;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
 use crate::workpiece::LayersState;
 
-/// Plasticity slider state for the Settle dialog.
+/// Softness slider state for the Settle (gravity) dialog.
 #[derive(Resource)]
 pub struct SettleDialogState {
     pub open: bool,
-    /// Draft plasticity in the dialog (committed on Settle).
+    /// Draft softness in the dialog (committed on Settle).
     pub plasticity: f32,
 }
 
@@ -66,6 +67,7 @@ fn handle_action(
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<Selection>,
     mut dialog: ResMut<SettleDialogState>,
+    settings: Res<AppSettings>,
 ) {
     for a in events.read() {
         match a {
@@ -78,6 +80,7 @@ fn handle_action(
                 );
             }
             AppAction::ShowSettleDialog => {
+                dialog.plasticity = settings.default_plasticity.clamp(0.0, 1.0);
                 dialog.open = true;
             }
             AppAction::SettlePlastic(p) => {
@@ -179,7 +182,7 @@ fn settle_plastic_now(
     selection.invalidate_labels();
 
     info!(
-        "settle: plasticity={:.2}, touched {} voxels over {} iter(s)",
+        "settle: softness={:.2}, touched {} voxels over {} sandpile step(s)",
         plasticity, summary.voxels_touched, summary.iterations_run
     );
 }

@@ -70,9 +70,17 @@ impl ViewPreset {
 #[derive(Component)]
 pub struct WorkbenchGrid;
 
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct WorkbenchGridState {
     pub visible: bool,
+}
+
+impl Default for WorkbenchGridState {
+    fn default() -> Self {
+        // On by default — the overlay is the main scale reference on
+        // the worktable; View / Preferences can still hide it.
+        Self { visible: true }
+    }
 }
 
 pub fn plugin(app: &mut App) {
@@ -108,7 +116,8 @@ fn spawn_workbench_grid(
         MeshMaterial3d(material),
         // A hair above the workbench slab to avoid depth fights.
         Transform::from_xyz(0.0, 0.05, 0.0),
-        Visibility::Hidden,
+        // Matches `WorkbenchGridState::default` (visible).
+        Visibility::Visible,
         WorkbenchGrid,
     ));
 }
@@ -156,6 +165,13 @@ fn handle_view_actions(
         match a {
             AppAction::ToggleWorkbenchGrid => {
                 grid_state.visible = !grid_state.visible;
+                info!(
+                    "workbench grid: {}",
+                    if grid_state.visible { "on" } else { "off" }
+                );
+            }
+            AppAction::SetWorkbenchGrid(on) => {
+                grid_state.visible = *on;
                 info!(
                     "workbench grid: {}",
                     if grid_state.visible { "on" } else { "off" }

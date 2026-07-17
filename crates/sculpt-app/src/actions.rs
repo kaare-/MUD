@@ -69,12 +69,18 @@ pub enum AppAction {
     /// Drop every floating connected component onto the workbench
     /// (rigid gravity — no plastic deformation).
     RestPiecesOnBench,
-    /// Pop up the plastic-settle dialog (plasticity slider).
+    /// Pop up the gravity-settle dialog (softness slider).
     ShowSettleDialog,
-    /// Run a plastic-settle burst at the given plasticity (0..1).
+    /// Run a gravity-settle burst at the given softness (0..1).
     SettlePlastic(f32),
     /// Flip the workbench grid overlay.
     ToggleWorkbenchGrid,
+    /// Explicitly show / hide the workbench grid (Preferences).
+    SetWorkbenchGrid(bool),
+    /// Pop up Edit → Tool parameters… (size, advance, smooth, etc.).
+    ShowToolSettingsDialog,
+    /// Pop up Edit → Preferences… (turntable, grid, settle defaults).
+    ShowPreferencesDialog,
     /// Snap the orbit camera to a standard preset (Top / Front /
     /// Left / Right / Back / Bottom / Perspective). Distance and
     /// target are preserved.

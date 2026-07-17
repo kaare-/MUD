@@ -1,80 +1,68 @@
-# Plastic gravity — spike design
+# Gravity settle — spike design
 
-Status: **spike in progress** (Track A/B foundations landed).
-Not FEM. Not continuous simulation. One-shot settle on the active layer.
+Status: **drop → throttle-up sag → tip → volumetric splat**.
 
 ## Goal
 
-Give clay a controllable “gradual setting” under its own weight:
-tall thin forms slump and puddle outward; fat resting blobs barely
-move. Slider `plasticity ∈ [0, 1]` = elastic (noop) → soft yielding.
+Tunable gravity that reads as clay:
 
-Falsifiers for the spike:
+1. Floating lumps **crash onto the workbench**.
+2. Forms **sag first** — even at high softness — with gravity
+   easing in over several passes (not full tip/splat onset).
+3. Long thin branches **arch-sag** toward the bench at low
+   softness (0.01–0.1), forming an arch from tip to rooted base.
+4. Tall stalks that survive sag may **tip** (angle eases in above
+   softness ≈ 0.55).
+5. Soft clay **splats** into a thick mound (softness ≥ 0.5), blended
+   toward the target height — not an instant pancake.
 
-1. A thin tower on the bench loses height and gains base width at
-   `plasticity = 1`.
-2. The same tower is nearly unchanged at `plasticity = 0`.
-3. A short fat hemisphere barely moves at `plasticity = 1`.
-4. Volume of solid voxels stays within ~15% of the pre-settle count
-   (approximate conservation — good enough for a spike).
-5. Narrow-band meshing does not crumple (band rewritten with the
-   solid, same discipline as rigid rest).
+Critical: light settle must **not** binary-rewrite the SDF when nothing
+cantilevered moved (that was the surface “erosion” look).
 
-## Non-goals (spike)
+## Falsifiers
 
-- FEM / MPM / PBD / elastic rebound
-- Continuous always-on simulation
-- Rest-pose rotation / tipping
-- Multi-layer settle in one op (active layer only, same as tools)
-- Exact volume-preserving Poisson redistribution
-- Full SDF redistancing
+1. Airborne blob lands at `iy = 0` at softness `0`.
+2. Long horizontal branch at softness `≈ 0.05`: tip lowers, stays one
+   component (arch), root on bench.
+3. Grounded blob with no cantilevers at softness `0.01`: surface
+   unchanged vs a pure drop.
+4. Soft tower tips/splats; soft sphere becomes a thick splat.
+5. Stiff fat blob barely moves.
 
-## Stress proxy (spike)
+## Algorithm
 
-Column overburden, not FEM curvature:
+### 1 — Drop
+Rigid rest (`Ctrl+G` backbone).
 
-- For each `(ix, iz)` column, `height` = count of solid (`φ < 0`) voxels.
-- Stable height `max_stable = 4 + (1 − plasticity) × 36` voxels.
-- A column **yields** when `height > max_stable`.
+### 2 — Sag first (any softness > 0)
+Progressive arch/stalk sag. Pass strengths are **increments** that sum
+to softness (ease-in curve), so early passes bow gently and later
+passes add the rest — never re-apply a full drop each pass.
 
-This is a discrete stand-in for “vertical load × unsupported height”.
-A later pass can swap in a mean-curvature × load surface proxy
-without changing the UX.
+Per component, BFS from bench-touching solids. Sag voxels that are
+**horizontally far** from the bench footprint (true cantilevers /
+branches), or tall upright stalks without an overhang. Reseal 1-voxel
+gaps so arches don’t shatter. **No column packing**.
 
-## Yield response (one iteration)
+### 3 — Tip (softness ≥ 0.55)
+Only if still needle-tall after sag. Rotation angle eases with
+`(softness - 0.55) / 0.45` (full 90° only at softness 1).
 
-For each yielding column:
+### 4 — Splat (softness ≥ 0.5)
+Bench-pack → blend current peak toward a volume-based mound height →
+spread + equalise → despike → SDF rewrite.
 
-1. **Peel** up to `1 + 3×plasticity` solid voxels from the top
-   (`φ → +voxel_size`).
-2. **Plant** the same count into the shortest neighbouring columns
-   at the base (`φ → −voxel_size`), flaring the footprint.
-3. Paint a tiny positive halo around new plants so the band stays
-   meshable; lightly mollify **positive** band cells only (never
-   blur solid — that dissolves volume).
-
-Repeat `iterations` times (default 8). Journal every changed voxel
-once (first pre-value) → **one undo stroke** for the whole settle.
+### Write gate
+Solid→SDF rewrite runs **only** if tip, sag, or splat changed geometry.
 
 ## UX
 
 | | |
 |---|---|
-| Menu | `Sculpt → Settle (plastic)…` |
-| Hotkey | `Ctrl+Shift+G` (rigid Rest stays `Ctrl+G`) |
-| Control | Plasticity slider on a small dialog (default 0.7) |
-| Scope | All components on the **active** layer |
-| Mode | One-shot burst → single undo |
+| Menu | `Sculpt → Settle (gravity)…` |
+| Hotkey | `Ctrl+Shift+G` |
+| Softness | `0` drop only · low/mid = progressive sag · high = tip + splat |
 
-## Relationship to rigid Rest
+## Implementation
 
-`Ctrl+G` remains a rigid −Y translate (no deformation). Plastic
-settle is a separate op: local SDF surgery. Users can Rest then
-Settle, or Settle floaters (material still flows down onto the
-bench clamp).
-
-## Implementation map
-
-- `crates/sculpt-core/src/plastic.rs` — core settle + tests
-- `crates/sculpt-app/src/gravity.rs` — hotkey / action / undo
-- `actions` / `ui` — menu + plasticity dialog
+`crates/sculpt-core/src/plastic.rs`
