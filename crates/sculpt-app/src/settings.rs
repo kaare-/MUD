@@ -5,6 +5,7 @@
 //! speed, default settle plasticity) plus the Edit-menu dialog flags.
 
 use bevy::prelude::*;
+use sculpt_core::MesherKind;
 
 use crate::actions::AppAction;
 use crate::matcap::MatcapPreset;
@@ -23,6 +24,8 @@ pub struct AppSettings {
     /// When true, stylus / touch force scales clay bite, paddle
     /// advance, and smooth strength. Mouse stays at full depth.
     pub pressure_to_depth: bool,
+    /// Viewport + STL isosurface algorithm.
+    pub mesher: MesherKind,
 }
 
 impl Default for AppSettings {
@@ -34,6 +37,7 @@ impl Default for AppSettings {
             matcap: MatcapPreset::Clay,
             cavity_strength: 0.65,
             pressure_to_depth: true,
+            mesher: MesherKind::SurfaceNets,
         }
     }
 }

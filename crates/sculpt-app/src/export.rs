@@ -22,12 +22,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
 use sculpt_core::{
-    check_watertight, extract_full_mesh, stl_binary_size, write_stl_binary, Orientation,
-    WatertightReport,
+    check_watertight, extract_full_mesh_with, stl_binary_size, write_stl_binary, MesherKind,
+    Orientation, WatertightReport,
 };
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
+use crate::settings::AppSettings;
 use crate::workpiece::LayersState;
 
 /// One-shot post-export notice (watertight ok / warn / empty).
@@ -73,11 +74,12 @@ fn emit_export_hotkey(
 fn handle_export_action(
     mut events: EventReader<AppAction>,
     workpiece: Res<LayersState>,
+    settings: Res<AppSettings>,
     mut notice: ResMut<ExportNotice>,
 ) {
     for a in events.read() {
         if let AppAction::ExportStlAs(path) = a {
-            export_stl_to(&workpiece, path, &mut notice);
+            export_stl_to(&workpiece, path, settings.mesher, &mut notice);
         }
     }
 }
@@ -88,11 +90,20 @@ fn handle_export_action(
 /// anyway) and write a binary STL to `path`. Logs every failure
 /// rather than propagating — like `save_to_path`, we're called from
 /// a fire-and-forget event handler.
-pub fn export_stl_to(workpiece: &LayersState, path: &Path, notice: &mut ExportNotice) {
-    info!("exporting STL to {}", path.display());
+pub fn export_stl_to(
+    workpiece: &LayersState,
+    path: &Path,
+    mesher: MesherKind,
+    notice: &mut ExportNotice,
+) {
+    info!(
+        "exporting STL to {} (mesher: {})",
+        path.display(),
+        mesher.label()
+    );
 
     let flattened = workpiece.visible_union_grid();
-    let mesh = extract_full_mesh(&flattened);
+    let mesh = extract_full_mesh_with(&flattened, mesher);
     if mesh.is_empty() {
         warn!("no material to export — grid is empty");
         notice.message = Some("Export skipped — no material on the worktable.".into());
