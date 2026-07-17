@@ -1,16 +1,20 @@
 # Gravity settle — spike design
 
-Status: **drop → tip → arch-sag → volumetric splat**.
+Status: **drop → throttle-up sag → tip → volumetric splat**.
 
 ## Goal
 
 Tunable gravity that reads as clay:
 
 1. Floating lumps **crash onto the workbench**.
-2. Tall unstable pieces **tip** (90° lay-down) when soft enough (≥ 0.35).
-3. Long thin branches **arch-sag** toward the bench — even at low
-   softness (0.01–0.1) — forming an arch from tip to rooted base.
-4. Soft clay **splats** into a thick mound (not a 1-voxel sheet).
+2. Forms **sag first** — even at high softness — with gravity
+   easing in over several passes (not full tip/splat onset).
+3. Long thin branches **arch-sag** toward the bench at low
+   softness (0.01–0.1), forming an arch from tip to rooted base.
+4. Tall stalks that survive sag may **tip** (angle eases in above
+   softness ≈ 0.55).
+5. Soft clay **splats** into a thick mound (softness ≥ 0.5), blended
+   toward the target height — not an instant pancake.
 
 Critical: light settle must **not** binary-rewrite the SDF when nothing
 cantilevered moved (that was the surface “erosion” look).
@@ -30,20 +34,23 @@ cantilevered moved (that was the surface “erosion” look).
 ### 1 — Drop
 Rigid rest (`Ctrl+G` backbone).
 
-### 2 — Tip (softness ≥ 0.35)
-90° lay-down when height ≫ footprint, then re-drop.
+### 2 — Sag first (any softness > 0)
+Progressive arch/stalk sag. Pass strengths are **increments** that sum
+to softness (ease-in curve), so early passes bow gently and later
+passes add the rest — never re-apply a full drop each pass.
 
-### 3 — Arch sag (any softness > 0)
-Per component, BFS from bench-touching solids. Sag only voxels that are
+Per component, BFS from bench-touching solids. Sag voxels that are
 **horizontally far** from the bench footprint (true cantilevers /
-branches) — not sphere crowns. Tip drop scales with softness · t²
-where `t` is normalised support-graph distance. Reseal 1-voxel gaps
-so the arch doesn’t shatter into crumbs. **No column packing**
-(that snapped arches).
+branches), or tall upright stalks without an overhang. Reseal 1-voxel
+gaps so arches don’t shatter. **No column packing**.
 
-### 4 — Splat (softness ≥ 0.25)
-Bench-pack → target mound height from volume → spread + equalise →
-despike → SDF rewrite.
+### 3 — Tip (softness ≥ 0.55)
+Only if still needle-tall after sag. Rotation angle eases with
+`(softness - 0.55) / 0.45` (full 90° only at softness 1).
+
+### 4 — Splat (softness ≥ 0.5)
+Bench-pack → blend current peak toward a volume-based mound height →
+spread + equalise → despike → SDF rewrite.
 
 ### Write gate
 Solid→SDF rewrite runs **only** if tip, sag, or splat changed geometry.
@@ -54,7 +61,7 @@ Solid→SDF rewrite runs **only** if tip, sag, or splat changed geometry.
 |---|---|
 | Menu | `Sculpt → Settle (gravity)…` |
 | Hotkey | `Ctrl+Shift+G` |
-| Softness | `0` drop only · low = arch sag · high = tip + splat |
+| Softness | `0` drop only · low/mid = progressive sag · high = tip + splat |
 
 ## Implementation
 

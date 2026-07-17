@@ -120,8 +120,8 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    to a face-on preset; distance and target are preserved.
 
 9. `[x]` **Gravity settle.** See `PLASTIC_GRAVITY.md`.
-   `Sculpt → Settle (gravity)…` (`Ctrl+Shift+G`): drop → tip →
-   arch-sag long branches (works at low softness) → thick splat.
+   `Sculpt → Settle (gravity)…` (`Ctrl+Shift+G`): drop → sag first
+   (eased-in) → tip → thick splat. Even soft clay bows before tip/splat.
    SDF rewrite skipped when nothing moved (no erosion sandblast).
    One undo stroke. Follow-ups: multi-layer, richer rest poses.
 

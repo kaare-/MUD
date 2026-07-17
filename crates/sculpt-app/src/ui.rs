@@ -631,8 +631,8 @@ fn draw_dialogs(
                         .text("softness"),
                 );
                 ui.small(
-                    "Drop → tip (soft) → arch-sag branches → thick splat.\n\
-                     Low softness bows long thin branches into arches.\n\
+                    "Drop → sag first (eased in) → tip → thick splat.\n\
+                     Even soft clay bows before it tips or pancakes.\n\
                      Active layer only · one undo stroke.",
                 );
                 ui.horizontal(|ui| {
