@@ -27,7 +27,7 @@ use bevy::prelude::*;
 use bevy_egui::{egui, EguiContexts, EguiPlugin};
 
 use crate::actions::AppAction;
-use crate::export::timestamped_filename;
+use crate::export::{timestamped_filename, ExportNotice};
 use crate::gravity::SettleDialogState;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
@@ -587,9 +587,30 @@ fn draw_dialogs(
     mut app_settings: ResMut<AppSettings>,
     grid_state: Res<WorkbenchGridState>,
     autosave: Res<AutosaveState>,
+    mut export_notice: ResMut<ExportNotice>,
     mut actions: EventWriter<AppAction>,
 ) {
     let ctx = contexts.ctx_mut();
+
+    // Post-export watertightness / result notice.
+    if export_notice.message.is_some() {
+        let mut dismiss = false;
+        if let Some(msg) = export_notice.message.as_ref() {
+            egui::Window::new("Export STL")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label(msg);
+                    if ui.button("OK").clicked() {
+                        dismiss = true;
+                    }
+                });
+        }
+        if dismiss {
+            export_notice.message = None;
+        }
+    }
 
     // Crash-recovery prompt — shown once when an autosave file was
     // left behind from a previous session.
@@ -867,7 +888,8 @@ fn draw_dialogs(
                     ui.small(
                         "Exports into the working directory. Extension\n\
                          .stl is added automatically. Leaving the field\n\
-                         blank exports with a fresh timestamp.",
+                         blank exports with a fresh timestamp.\n\
+                         A watertightness check runs after extract.",
                     );
                     let clicked = ui.horizontal(|ui| {
                         let save = ui.button("Export").clicked();
@@ -1007,6 +1029,7 @@ fn finalise_typed_path(input: &str, ext: &str) -> PathBuf {
 ///   feel modal: clicks anywhere shouldn't sculpt, and shortcut keys
 ///   shouldn't move the turntable while the user's typing a filename.
 ///   We check the `FileDialogState` resource directly for this.
+#[allow(clippy::too_many_arguments)]
 fn publish_ui_capture(
     mut contexts: EguiContexts,
     dialogs: Res<FileDialogState>,
@@ -1014,6 +1037,7 @@ fn publish_ui_capture(
     settle: Res<SettleDialogState>,
     settings: Res<SettingsDialogState>,
     autosave: Res<AutosaveState>,
+    export_notice: Res<ExportNotice>,
     mut gate: ResMut<UiCapturesInput>,
 ) {
     let ctx = contexts.ctx_mut();
@@ -1021,7 +1045,8 @@ fn publish_ui_capture(
         || prim.open.is_some()
         || settle.open
         || settings.any_open()
-        || autosave.any_modal();
+        || autosave.any_modal()
+        || export_notice.any_open();
     gate.pointer = modal || ctx.wants_pointer_input() || ctx.is_pointer_over_area();
     gate.keyboard =
         modal || ctx.wants_keyboard_input() || ctx.memory(|m| m.any_popup_open());

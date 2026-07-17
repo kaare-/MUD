@@ -1,10 +1,11 @@
 //! Export the workpiece to disk on `Ctrl+E`.
 //!
 //! Extracts a single seamless mesh from the current SDF grid via
-//! `sculpt_core::extract_full_mesh`, writes a binary STL (Z-up, so
-//! it drops onto a slicer's print bed with the workbench at Z=0),
-//! and logs the path + file size + triangle count so the user knows
-//! where the file went.
+//! `sculpt_core::extract_full_mesh`, runs an index-edge watertightness
+//! check, writes a binary STL (Z-up, so it drops onto a slicer's print
+//! bed with the workbench at Z=0), and logs the path + file size +
+//! triangle count. Non-watertight meshes still write; a one-shot UI
+//! notice reports the result.
 //!
 //! Blocking extraction is fine at Stage-2 grid sizes (128³ ≈
 //! 100 ms). If we ever need it non-blocking, spawn a task and hand
@@ -20,13 +21,29 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bevy::prelude::*;
-use sculpt_core::{extract_full_mesh, stl_binary_size, write_stl_binary, Orientation};
+use sculpt_core::{
+    check_watertight, extract_full_mesh, stl_binary_size, write_stl_binary, Orientation,
+    WatertightReport,
+};
 
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
 use crate::workpiece::LayersState;
 
+/// One-shot post-export notice (watertight ok / warn / empty).
+#[derive(Resource, Default)]
+pub struct ExportNotice {
+    pub message: Option<String>,
+}
+
+impl ExportNotice {
+    pub fn any_open(&self) -> bool {
+        self.message.is_some()
+    }
+}
+
 pub fn plugin(app: &mut App) {
+    app.init_resource::<ExportNotice>();
     app.add_systems(Update, (emit_export_hotkey, handle_export_action));
 }
 
@@ -56,10 +73,11 @@ fn emit_export_hotkey(
 fn handle_export_action(
     mut events: EventReader<AppAction>,
     workpiece: Res<LayersState>,
+    mut notice: ResMut<ExportNotice>,
 ) {
     for a in events.read() {
         if let AppAction::ExportStlAs(path) = a {
-            export_stl_to(&workpiece, path);
+            export_stl_to(&workpiece, path, &mut notice);
         }
     }
 }
@@ -70,15 +88,30 @@ fn handle_export_action(
 /// anyway) and write a binary STL to `path`. Logs every failure
 /// rather than propagating — like `save_to_path`, we're called from
 /// a fire-and-forget event handler.
-pub fn export_stl_to(workpiece: &LayersState, path: &Path) {
+pub fn export_stl_to(workpiece: &LayersState, path: &Path, notice: &mut ExportNotice) {
     info!("exporting STL to {}", path.display());
 
     let flattened = workpiece.visible_union_grid();
     let mesh = extract_full_mesh(&flattened);
     if mesh.is_empty() {
         warn!("no material to export — grid is empty");
+        notice.message = Some("Export skipped — no material on the worktable.".into());
         return;
     }
+
+    let report = check_watertight(&mesh);
+    if report.is_watertight() {
+        info!(
+            "watertight OK — {} tris, {} verts, χ={}",
+            report.faces, report.verts, report.euler
+        );
+    } else {
+        warn!(
+            "watertight FAIL — {} open edge(s), {} non-manifold edge(s) ({} tris, χ={})",
+            report.open_edges, report.nonmanifold_edges, report.faces, report.euler
+        );
+    }
+
     let expected_bytes = stl_binary_size(&mesh);
     let tri_count = mesh.indices.len() / 3;
 
@@ -86,12 +119,14 @@ pub fn export_stl_to(workpiece: &LayersState, path: &Path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to create {}: {e}", path.display());
+            notice.message = Some(format!("Export failed — couldn't create {}.", path.display()));
             return;
         }
     };
     let mut writer = BufWriter::new(file);
     if let Err(e) = write_stl_binary(&mesh, Orientation::Zup, &mut writer) {
         error!("failed to write STL: {e}");
+        notice.message = Some(format!("Export failed — write error: {e}"));
         return;
     }
     info!(
@@ -100,6 +135,24 @@ pub fn export_stl_to(workpiece: &LayersState, path: &Path) {
         expected_bytes,
         path.display()
     );
+    notice.message = Some(export_notice_text(path, tri_count, &report));
+}
+
+fn export_notice_text(path: &Path, tri_count: usize, report: &WatertightReport) -> String {
+    let name = path
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    if report.is_watertight() {
+        format!("Exported {tri_count} tris to {name}\nWatertight: yes")
+    } else {
+        format!(
+            "Exported {tri_count} tris to {name}\n\
+             Watertight: no — {} open edge(s), {} non-manifold edge(s).\n\
+             The file was still written; check it in your slicer.",
+            report.open_edges, report.nonmanifold_edges
+        )
+    }
 }
 
 /// Timestamped filename of the form `<prefix>YYYYMMDD-HHMMSS<ext>`.
@@ -192,5 +245,20 @@ mod tests {
             seconds_to_ymdhms(1_709_296_496),
             (2024, 3, 1, 12, 34, 56),
         );
+    }
+
+    #[test]
+    fn export_notice_mentions_open_edges_when_not_watertight() {
+        let report = WatertightReport {
+            verts: 3,
+            edges: 3,
+            faces: 1,
+            open_edges: 3,
+            nonmanifold_edges: 0,
+            euler: 1,
+        };
+        let text = export_notice_text(Path::new("/tmp/piece.stl"), 1, &report);
+        assert!(text.contains("Watertight: no"));
+        assert!(text.contains("3 open edge"));
     }
 }
