@@ -48,6 +48,8 @@ pub enum AppAction {
     LoadNewestProject,
     /// Load a specific `.mudclay` file (from the Open dialog).
     OpenProject(PathBuf),
+    /// Clear the Open Recent MRU list.
+    ClearRecentFiles,
     /// Pop up the Save-As dialog. UI-only affordance; keyboard has
     /// Ctrl+Shift+S.
     ShowSaveAsDialog,

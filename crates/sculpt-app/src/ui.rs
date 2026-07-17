@@ -32,7 +32,7 @@ use crate::gravity::SettleDialogState;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
-use crate::project::FileDialogState;
+use crate::project::{FileDialogState, RecentFiles};
 use crate::sculpt::{
     tool_label, CutterFamily, SculptSymmetry, SculptTool, ToolKind, SIZE_MAX, SIZE_MIN,
 };
@@ -63,6 +63,7 @@ fn draw_ui(
     mut workpiece: ResMut<LayersState>,
     grid_state: Res<WorkbenchGridState>,
     mut move_state: ResMut<MoveState>,
+    recent: Res<RecentFiles>,
     mut actions: EventWriter<AppAction>,
     mut app_exit: EventWriter<AppExit>,
 ) {
@@ -100,6 +101,38 @@ fn draw_ui(
                     actions.send(AppAction::LoadNewestProject);
                     ui.close_menu();
                 }
+                ui.menu_button("Open Recent", |ui| {
+                    let entries: Vec<PathBuf> = recent.paths().to_vec();
+                    let mut shown = 0usize;
+                    for path in &entries {
+                        if !path.exists() {
+                            continue;
+                        }
+                        shown += 1;
+                        let label = path
+                            .file_name()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| path.display().to_string());
+                        if ui
+                            .add(egui::Button::new(label).min_size(egui::vec2(180.0, 0.0)))
+                            .on_hover_text(path.display().to_string())
+                            .clicked()
+                        {
+                            actions.send(AppAction::OpenProject(path.clone()));
+                            ui.close_menu();
+                        }
+                    }
+                    if shown == 0 {
+                        ui.add_enabled(false, egui::Button::new("(empty)"));
+                    }
+                    if !entries.is_empty() {
+                        ui.separator();
+                        if menu_item(ui, "Clear Recent", "") {
+                            actions.send(AppAction::ClearRecentFiles);
+                            ui.close_menu();
+                        }
+                    }
+                });
                 ui.separator();
                 if menu_item(ui, "Export STL\u{2026}", "Ctrl+E") {
                     actions.send(AppAction::ShowExportStlDialog);

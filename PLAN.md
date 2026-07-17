@@ -205,7 +205,9 @@ From `DESIGN.md`'s staged roadmap:
 - `[ ]` **Autosave / crash recovery** (Stage 4).
 - `[ ]` **Watertightness check on export.**
 - `[ ]` **Camera bookmarks.**
-- `[ ]` **Recent files.**
+- `[x]` **Recent files.** `File → Open Recent` MRU (max 8), persisted
+  at `~/.mud/recent.txt`. Updated on successful Open / Save / Save As.
+  Clear Recent empties the list.
 - `[x]` **Snap-to-workbench** for a piece's base — `Sculpt → Snap
   selection to bench` / selection HUD. Rigid −Y drop of the selected
   piece only (`rest_component_on_bench`); keeps the pick. Ctrl+G still

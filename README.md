@@ -82,7 +82,8 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Ctrl+S` | Save the current piece as a native `.mudclay` project file (auto-timestamped) |
 | `Ctrl+Shift+S` | Save As… — dialog with a filename you choose |
 | `Ctrl+O` | Open… — picker showing every `.mudclay` in the working directory |
-| `Ctrl+Shift+O` | Quick-reopen the most recently modified project |
+| `Ctrl+Shift+O` | Quick-reopen the most recently modified project in CWD |
+| — | `File → Open Recent` — MRU list across sessions (`~/.mud/recent.txt`) |
 
 All of the above are also reachable from the on-screen UI: the top
 **File** / **Edit** / **Sculpt** / **View** menus (`Edit → Tool
