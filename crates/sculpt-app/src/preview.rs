@@ -31,7 +31,9 @@ use glam::{Vec2 as GVec2, Vec3 as GVec3};
 
 use sculpt_core::Profile;
 
+use crate::pen::PenState;
 use crate::sculpt::{clay_brush_center, CutterParams, SculptTool, ToolKind};
+use crate::settings::AppSettings;
 use crate::workpiece::{LayersState, WorkpieceRoot};
 
 /// Marker component for the single preview entity.
@@ -133,6 +135,8 @@ fn update_preview(
     q_preview: Query<(Entity, &Mesh3d), With<ToolPreview>>,
     workpiece: Res<LayersState>,
     tool: Res<SculptTool>,
+    pen: Res<PenState>,
+    settings: Res<AppSettings>,
     preview_mats: Res<PreviewMaterials>,
     mut state: ResMut<PreviewMeshState>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -236,12 +240,14 @@ fn update_preview(
             ToolKind::Clay => {
                 let adding =
                     keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
+                let advance =
+                    tool.advance_per_step * pen.depth_scale(settings.pressure_to_depth);
                 let c = clay_brush_center(
                     hit_g,
                     into_g,
                     view_g,
                     tool.size,
-                    tool.advance_per_step,
+                    advance,
                     adding,
                 );
                 Vec3::new(c.x, c.y, c.z)
