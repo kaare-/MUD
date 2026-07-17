@@ -84,6 +84,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `Ctrl+O` | Open… — picker showing every `.mudclay` in the working directory |
 | `Ctrl+Shift+O` | Quick-reopen the most recently modified project in CWD |
 | — | `File → Open Recent` — MRU list across sessions (`~/.mud/recent.txt`) |
+| — | `View → Bookmarks` — save / restore camera poses (`~/.mud/bookmarks.txt`) |
 
 All of the above are also reachable from the on-screen UI: the top
 **File** / **Edit** / **Sculpt** / **View** menus (`Edit → Tool

@@ -38,7 +38,7 @@ use crate::sculpt::{
 };
 use crate::selection::Selection;
 use crate::settings::{AppSettings, SettingsDialogState};
-use crate::view::{ViewPreset, WorkbenchGridState};
+use crate::view::{CameraBookmarks, ViewPreset, WorkbenchGridState};
 use crate::workpiece::LayersState;
 
 pub fn plugin(app: &mut App) {
@@ -64,6 +64,7 @@ fn draw_ui(
     grid_state: Res<WorkbenchGridState>,
     mut move_state: ResMut<MoveState>,
     recent: Res<RecentFiles>,
+    bookmarks: Res<CameraBookmarks>,
     mut actions: EventWriter<AppAction>,
     mut app_exit: EventWriter<AppExit>,
 ) {
@@ -228,6 +229,44 @@ fn draw_ui(
                         ui.close_menu();
                     }
                 }
+                ui.separator();
+                ui.menu_button("Bookmarks", |ui| {
+                    if menu_item(ui, "Save Current", "") {
+                        actions.send(AppAction::SaveCameraBookmark);
+                        ui.close_menu();
+                    }
+                    let slots = bookmarks.slots().to_vec();
+                    if slots.is_empty() {
+                        ui.add_enabled(false, egui::Button::new("(empty)"));
+                    } else {
+                        ui.separator();
+                        for (i, bookmark) in slots.iter().enumerate() {
+                            let tip = format!(
+                                "target ({:.0}, {:.0}, {:.0}) · dist {:.0} mm",
+                                bookmark.target.x,
+                                bookmark.target.y,
+                                bookmark.target.z,
+                                bookmark.distance
+                            );
+                            if ui
+                                .add(
+                                    egui::Button::new(&bookmark.name)
+                                        .min_size(egui::vec2(180.0, 0.0)),
+                                )
+                                .on_hover_text(tip)
+                                .clicked()
+                            {
+                                actions.send(AppAction::RestoreCameraBookmark(i));
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        if menu_item(ui, "Clear Bookmarks", "") {
+                            actions.send(AppAction::ClearCameraBookmarks);
+                            ui.close_menu();
+                        }
+                    }
+                });
             });
             ui.separator();
             ui.label(

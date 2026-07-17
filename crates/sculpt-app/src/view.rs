@@ -1,23 +1,25 @@
-//! View features: workbench grid overlay + standard camera views.
+//! View features: workbench grid overlay + standard camera views +
+//! camera bookmarks.
 //!
-//! Adds a top-level `View` menu in the UI plus dispatch of two
-//! action families:
+//! Adds a top-level `View` menu in the UI plus dispatch of:
 //!
-//! - [`AppAction::ToggleWorkbenchGrid`] flips a translucent grid
-//!   drawn on the workbench plane. Line spacing is 10 mm on the
-//!   major grid, 2 mm on the minor grid, spanning a 400 mm square
-//!   centred on the origin.
-//! - [`AppAction::SetView`] snaps the orbit camera to one of a
-//!   handful of standard poses (Top / Front / Back / Left / Right
-//!   / Bottom / Perspective). Distance is preserved so the user
-//!   doesn't lose their zoom when previewing a face-on view.
+//! - [`AppAction::ToggleWorkbenchGrid`] — translucent grid on the bench
+//! - [`AppAction::SetView`] — standard Top / Front / … presets
+//! - Camera bookmarks — save / restore full orbit poses (target,
+//!   distance, yaw, pitch), persisted under `~/.mud/bookmarks.txt`
+
+use std::fs;
+use std::path::{Path, PathBuf};
 
 use bevy::prelude::*;
 use bevy::render::mesh::{Indices, PrimitiveTopology};
 use bevy::render::render_asset::RenderAssetUsages;
 
 use crate::actions::AppAction;
-use crate::camera::OrbitCamera;
+use crate::camera::{compute_orbit_transform, OrbitCamera};
+
+/// Cap for saved camera bookmarks (and on-disk list).
+pub const MAX_CAMERA_BOOKMARKS: usize = 8;
 
 /// Camera preset. `Perspective` is a 3/4 view roughly matching the
 /// starter pose; every other variant snaps yaw + pitch to look
@@ -66,6 +68,161 @@ impl ViewPreset {
     }
 }
 
+/// One saved orbit pose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CameraBookmark {
+    pub name: String,
+    pub target: Vec3,
+    pub distance: f32,
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
+impl CameraBookmark {
+    pub fn from_camera(name: String, cam: &OrbitCamera) -> Self {
+        Self {
+            name,
+            target: cam.target,
+            distance: cam.distance,
+            yaw: cam.yaw,
+            pitch: cam.pitch,
+        }
+    }
+
+    pub fn apply_to(&self, cam: &mut OrbitCamera) {
+        cam.target = self.target;
+        cam.distance = self.distance;
+        cam.yaw = self.yaw;
+        cam.pitch = self.pitch;
+    }
+}
+
+/// Saved camera bookmarks for `View → Bookmarks`.
+///
+/// Persisted under `~/.mud/bookmarks.txt` (one tab-separated line
+/// per bookmark). Newest save is prepended; list is capped at
+/// [`MAX_CAMERA_BOOKMARKS`].
+#[derive(Resource, Clone, Debug)]
+pub struct CameraBookmarks {
+    slots: Vec<CameraBookmark>,
+}
+
+impl Default for CameraBookmarks {
+    fn default() -> Self {
+        Self {
+            slots: load_bookmarks(&bookmarks_store_path()),
+        }
+    }
+}
+
+impl CameraBookmarks {
+    pub fn slots(&self) -> &[CameraBookmark] {
+        &self.slots
+    }
+
+    /// Snapshot `cam` as a new bookmark at the front of the list.
+    pub fn save_current(&mut self, cam: &OrbitCamera) -> &CameraBookmark {
+        let name = next_bookmark_name(&self.slots);
+        let bookmark = CameraBookmark::from_camera(name, cam);
+        self.slots.insert(0, bookmark);
+        self.slots.truncate(MAX_CAMERA_BOOKMARKS);
+        save_bookmarks(&bookmarks_store_path(), &self.slots);
+        &self.slots[0]
+    }
+
+    pub fn clear(&mut self) {
+        self.slots.clear();
+        save_bookmarks(&bookmarks_store_path(), &self.slots);
+    }
+}
+
+fn next_bookmark_name(slots: &[CameraBookmark]) -> String {
+    let mut n = slots.len() + 1;
+    loop {
+        let candidate = format!("Bookmark {n}");
+        if slots.iter().all(|b| b.name != candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+fn bookmarks_store_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    match home {
+        Some(h) => h.join(".mud").join("bookmarks.txt"),
+        None => PathBuf::from(".mud-bookmarks.txt"),
+    }
+}
+
+fn load_bookmarks(store: &Path) -> Vec<CameraBookmark> {
+    let Ok(text) = fs::read_to_string(store) else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(parse_bookmark_line)
+        .take(MAX_CAMERA_BOOKMARKS)
+        .collect()
+}
+
+fn parse_bookmark_line(line: &str) -> Option<CameraBookmark> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') {
+        return None;
+    }
+    let mut parts = line.split('\t');
+    let name = parts.next()?.trim();
+    if name.is_empty() {
+        return None;
+    }
+    let tx: f32 = parts.next()?.parse().ok()?;
+    let ty: f32 = parts.next()?.parse().ok()?;
+    let tz: f32 = parts.next()?.parse().ok()?;
+    let distance: f32 = parts.next()?.parse().ok()?;
+    let yaw: f32 = parts.next()?.parse().ok()?;
+    let pitch: f32 = parts.next()?.parse().ok()?;
+    if !distance.is_finite() || distance <= 0.0 {
+        return None;
+    }
+    Some(CameraBookmark {
+        name: name.to_string(),
+        target: Vec3::new(tx, ty, tz),
+        distance,
+        yaw,
+        pitch,
+    })
+}
+
+fn save_bookmarks(store: &Path, slots: &[CameraBookmark]) {
+    if let Some(parent) = store.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let body: String = slots
+        .iter()
+        .map(|b| {
+            format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                b.name.replace(['\t', '\n'], " "),
+                b.target.x,
+                b.target.y,
+                b.target.z,
+                b.distance,
+                b.yaw,
+                b.pitch
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(e) = fs::write(store, body) {
+        warn!(
+            "couldn't write camera bookmarks {}: {e}",
+            store.display()
+        );
+    }
+}
+
 /// Workbench grid overlay marker + toggle state.
 #[derive(Component)]
 pub struct WorkbenchGrid;
@@ -85,6 +242,7 @@ impl Default for WorkbenchGridState {
 
 pub fn plugin(app: &mut App) {
     app.init_resource::<WorkbenchGridState>();
+    app.init_resource::<CameraBookmarks>();
     app.add_systems(Startup, spawn_workbench_grid);
     app.add_systems(Update, (handle_view_actions, apply_grid_visibility));
 }
@@ -153,12 +311,11 @@ fn build_grid_mesh(size: f32, major_step: f32) -> Mesh {
     mesh
 }
 
-/// Consume `ToggleWorkbenchGrid` and `SetView`. Kept together
-/// because both are pure view-state changes that should not fight
-/// each other for ordering.
+/// Consume grid / view-preset / bookmark actions.
 fn handle_view_actions(
     mut events: EventReader<AppAction>,
     mut grid_state: ResMut<WorkbenchGridState>,
+    mut bookmarks: ResMut<CameraBookmarks>,
     mut q_cam: Query<(&mut OrbitCamera, &mut Transform)>,
 ) {
     for a in events.read() {
@@ -191,20 +348,30 @@ fn handle_view_actions(
                     info!("view: {}", preset.label());
                 }
             }
+            AppAction::SaveCameraBookmark => {
+                if let Ok((cam, _)) = q_cam.get_single() {
+                    let saved = bookmarks.save_current(cam);
+                    info!("bookmark saved: {}", saved.name);
+                }
+            }
+            AppAction::RestoreCameraBookmark(index) => {
+                let Some(bookmark) = bookmarks.slots().get(*index).cloned() else {
+                    warn!("bookmark #{index} missing");
+                    continue;
+                };
+                if let Ok((mut cam, mut tf)) = q_cam.get_single_mut() {
+                    bookmark.apply_to(&mut cam);
+                    *tf = compute_orbit_transform(&cam);
+                    info!("view: restored {}", bookmark.name);
+                }
+            }
+            AppAction::ClearCameraBookmarks => {
+                bookmarks.clear();
+                info!("camera bookmarks cleared");
+            }
             _ => {}
         }
     }
-}
-
-/// Mirror of `camera::compute_transform`, inlined here so we don't
-/// leak the internal helper. Keep in sync with the source if
-/// `OrbitCamera` semantics change.
-fn compute_orbit_transform(cam: &OrbitCamera) -> Transform {
-    let cp = cam.pitch.cos();
-    let offset = Vec3::new(cp * cam.yaw.sin(), cam.pitch.sin(), cp * cam.yaw.cos())
-        * cam.distance;
-    let pos = cam.target + offset;
-    Transform::from_translation(pos).looking_at(cam.target, Vec3::Y)
 }
 
 /// Reflect the toggle state onto the grid entity's visibility. Keeps
@@ -224,5 +391,85 @@ fn apply_grid_visibility(
     };
     if *vis != want {
         *vis = want;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bookmark_round_trips_through_text_line() {
+        let b = CameraBookmark {
+            name: "Bookmark 1".into(),
+            target: Vec3::new(1.0, 45.0, -2.5),
+            distance: 300.0,
+            yaw: 0.6,
+            pitch: 0.35,
+        };
+        let line = format!(
+            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            b.name, b.target.x, b.target.y, b.target.z, b.distance, b.yaw, b.pitch
+        );
+        let parsed = parse_bookmark_line(&line).expect("parse");
+        assert_eq!(parsed, b);
+    }
+
+    #[test]
+    fn bookmark_list_round_trips_on_disk() {
+        let dir = std::env::temp_dir().join("mud-bookmark-test-roundtrip");
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let store = dir.join("bookmarks.txt");
+        let slots = vec![
+            CameraBookmark {
+                name: "Bookmark 1".into(),
+                target: Vec3::new(0.0, 45.0, 0.0),
+                distance: 280.0,
+                yaw: 1.0,
+                pitch: 0.2,
+            },
+            CameraBookmark {
+                name: "Bookmark 2".into(),
+                target: Vec3::new(10.0, 20.0, 30.0),
+                distance: 400.0,
+                yaw: -0.5,
+                pitch: 0.1,
+            },
+        ];
+        save_bookmarks(&store, &slots);
+        assert_eq!(load_bookmarks(&store), slots);
+    }
+
+    #[test]
+    fn save_current_prepends_and_caps() {
+        let mut bookmarks = CameraBookmarks { slots: Vec::new() };
+        let cam = OrbitCamera::new(Vec3::ZERO, 200.0, 0.0, 0.0);
+        for _ in 0..MAX_CAMERA_BOOKMARKS + 2 {
+            bookmarks.slots.insert(
+                0,
+                CameraBookmark::from_camera(next_bookmark_name(&bookmarks.slots), &cam),
+            );
+            bookmarks.slots.truncate(MAX_CAMERA_BOOKMARKS);
+        }
+        assert_eq!(bookmarks.slots.len(), MAX_CAMERA_BOOKMARKS);
+        assert_eq!(bookmarks.slots[0].name, format!("Bookmark {}", MAX_CAMERA_BOOKMARKS + 2));
+    }
+
+    #[test]
+    fn apply_to_copies_full_pose() {
+        let bookmark = CameraBookmark {
+            name: "x".into(),
+            target: Vec3::new(3.0, 4.0, 5.0),
+            distance: 123.0,
+            yaw: 0.7,
+            pitch: -0.2,
+        };
+        let mut cam = OrbitCamera::new(Vec3::ZERO, 300.0, 0.0, 0.0);
+        bookmark.apply_to(&mut cam);
+        assert_eq!(cam.target, bookmark.target);
+        assert_eq!(cam.distance, bookmark.distance);
+        assert_eq!(cam.yaw, bookmark.yaw);
+        assert_eq!(cam.pitch, bookmark.pitch);
     }
 }

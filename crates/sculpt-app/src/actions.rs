@@ -90,6 +90,12 @@ pub enum AppAction {
     /// Left / Right / Back / Bottom / Perspective). Distance and
     /// target are preserved.
     SetView(ViewPreset),
+    /// Save the current orbit camera as a named bookmark.
+    SaveCameraBookmark,
+    /// Restore bookmark at index in the bookmarks list.
+    RestoreCameraBookmark(usize),
+    /// Clear every saved camera bookmark.
+    ClearCameraBookmarks,
     /// Rigidly translate the selected component by `(dx, dy, dz)`
     /// millimetres. No-op when nothing is selected.
     MoveSelection(Vec3),

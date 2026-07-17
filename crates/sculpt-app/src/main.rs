@@ -25,6 +25,7 @@
 //!   Ctrl+G ........... rest every floating piece on the workbench
 //!   Snap selection ... Sculpt menu / HUD — drop selected piece only
 //!   Open Recent ...... File menu MRU (persisted under ~/.mud/)
+//!   Bookmarks ........ View menu — save/restore camera poses
 //!   Ctrl+Shift+G ..... settle (gravity) — drop + soft collapse dialog
 //!   [ / ] or - / = ... shrink / grow the active tool (keyboard)
 //!   Shift + scroll .... shrink / grow the active tool (mouse / trackpad)
