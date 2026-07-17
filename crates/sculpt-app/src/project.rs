@@ -25,8 +25,12 @@ use crate::input_gate::UiCapturesInput;
 use crate::undo::{SculptStroke, UndoHistory};
 use crate::workpiece::LayersState;
 
+/// Cap for the Open Recent list (and on-disk MRU).
+pub const MAX_RECENT_FILES: usize = 8;
+
 pub fn plugin(app: &mut App) {
     app.init_resource::<FileDialogState>();
+    app.init_resource::<RecentFiles>();
     app.add_systems(
         Update,
         (
@@ -35,6 +39,95 @@ pub fn plugin(app: &mut App) {
             handle_dialog_actions,
         ),
     );
+}
+
+/// Most-recently-used `.mudclay` paths for `File → Open Recent`.
+///
+/// Persisted as one path per line under `~/.mud/recent.txt` (or
+/// `%USERPROFILE%\.mud\recent.txt` on Windows). Missing entries are
+/// skipped in the menu; recording a path move-to-fronts and dedupes.
+#[derive(Resource, Clone, Debug)]
+pub struct RecentFiles {
+    paths: Vec<PathBuf>,
+}
+
+impl Default for RecentFiles {
+    fn default() -> Self {
+        Self {
+            paths: load_recent_list(&recent_store_path()),
+        }
+    }
+}
+
+impl RecentFiles {
+    pub fn paths(&self) -> &[PathBuf] {
+        &self.paths
+    }
+
+    /// Record a successfully opened or saved project (MRU front).
+    pub fn record(&mut self, path: &Path) {
+        let abs = absolute_path(path);
+        push_recent(&mut self.paths, abs, MAX_RECENT_FILES);
+        save_recent_list(&recent_store_path(), &self.paths);
+    }
+
+    pub fn clear(&mut self) {
+        self.paths.clear();
+        save_recent_list(&recent_store_path(), &self.paths);
+    }
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+    std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .unwrap_or_else(|_| path.to_path_buf())
+}
+
+/// `~/.mud/recent.txt` (creates the directory lazily on save).
+fn recent_store_path() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(PathBuf::from);
+    match home {
+        Some(h) => h.join(".mud").join("recent.txt"),
+        None => PathBuf::from(".mud-recent.txt"),
+    }
+}
+
+/// Move-to-front MRU with dedupe. Pure helper for tests.
+fn push_recent(list: &mut Vec<PathBuf>, path: PathBuf, max: usize) {
+    list.retain(|p| p != &path);
+    list.insert(0, path);
+    list.truncate(max);
+}
+
+fn load_recent_list(store: &Path) -> Vec<PathBuf> {
+    let Ok(text) = fs::read_to_string(store) else {
+        return Vec::new();
+    };
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(PathBuf::from)
+        .take(MAX_RECENT_FILES)
+        .collect()
+}
+
+fn save_recent_list(store: &Path, paths: &[PathBuf]) {
+    if let Some(parent) = store.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let body: String = paths
+        .iter()
+        .map(|p| p.display().to_string())
+        .collect::<Vec<_>>()
+        .join("\n");
+    if let Err(e) = fs::write(store, body) {
+        warn!("couldn't write recent-files list {}: {e}", store.display());
+    }
 }
 
 /// Which (if any) in-app dialog is currently visible.
@@ -173,6 +266,7 @@ fn handle_project_actions(
     mut history: ResMut<UndoHistory>,
     mut stroke: ResMut<SculptStroke>,
     mut selection: ResMut<crate::selection::Selection>,
+    mut recent: ResMut<RecentFiles>,
 ) {
     for a in events.read() {
         match a {
@@ -183,22 +277,33 @@ fn handle_project_actions(
             }
             AppAction::SaveProject => {
                 let path = PathBuf::from(timestamped_filename("mud-sculpt-", ".mudclay"));
-                save_to_path(&workpiece, &path);
+                if save_to_path(&workpiece, &path) {
+                    recent.record(&path);
+                }
             }
-            AppAction::SaveProjectAs(path) => save_to_path(&workpiece, path),
+            AppAction::SaveProjectAs(path) => {
+                if save_to_path(&workpiece, path) {
+                    recent.record(path);
+                }
+            }
             AppAction::LoadNewestProject => match newest_mudclay_in_cwd() {
                 Some(p) => {
-                    load_from_path(&p, &mut workpiece, &mut history, &mut stroke);
+                    if load_from_path(&p, &mut workpiece, &mut history, &mut stroke) {
+                        recent.record(&p);
+                    }
                     selection.picked_voxel = None;
                     selection.invalidate_labels();
                 }
                 None => warn!("no mud-sculpt-*.mudclay files in the working directory"),
             },
             AppAction::OpenProject(path) => {
-                load_from_path(path, &mut workpiece, &mut history, &mut stroke);
+                if load_from_path(path, &mut workpiece, &mut history, &mut stroke) {
+                    recent.record(path);
+                }
                 selection.picked_voxel = None;
                 selection.invalidate_labels();
             }
+            AppAction::ClearRecentFiles => recent.clear(),
             _ => {}
         }
     }
@@ -224,20 +329,21 @@ pub fn clear_worktable(
 /// Wraps every failure in a user-facing log message rather than
 /// propagating — we're being called from a fire-and-forget event
 /// handler and there's nowhere useful for the Result to go.
-pub fn save_to_path(workpiece: &LayersState, path: &Path) {
+/// Returns `true` when the file was written successfully.
+pub fn save_to_path(workpiece: &LayersState, path: &Path) -> bool {
     info!("saving project to {}", path.display());
     let file = match File::create(path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to create {}: {e}", path.display());
-            return;
+            return false;
         }
     };
     let mut writer = BufWriter::new(file);
     let scene = scene_from_workpiece(workpiece);
     if let Err(e) = write_project_scene(&scene, &mut writer) {
         error!("failed to write project: {e}");
-        return;
+        return false;
     }
     let bytes = project_scene_size(&scene);
     info!(
@@ -246,24 +352,26 @@ pub fn save_to_path(workpiece: &LayersState, path: &Path) {
         scene.layers.len(),
         path.display()
     );
+    true
 }
 
 /// Read a `.mudclay` file at `path` and replace the live layer stack.
 /// Clears the undo history and any in-flight stroke on success —
 /// journaled voxel values from before the swap reference a different
 /// grid.
+/// Returns `true` when the scene was applied successfully.
 pub fn load_from_path(
     path: &Path,
     workpiece: &mut LayersState,
     history: &mut UndoHistory,
     stroke: &mut SculptStroke,
-) {
+) -> bool {
     info!("loading project from {}", path.display());
     let file = match File::open(path) {
         Ok(f) => f,
         Err(e) => {
             error!("failed to open {}: {e}", path.display());
-            return;
+            return false;
         }
     };
     let mut reader = BufReader::new(file);
@@ -271,7 +379,7 @@ pub fn load_from_path(
         Ok(s) => s,
         Err(e) => {
             error!("failed to read {}: {e}", path.display());
-            return;
+            return false;
         }
     };
     let layers: Vec<_> = scene
@@ -292,9 +400,11 @@ pub fn load_from_path(
                     .unwrap_or_else(|| path.display().to_string()),
                 layer_count,
             );
+            true
         }
         Err(e) => {
             error!("can't apply loaded project: {e}");
+            false
         }
     }
 }
@@ -431,5 +541,40 @@ mod tests {
             newest.file_name().unwrap().to_str().unwrap(),
             "recent.mudclay",
         );
+    }
+
+    #[test]
+    fn push_recent_moves_to_front_dedupes_and_caps() {
+        let mut list = Vec::new();
+        push_recent(&mut list, PathBuf::from("/a.mudclay"), 3);
+        push_recent(&mut list, PathBuf::from("/b.mudclay"), 3);
+        push_recent(&mut list, PathBuf::from("/c.mudclay"), 3);
+        push_recent(&mut list, PathBuf::from("/a.mudclay"), 3);
+        assert_eq!(
+            list,
+            vec![
+                PathBuf::from("/a.mudclay"),
+                PathBuf::from("/c.mudclay"),
+                PathBuf::from("/b.mudclay"),
+            ]
+        );
+        push_recent(&mut list, PathBuf::from("/d.mudclay"), 3);
+        assert_eq!(list.len(), 3);
+        assert_eq!(list[0], PathBuf::from("/d.mudclay"));
+        assert!(!list.contains(&PathBuf::from("/b.mudclay")));
+    }
+
+    #[test]
+    fn recent_list_round_trips_on_disk() {
+        let dir = scratch("recent-disk");
+        let store = dir.join("recent.txt");
+        let paths = vec![
+            PathBuf::from("/tmp/one.mudclay"),
+            PathBuf::from("/tmp/two.mudclay"),
+        ];
+        save_recent_list(&store, &paths);
+        assert_eq!(load_recent_list(&store), paths);
+        save_recent_list(&store, &[]);
+        assert!(load_recent_list(&store).is_empty());
     }
 }
