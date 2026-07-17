@@ -204,7 +204,9 @@ From `DESIGN.md`'s staged roadmap:
 - `[ ]` **Reference images pinned to the workbench** (Stage 4).
 - `[ ]` **Autosave / crash recovery** (Stage 4).
 - `[ ]` **Watertightness check on export.**
-- `[ ]` **Camera bookmarks.**
+- `[x]` **Camera bookmarks.** `View → Bookmarks` — save current orbit
+  pose (target / distance / yaw / pitch), restore from list (max 8),
+  persisted at `~/.mud/bookmarks.txt`.
 - `[x]` **Recent files.** `File → Open Recent` MRU (max 8), persisted
   at `~/.mud/recent.txt`. Updated on successful Open / Save / Save As.
   Clear Recent empties the list.

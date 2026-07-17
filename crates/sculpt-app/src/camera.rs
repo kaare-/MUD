@@ -33,11 +33,13 @@ pub fn plugin(app: &mut App) {
 fn spawn_camera(mut commands: Commands) {
     // Aim at roughly the top of the starter ball. Distance in mm.
     let cam = OrbitCamera::new(Vec3::new(0.0, 45.0, 0.0), 300.0, 0.6, 0.35);
-    let tf = compute_transform(&cam);
+    let tf = compute_orbit_transform(&cam);
     commands.spawn((Camera3d::default(), tf, cam));
 }
 
-fn compute_transform(cam: &OrbitCamera) -> Transform {
+/// World transform for an orbit pose. Shared with View presets /
+/// bookmarks so restore matches live orbit control.
+pub fn compute_orbit_transform(cam: &OrbitCamera) -> Transform {
     let cp = cam.pitch.cos();
     let offset = Vec3::new(cp * cam.yaw.sin(), cam.pitch.sin(), cp * cam.yaw.cos()) * cam.distance;
     let pos = cam.target + offset;
@@ -91,5 +93,5 @@ fn orbit_camera_control(
         cam.distance = (cam.distance * (1.0 - scroll * 0.1)).clamp(60.0, 2000.0);
     }
 
-    *tf = compute_transform(&cam);
+    *tf = compute_orbit_transform(&cam);
 }
