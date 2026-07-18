@@ -66,6 +66,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `1` | Add/Remove (default) |
 | `P` | Press — displaces clay into a rim (volume conserved) |
 | `L` | Pull — grows the surface, thins the rim (volume conserved) |
+| `K` | Knife — shallow hard remove (drag a kerf; no volume recruit) |
 | `2` | Cookie cutter — circle (Tool parameters: wave amplitude / count) |
 | `3` | Cookie cutter — square (Tool parameters: corner radius) |
 | `4` | Cookie cutter — hexagon |

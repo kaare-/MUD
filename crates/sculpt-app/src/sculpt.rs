@@ -40,6 +40,9 @@ pub enum ToolKind {
     /// Volume-conserving finger pull — grows the surface and draws
     /// from the surrounding rim (inverse of Press).
     Pull,
+    /// Thin blade — hard remove, no volume recruitment. Shallow
+    /// local cut (not a through-slice like the wire cutter).
+    Knife,
     Cutter(CutterFamily),
     /// Wire cutter — a planar slab cut defined by two cursor
     /// positions (LMB down = anchor A, LMB up = anchor B). Slices
@@ -262,6 +265,7 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
         ToolKind::Clay => "add/remove",
         ToolKind::Press => "press",
         ToolKind::Pull => "pull",
+        ToolKind::Knife => "knife",
         ToolKind::Cutter(CutterFamily::Circle) => "cutter/circle",
         ToolKind::Cutter(CutterFamily::Square) => "cutter/square",
         ToolKind::Cutter(CutterFamily::Hexagon) => "cutter/hexagon",
@@ -279,6 +283,15 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
 pub fn press_brush_center(hit: GVec3, into_surface: GVec3, size: f32, advance: f32) -> GVec3 {
     let embed = (size - advance).max(size * 0.2);
     hit - into_surface * embed
+}
+
+/// Thin rectangular blade profile for the Knife tool. `size` is the
+/// blade width (half-extent along the long axis); thickness is a
+/// small fraction so the cut reads as a kerf, not a trench.
+pub fn knife_profile(size: f32) -> Profile {
+    let half_w = size.max(2.0);
+    let half_h = (size * 0.07).clamp(0.45, 2.5);
+    Profile::Rect { half_w, half_h }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -344,9 +357,12 @@ fn sculpt_input(
     // LMB is first pressed, then stop so a slow drag doesn't chain
     // cutter stamps by accident. Wire cutter has its own path.
     let should_engage = match tool.kind {
-        ToolKind::Clay | ToolKind::Press | ToolKind::Pull | ToolKind::Smooth | ToolKind::Paddle => {
-            buttons.pressed(MouseButton::Left)
-        }
+        ToolKind::Clay
+        | ToolKind::Press
+        | ToolKind::Pull
+        | ToolKind::Knife
+        | ToolKind::Smooth
+        | ToolKind::Paddle => buttons.pressed(MouseButton::Left),
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
         // Wire cutter, Select, and Move live in their own systems
         // and must not fire the general-purpose sculpt pipeline.
@@ -488,10 +504,14 @@ fn sculpt_input(
     // Press uses the same latch so a held click deepens in steps rather
     // than melting the surface every frame.
     let is_press_or_pull = matches!(tool.kind, ToolKind::Press | ToolKind::Pull);
-    if is_clay || is_press_or_pull {
+    let is_knife = matches!(tool.kind, ToolKind::Knife);
+    if is_clay || is_press_or_pull || is_knife {
         let turning = turntable.angular_vel.abs() > 1e-4;
         let min_spacing = if is_clay && is_add && (turning || column >= CLAY_COLUMN_UNLOCK) {
             (tool.size * 0.18).clamp(0.35, 2.5)
+        } else if is_knife {
+            // Dense enough to leave a continuous kerf while dragging.
+            (tool.size * 0.22).clamp(0.4, 2.0)
         } else {
             (tool.size * 0.4).max(0.8)
         };
@@ -532,7 +552,7 @@ fn sculpt_input(
             mirrored_view,
         );
     }
-    if is_clay || is_press_or_pull {
+    if is_clay || is_press_or_pull || is_knife {
         stroke.last_clay_hit = Some(hit);
     }
 }
@@ -732,6 +752,26 @@ fn apply_at(
                 })
             } else {
                 apply_pull_displace_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
+            }
+        }
+        ToolKind::Knife => {
+            // Hard remove — thin rect extruded a shallow depth into
+            // the surface. No recruitment (DESIGN: knife removes).
+            let advance = tool.advance_per_step * depth_scale;
+            let half_length = (tool.size * 0.35 + advance * 2.0).clamp(2.0, tool.size);
+            let cutter = CookieCutter {
+                profile: knife_profile(tool.size),
+                origin: hit,
+                axis: into_surface,
+                half_length,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_cookie_cutter_with_callback(workpiece.grid_mut(), &cutter, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_cookie_cutter_with_callback(workpiece.grid_mut(), &cutter, |_, _, _, _| {})
             }
         }
         ToolKind::Cutter(family) => {
@@ -1137,6 +1177,9 @@ fn adjust_tool(
     }
     if keys.just_pressed(KeyCode::KeyL) {
         send_tool(ToolKind::Pull);
+    }
+    if keys.just_pressed(KeyCode::KeyK) {
+        send_tool(ToolKind::Knife);
     }
     if keys.just_pressed(KeyCode::Digit2) {
         send_tool(ToolKind::Cutter(CutterFamily::Circle));

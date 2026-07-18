@@ -1184,11 +1184,12 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 /// keyboard mapping in `sculpt::adjust_tool`. `0` is the Move tool
 /// so the digit row reads "1..9" for stamps and "0" for the rigid
 /// transform — same convention as most DCC tool palettes.
-fn tool_palette_order() -> [(&'static str, ToolKind); 12] {
+fn tool_palette_order() -> [(&'static str, ToolKind); 13] {
     [
         ("1", ToolKind::Clay),
         ("P", ToolKind::Press),
         ("L", ToolKind::Pull),
+        ("K", ToolKind::Knife),
         ("2", ToolKind::Cutter(CutterFamily::Circle)),
         ("3", ToolKind::Cutter(CutterFamily::Square)),
         ("4", ToolKind::Cutter(CutterFamily::Hexagon)),
@@ -1209,6 +1210,7 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::Clay => "Add/Remove",
         ToolKind::Press => "Press",
         ToolKind::Pull => "Pull",
+        ToolKind::Knife => "Knife",
         ToolKind::Cutter(CutterFamily::Circle) => "Circle cutter",
         ToolKind::Cutter(CutterFamily::Square) => "Square cutter",
         ToolKind::Cutter(CutterFamily::Hexagon) => "Hex cutter",
@@ -1241,6 +1243,11 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
             "Hold LMB to pull — surface grows, rim thins.\n\
              Volume is conserved (drawn from surroundings).\n\
              Empty bench: use Add/Remove to deposit coils."
+        }
+        ToolKind::Knife => {
+            "Hold LMB and drag to cut a shallow kerf.\n\
+             Removes clay (no rim recruitment).\n\
+             For a through-slice use the Wire cutter."
         }
         ToolKind::Cutter(_) => {
             "Click punches a hole.\n\

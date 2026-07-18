@@ -35,6 +35,9 @@ pub enum Profile {
     /// Circle with a sinusoidal radial ripple. `amp` is peak
     /// displacement in mm; `freq` is integer-ish waves around τ.
     WavyCircle { radius: f32, amp: f32, freq: f32 },
+    /// Axis-aligned rectangle with half-extents `half_w` (X) and
+    /// `half_h` (Y). Used for knife blades and scrapers.
+    Rect { half_w: f32, half_h: f32 },
 }
 
 impl Profile {
@@ -51,6 +54,9 @@ impl Profile {
             Profile::WavyCircle { radius, amp, freq } => {
                 wavy_circle_sdf(Vec2::new(x, y), radius, amp, freq)
             }
+            Profile::Rect { half_w, half_h } => {
+                box_sdf(Vec2::new(x, y), Vec2::new(half_w, half_h))
+            }
         }
     }
 
@@ -66,6 +72,7 @@ impl Profile {
             Profile::Star5 { outer, .. } => outer,
             Profile::RoundedSquare { half_side, .. } => half_side * std::f32::consts::SQRT_2,
             Profile::WavyCircle { radius, amp, .. } => radius + amp.abs(),
+            Profile::Rect { half_w, half_h } => (half_w * half_w + half_h * half_h).sqrt(),
         }
     }
 
@@ -78,6 +85,7 @@ impl Profile {
             Profile::Star5 { .. } => "star",
             Profile::RoundedSquare { .. } => "rounded square",
             Profile::WavyCircle { .. } => "wavy circle",
+            Profile::Rect { .. } => "rect",
         }
     }
 
@@ -159,6 +167,12 @@ impl Profile {
                     })
                     .collect()
             }
+            Profile::Rect { half_w, half_h } => vec![
+                Vec2::new(half_w, half_h),
+                Vec2::new(-half_w, half_h),
+                Vec2::new(-half_w, -half_h),
+                Vec2::new(half_w, -half_h),
+            ],
         }
     }
 
@@ -170,6 +184,7 @@ impl Profile {
     /// - Square / RoundedSquare: `half_side = size` (full side is `2*size`)
     /// - Hexagon: `inradius = size` (flats at `y = ±size`)
     /// - Star5: `outer = size`; the inner-ratio is preserved.
+    /// - Rect: scales so the longer half-extent becomes `size`.
     pub fn resized(&self, size: f32) -> Profile {
         match self {
             Profile::Circle { .. } => Profile::Circle { radius: size },
@@ -203,6 +218,14 @@ impl Profile {
                     radius: size,
                     amp: *amp * scale,
                     freq: *freq,
+                }
+            }
+            Profile::Rect { half_w, half_h } => {
+                let long = half_w.max(*half_h).max(1e-6);
+                let scale = size / long;
+                Profile::Rect {
+                    half_w: *half_w * scale,
+                    half_h: *half_h * scale,
                 }
             }
         }
@@ -375,6 +398,26 @@ mod tests {
             .len(),
             10
         );
+        assert_eq!(
+            Profile::Rect {
+                half_w: 5.0,
+                half_h: 0.5
+            }
+            .outline(24)
+            .len(),
+            4
+        );
+    }
+
+    #[test]
+    fn rect_sdf_is_thin_blade() {
+        let blade = Profile::Rect {
+            half_w: 5.0,
+            half_h: 0.4,
+        };
+        assert!(blade.sdf(0.0, 0.0) < 0.0);
+        assert!(blade.sdf(6.0, 0.0) > 0.0);
+        assert!(blade.sdf(0.0, 1.0) > 0.0);
     }
 
     #[test]
