@@ -73,7 +73,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `5` | Cookie cutter — star |
 | `6` | Wire cutter (LMB-drag slices along the drag line) |
 | `7` | Smooth (hold LMB to polish high-frequency detail) |
-| `8` | Paddle (hold LMB to press a flat) |
+| `8` | Paddle — press a flat; clay squeezes to a rim (volume conserved) |
 | `9` | Select (LMB picks a connected piece; HUD shows its size) |
 | `Delete` / `Backspace` | Remove the selected piece |
 | `A` | Toggle **active-only** sculpting (only affects the selected piece) |
