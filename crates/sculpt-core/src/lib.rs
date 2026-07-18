@@ -12,6 +12,7 @@
 pub mod brush;
 pub mod components;
 pub mod cutter;
+pub mod displace;
 pub mod dual_contour;
 pub mod export;
 pub mod gravity;
@@ -26,6 +27,9 @@ pub mod smooth;
 
 pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
+};
+pub use displace::{
+    apply_press_displace, apply_press_displace_with_callback, solid_volume_in_region, PressDisplace,
 };
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
 pub use gravity::{
