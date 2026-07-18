@@ -200,8 +200,9 @@ Priority stack:
 
 1. `[x]` **P0** — New **Press** tool (`∆V⁻` → recruit → redistance).
    Palette `P`; Add/Remove on `1` unchanged.
-2. `[ ]` **P1** — New **Pull** tool (inverse recruit).
-3. `[ ]` **P2** — Palette / shortcuts / ghosts (keep `1` = Add/Remove).
+2. `[x]` **P1** — New **Pull** tool (inverse recruit). Palette `L`.
+3. `[~]` **P2** — Palette / shortcuts / ghosts (keep `1` = Add/Remove).
+   Press `P` + Pull `L` landed with P0/P1; polish still open.
 4. `[ ]` **P3** — Paddle → displace (optional; after Press feels good).
 5. `[ ]` **P4** — One sharp remove tool (knife or scraper).
 6. `[ ]` **P5** — Feel amplifiers (tilt, tool-SDF ghost, pressure

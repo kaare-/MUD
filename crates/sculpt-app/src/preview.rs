@@ -252,7 +252,7 @@ fn update_preview(
                 );
                 Vec3::new(c.x, c.y, c.z)
             }
-            ToolKind::Press => {
+            ToolKind::Press | ToolKind::Pull => {
                 let advance =
                     tool.advance_per_step * pen.depth_scale(settings.pressure_to_depth);
                 let c = press_brush_center(hit_g, into_g, tool.size, advance);
@@ -277,6 +277,7 @@ fn update_preview(
         tf.rotation = match tool.kind {
             ToolKind::Clay
             | ToolKind::Press
+            | ToolKind::Pull
             | ToolKind::Smooth
             | ToolKind::WireCutter
             | ToolKind::Select
@@ -310,7 +311,9 @@ fn build_preview_mesh(kind: ToolKind, size: f32, params: CutterParams) -> Mesh {
         // brushes at their `size` radius — the preview mesh is
         // identical. The material tint distinguishes them if we
         // want to later (currently the same emissive blue).
-        ToolKind::Clay | ToolKind::Press | ToolKind::Smooth => Sphere::new(size).mesh().uv(24, 16),
+        ToolKind::Clay | ToolKind::Press | ToolKind::Pull | ToolKind::Smooth => {
+            Sphere::new(size).mesh().uv(24, 16)
+        }
         // Select and Move: same "cursor is on material" pip as the
         // wire cutter marker, in the same emissive tint so users
         // don't confuse it with a live brush.

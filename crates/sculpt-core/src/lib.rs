@@ -29,7 +29,8 @@ pub use brush::{
     apply_sphere_brush, apply_sphere_brush_with_callback, BrushMode, SphereBrush,
 };
 pub use displace::{
-    apply_press_displace, apply_press_displace_with_callback, solid_volume_in_region, PressDisplace,
+    apply_press_displace, apply_press_displace_with_callback, apply_pull_displace,
+    apply_pull_displace_with_callback, solid_volume_in_region, PressDisplace, PullDisplace,
 };
 pub use components::{label_components, ComponentField, ComponentId, EMPTY};
 pub use gravity::{
