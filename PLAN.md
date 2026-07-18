@@ -198,7 +198,8 @@ real §2.4 volume redistribution.
 
 Priority stack:
 
-1. `[ ]` **P0** — New **Press** tool (`∆V⁻` → recruit → redistance).
+1. `[x]` **P0** — New **Press** tool (`∆V⁻` → recruit → redistance).
+   Palette `P`; Add/Remove on `1` unchanged.
 2. `[ ]` **P1** — New **Pull** tool (inverse recruit).
 3. `[ ]` **P2** — Palette / shortcuts / ghosts (keep `1` = Add/Remove).
 4. `[ ]` **P3** — Paddle → displace (optional; after Press feels good).

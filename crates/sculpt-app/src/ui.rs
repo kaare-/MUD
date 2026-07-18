@@ -877,8 +877,9 @@ fn draw_dialogs(
                 }
                 ui.small(
                     "Size also responds to [ ] / - = and Shift+scroll.\n\
-                     Advance affects Clay bite and Paddle press depth.\n\
-                     Smooth strength is Smooth-tool only.",
+                     Advance affects Clay bite, Press engagement, and Paddle depth.\n\
+                     Smooth strength is Smooth-tool only.\n\
+                     Press (P) displaces volume; Add/Remove stays CSG.",
                 );
                 ui.add_space(4.0);
                 if ui.button("Close").clicked() {
@@ -1183,9 +1184,10 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 /// keyboard mapping in `sculpt::adjust_tool`. `0` is the Move tool
 /// so the digit row reads "1..9" for stamps and "0" for the rigid
 /// transform — same convention as most DCC tool palettes.
-fn tool_palette_order() -> [(&'static str, ToolKind); 10] {
+fn tool_palette_order() -> [(&'static str, ToolKind); 11] {
     [
         ("1", ToolKind::Clay),
+        ("P", ToolKind::Press),
         ("2", ToolKind::Cutter(CutterFamily::Circle)),
         ("3", ToolKind::Cutter(CutterFamily::Square)),
         ("4", ToolKind::Cutter(CutterFamily::Hexagon)),
@@ -1204,6 +1206,7 @@ fn tool_palette_order() -> [(&'static str, ToolKind); 10] {
 fn short_label(kind: ToolKind) -> &'static str {
     match kind {
         ToolKind::Clay => "Add/Remove",
+        ToolKind::Press => "Press",
         ToolKind::Cutter(CutterFamily::Circle) => "Circle cutter",
         ToolKind::Cutter(CutterFamily::Square) => "Square cutter",
         ToolKind::Cutter(CutterFamily::Hexagon) => "Hex cutter",
@@ -1226,6 +1229,11 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
              Shift+scroll or [ / ] resize.\n\
              Right-drag orbits · Q / E turntable.\n\
              Sideways add + Q/E draws a ring."
+        }
+        ToolKind::Press => {
+            "Hold LMB to press — clay displaces into a rim.\n\
+             Volume is conserved (not carved away).\n\
+             Shift+scroll or [ / ] resize · Advance sets bite."
         }
         ToolKind::Cutter(_) => {
             "Click punches a hole.\n\

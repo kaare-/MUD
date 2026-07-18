@@ -14,9 +14,10 @@ use glam::Vec3 as GVec3;
 
 use sculpt_core::{
     apply_cookie_cutter_with_callback, apply_paddle_with_callback,
-    apply_smooth_brush_with_callback, apply_sphere_brush_with_callback,
-    apply_wire_cutter_with_callback, label_components, BrushMode, ComponentField, CookieCutter,
-    Paddle, Profile, SmoothBrush, SphereBrush, WireCutter,
+    apply_press_displace_with_callback, apply_smooth_brush_with_callback,
+    apply_sphere_brush_with_callback, apply_wire_cutter_with_callback, label_components,
+    BrushMode, ComponentField, CookieCutter, Paddle, PressDisplace, Profile, SmoothBrush,
+    SphereBrush, WireCutter,
 };
 
 use crate::actions::AppAction;
@@ -33,6 +34,9 @@ use crate::workpiece::{LayersState, WorkpieceRoot};
 pub enum ToolKind {
     /// Spherical add (Shift+LMB) / remove (LMB) brush.
     Clay,
+    /// Volume-conserving finger press (DESIGN §2.4). Separate from
+    /// Clay Add/Remove — displaces with rim recruitment.
+    Press,
     Cutter(CutterFamily),
     /// Wire cutter — a planar slab cut defined by two cursor
     /// positions (LMB down = anchor A, LMB up = anchor B). Slices
@@ -253,6 +257,7 @@ fn handle_tool_actions(
 pub fn tool_label(kind: ToolKind) -> &'static str {
     match kind {
         ToolKind::Clay => "add/remove",
+        ToolKind::Press => "press",
         ToolKind::Cutter(CutterFamily::Circle) => "cutter/circle",
         ToolKind::Cutter(CutterFamily::Square) => "cutter/square",
         ToolKind::Cutter(CutterFamily::Hexagon) => "cutter/hexagon",
@@ -263,6 +268,13 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
         ToolKind::Select => "select",
         ToolKind::Move => "move",
     }
+}
+
+/// Brush centre for the Press tool: seat the sphere so it engages the
+/// surface by `advance` mm (pen pressure scales advance upstream).
+pub fn press_brush_center(hit: GVec3, into_surface: GVec3, size: f32, advance: f32) -> GVec3 {
+    let embed = (size - advance).max(size * 0.2);
+    hit - into_surface * embed
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -328,7 +340,7 @@ fn sculpt_input(
     // LMB is first pressed, then stop so a slow drag doesn't chain
     // cutter stamps by accident. Wire cutter has its own path.
     let should_engage = match tool.kind {
-        ToolKind::Clay | ToolKind::Smooth | ToolKind::Paddle => {
+        ToolKind::Clay | ToolKind::Press | ToolKind::Smooth | ToolKind::Paddle => {
             buttons.pressed(MouseButton::Left)
         }
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
@@ -469,9 +481,12 @@ fn sculpt_input(
     // Stamp spacing. Face-on needs a generous gap so hold-still doesn't
     // race along the view. Turning or unlocked side-column uses denser
     // spacing so small brushes leave a continuous ring bead.
-    if is_clay {
+    // Press uses the same latch so a held click deepens in steps rather
+    // than melting the surface every frame.
+    let is_press = matches!(tool.kind, ToolKind::Press);
+    if is_clay || is_press {
         let turning = turntable.angular_vel.abs() > 1e-4;
-        let min_spacing = if is_add && (turning || column >= CLAY_COLUMN_UNLOCK) {
+        let min_spacing = if is_clay && is_add && (turning || column >= CLAY_COLUMN_UNLOCK) {
             (tool.size * 0.18).clamp(0.35, 2.5)
         } else {
             (tool.size * 0.4).max(0.8)
@@ -513,7 +528,7 @@ fn sculpt_input(
             mirrored_view,
         );
     }
-    if is_clay {
+    if is_clay || is_press {
         stroke.last_clay_hit = Some(hit);
     }
 }
@@ -676,6 +691,23 @@ fn apply_at(
                 })
             } else {
                 apply_sphere_brush_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
+            }
+        }
+        ToolKind::Press => {
+            let advance = tool.advance_per_step * depth_scale;
+            let center = press_brush_center(hit, into_surface, tool.size, advance);
+            let brush = PressDisplace {
+                center,
+                radius: tool.size,
+                direction: into_surface,
+                workbench_y: Some(0.0),
+            };
+            if let Some(rec) = recorder.as_mut() {
+                apply_press_displace_with_callback(workpiece.grid_mut(), &brush, |x, y, z, pre| {
+                    rec.record_pre_value(x, y, z, pre)
+                })
+            } else {
+                apply_press_displace_with_callback(workpiece.grid_mut(), &brush, |_, _, _, _| {})
             }
         }
         ToolKind::Cutter(family) => {
@@ -1075,6 +1107,9 @@ fn adjust_tool(
     };
     if keys.just_pressed(KeyCode::Digit1) {
         send_tool(ToolKind::Clay);
+    }
+    if keys.just_pressed(KeyCode::KeyP) {
+        send_tool(ToolKind::Press);
     }
     if keys.just_pressed(KeyCode::Digit2) {
         send_tool(ToolKind::Cutter(CutterFamily::Circle));

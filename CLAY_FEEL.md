@@ -25,7 +25,7 @@ like deposit / eraser — that’s fine; it’s a different job.
 
 | P | Item | Why first | Exit criterion |
 |---|------|-----------|----------------|
-| **P0** | **New Press tool** — `∆V⁻` → recruit → redistance; LMB depresses | Core clay thesis; Add/Remove unchanged | Pressing a face leaves a conserved rim; volume roughly held |
+| **P0** `[x]` | **New Press tool** — `∆V⁻` → recruit → redistance; LMB depresses | Core clay thesis; Add/Remove unchanged | Pressing a face leaves a conserved rim; volume roughly held |
 | **P1** | **New Pull tool** — inverse: grow outward, thin the neighbourhood | Completes the finger pair | Pull raises a bump and draws from surroundings |
 | **P2** | **Palette / UX** — slots, shortcuts, ghosts, HUD hints for Press/Pull | Discoverable without touching Add/Remove | `1` still Add/Remove; Press/Pull have clear labels + ghosts |
 | **P3** | **Paddle → displace** (optional follow-on) | DESIGN paddle displaces; today it carves | Flat press squeezes a rim (or leave paddle as carve if Press covers flats) |
@@ -85,11 +85,10 @@ Cookie / wire / Add-Remove **never** call the recruit step.
 
 ### Spike checklist
 
-- `[ ]` `∆V` cheap enough at 1.5 mm / interactive rates?
-- `[ ]` Weighted surface band beats “looks like a bulge” in a side-by-side
-  push test vs Add/Remove magic clay?
-- `[ ]` Is local redistance mandatory in v1?
-- `[ ]` Symmetry mirrors Press correctly (both sides recruit).
+- `[x]` `∆V` via occupancy sum — cheap at local AABB / interactive rates.
+- `[x]` Weighted rim recruit + unit tests (depress, conserve, side rim).
+- `[x]` Local Jacobi redistance (4 iters) in v1 dirty halo.
+- `[x]` Symmetry: Press goes through the same mirror `apply_at` path.
 
 ### Non-goals for P0
 
