@@ -812,9 +812,9 @@ fn apply_at(
         }
         ToolKind::Paddle => {
             // Paddle plane advances into the surface each frame, so
-            // holding the button gradually flattens the piece to a
-            // deeper plane. `normal` points *outward* from the
-            // workpiece (opposite the surface's into-direction).
+            // holding the button gradually flattens the piece. Lost
+            // volume is recruited into a rim (displace, not carve).
+            // `normal` points *outward* from the workpiece.
             let advance = tool.advance_per_step * depth_scale;
             let paddle = Paddle {
                 center: hit + into_surface * advance,

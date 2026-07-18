@@ -86,7 +86,7 @@ fn clamp_aabb(grid: &Grid, center: Vec3, radius: f32) -> Option<(UVec3, UVec3)> 
     }
 }
 
-fn expand_region(grid: &Grid, min: UVec3, max: UVec3, pad: u32) -> (UVec3, UVec3) {
+pub(crate) fn expand_region(grid: &Grid, min: UVec3, max: UVec3, pad: u32) -> (UVec3, UVec3) {
     let res = grid.res();
     let min = UVec3::new(
         min.x.saturating_sub(pad),
@@ -394,7 +394,7 @@ where
 /// A few Jacobi-style redistance iterations inside `[min, max)`.
 /// Keeps sign of φ; relaxes `|∇φ| → 1` so the next stamp / mesher see
 /// a usable band. Not a full fast-sweep — good enough for local edits.
-fn redistance_local(grid: &mut Grid, min: UVec3, max: UVec3, iterations: u32) {
+pub(crate) fn redistance_local(grid: &mut Grid, min: UVec3, max: UVec3, iterations: u32) {
     if iterations == 0 || min.x >= max.x {
         return;
     }

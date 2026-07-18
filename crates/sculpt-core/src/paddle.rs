@@ -2,24 +2,18 @@
 //!
 //! Physically the paddle is a rigid flat plate you press against clay
 //! to squash a region into a plane. Digitally we model it as a disk-
-//! shaped half-space cut: pick a plane (a `center` and outward `normal`
-//! pointing away from the workpiece) and a disk `radius`; any workpiece
-//! material within the disk *and* on the paddle side of the plane is
-//! removed. Material outside the disk is untouched, so the flat is
-//! bounded — you don't accidentally shear the whole piece.
+//! shaped half-space press: pick a plane (`center` + outward `normal`)
+//! and a disk `radius`; material within the disk on the paddle side of
+//! the plane is depressed, and the lost volume is redistributed into a
+//! rim around the disk (DESIGN §2.4 / §5 — paddle *displaces*).
 //!
 //! Progressive-feel behaviour: the caller offsets the `center` a bit
 //! deeper into the surface each frame the button is held, so the
-//! flat grows in one direction until the plane is buried. Same pattern
-//! as the clay tool's advance-per-step trick.
-//!
-//! Paddle is a *removal* tool (DESIGN §5 decision 1) in this MVP.
-//! Volume-preserving displacement for the paddle (material squeezes
-//! out around the flat rim, matching real clay) is a natural follow-
-//! up but deferred to keep this PR focused.
+//! flat grows in one direction until the plane is buried.
 
 use glam::{UVec3, Vec3};
 
+use crate::displace::{expand_region, redistance_local, solid_volume_in_region};
 use crate::grid::{DirtyRegion, Grid};
 
 /// A single-step paddle stamp.
@@ -39,12 +33,17 @@ pub struct Paddle {
     pub workbench_y: Option<f32>,
 }
 
-/// Apply one paddle stamp. Convenience wrapper.
+/// Apply one paddle stamp (displace). Convenience wrapper.
 pub fn apply_paddle(grid: &mut Grid, paddle: &Paddle) -> Option<DirtyRegion> {
     apply_paddle_with_callback(grid, paddle, |_, _, _, _| {})
 }
 
 /// Callback variant — pre-mutation values for the undo journal.
+///
+/// 1. Flatten (hard half-space ∩ disk).
+/// 2. Measure `∆V⁻`.
+/// 3. Recruit into an annular rim just outside the disk.
+/// 4. Local redistance.
 pub fn apply_paddle_with_callback<F>(
     grid: &mut Grid,
     paddle: &Paddle,
@@ -56,87 +55,70 @@ where
     let vs = grid.voxel_size();
     let inv_vs = 1.0 / vs;
     let res = grid.res();
+    let r = paddle.radius.max(1e-3);
+    let rim = r * 0.55;
+    let surface_band = rim * 1.2 + vs;
 
-    // Bounding sphere: enough to cover the disk radius. The half-space
-    // extends infinitely on the paddle side, but voxels far from the
-    // plane along the normal that ARE within the disk radius will be
-    // hit by the axial extent of the grid anyway. Simpler: bound by
-    // the paddle's radius + a margin, iterate that box, skip voxels
-    // outside the SDF's slab-with-cap footprint.
-    let bound = paddle.radius + vs;
-    let min_p = (paddle.center - Vec3::splat(bound) - grid.origin()) * inv_vs;
-    let max_p = (paddle.center + Vec3::splat(bound) - grid.origin()) * inv_vs;
+    let n = {
+        let len = paddle.normal.length();
+        if len > 1e-6 {
+            paddle.normal / len
+        } else {
+            Vec3::Y
+        }
+    };
+    let c = paddle.center;
 
-    let mut aabb_min = UVec3::new(
+    // Edit AABB covers disk + rim ring.
+    let bound = r + rim + vs * 2.0;
+    let min_p = (c - Vec3::splat(bound) - grid.origin()) * inv_vs;
+    let max_p = (c + Vec3::splat(bound) - grid.origin()) * inv_vs;
+    let edit_min = UVec3::new(
         min_p.x.floor().max(0.0) as u32,
         min_p.y.floor().max(0.0) as u32,
         min_p.z.floor().max(0.0) as u32,
     )
     .min(res - UVec3::ONE);
-    let aabb_max = UVec3::new(
+    let edit_max = UVec3::new(
         (max_p.x.ceil() as i32).max(0) as u32,
         (max_p.y.ceil() as i32).max(0) as u32,
         (max_p.z.ceil() as i32).max(0) as u32,
     )
     .min(res);
 
-    // We also need to extend the box in the +normal direction to
-    // cover the axial reach of the paddle (the half-space above the
-    // plane). Rather than compute a tight bound, expand by the disk
-    // radius along each axis — cheap and correct.
-    // (Already covered by the ±bound splat above, since bound = radius.)
-    // No-op; kept as a comment for anyone tempted to shrink the AABB.
-    let _ = &mut aabb_min;
-
-    if aabb_min.x >= aabb_max.x || aabb_min.y >= aabb_max.y || aabb_min.z >= aabb_max.z {
+    if edit_min.x >= edit_max.x || edit_min.y >= edit_max.y || edit_min.z >= edit_max.z {
         return None;
     }
 
-    let c = paddle.center;
-    let n = paddle.normal;
-    let r = paddle.radius;
+    let vol_before = solid_volume_in_region(grid, edit_min, edit_max);
+
+    // --- 1) Primary edit: flatten within the disk -------------------
     let mut touched = false;
     let mut dirty_min = UVec3::MAX;
     let mut dirty_max = UVec3::ZERO;
 
-    for iz in aabb_min.z..aabb_max.z {
-        for iy in aabb_min.y..aabb_max.y {
-            for ix in aabb_min.x..aabb_max.x {
+    for iz in edit_min.z..edit_max.z {
+        for iy in edit_min.y..edit_max.y {
+            for ix in edit_min.x..edit_max.x {
                 let p = grid.position(ix, iy, iz);
                 let d = p - c;
                 let axial = d.dot(n);
-                // Radial distance from the paddle's axis.
                 let radial = (d - n * axial).length();
                 if radial >= r {
-                    // Outside the disk: paddle can't reach.
                     continue;
                 }
-
-                // Paddle-SDF: intersection of half-space and cylinder.
-                //   half_space_sdf = -axial       (negative above plane)
-                //   cylinder_sdf   = radial - r   (negative inside cylinder)
-                //   paddle_sdf     = max(half_space_sdf, cylinder_sdf)
-                // CSG subtract: new = max(old, -paddle_sdf)
-                //             = max(old, min(axial, r - radial))
-                //
-                // For voxels *above* the plane and *inside* the disk
-                // (axial > 0, radial < r), min(axial, r - radial) > 0,
-                // so `new` may become positive (voxel becomes outside).
-                // For voxels below the plane, axial < 0 so the min is
-                // negative and old is preserved unless it was even
-                // more negative.
+                // Same CSG as the old carve paddle — depresses above
+                // the plane inside the disk.
                 let paddle_neg_sdf = axial.min(r - radial);
                 let old = grid.get(ix, iy, iz);
                 let mut new = old.max(paddle_neg_sdf);
-
                 if let Some(wb_y) = paddle.workbench_y {
                     let below = wb_y - p.y;
                     if below > new {
                         new = below;
                     }
                 }
-
-                if new != old {
+                if (new - old).abs() > 1e-7 {
                     on_pre_mutation(ix, iy, iz, old);
                     grid.set(ix, iy, iz, new);
                     let v = UVec3::new(ix, iy, iz);
@@ -153,31 +135,106 @@ where
         }
     }
 
-    if touched {
-        Some(DirtyRegion {
-            min: dirty_min,
-            max: dirty_max,
-        })
-    } else {
-        None
+    if !touched {
+        return None;
     }
+
+    let vol_after = solid_volume_in_region(grid, edit_min, edit_max);
+    let delta_v = (vol_before - vol_after).max(0.0);
+    let min_v = vs * vs * vs * 0.25;
+
+    // --- 2) Recruit lost volume into the annular rim ----------------
+    if delta_v >= min_v {
+        let mut weights: Vec<(u32, u32, u32, f32)> = Vec::new();
+        let mut weight_sum = 0.0f32;
+
+        for iz in edit_min.z..edit_max.z {
+            for iy in edit_min.y..edit_max.y {
+                for ix in edit_min.x..edit_max.x {
+                    let p = grid.position(ix, iy, iz);
+                    let d = p - c;
+                    let axial = d.dot(n);
+                    let radial = (d - n * axial).length();
+                    // Annulus just outside the disk.
+                    if radial < r || radial >= r + rim {
+                        continue;
+                    }
+                    // Prefer near the plane (surface band) and slightly
+                    // below / at the flat so clay squeezes out beside
+                    // the paddle rather than into the air above it.
+                    if axial > surface_band {
+                        continue;
+                    }
+                    let phi = grid.get(ix, iy, iz);
+                    let surface_weight = (1.0 - (phi.abs() / surface_band).min(1.0)).max(0.0);
+                    if surface_weight <= 1e-4 {
+                        continue;
+                    }
+                    let ring_t = ((radial - r) / rim).clamp(0.0, 1.0);
+                    let ring_weight = (1.0 - ring_t) * (1.0 - ring_t);
+                    // Favour voxels near/below the plane.
+                    let plane_weight = (1.0 - (axial.abs() / surface_band).min(1.0)).max(0.15);
+                    let w = ring_weight * surface_weight * plane_weight;
+                    if w > 1e-5 {
+                        weights.push((ix, iy, iz, w));
+                        weight_sum += w;
+                    }
+                }
+            }
+        }
+
+        if weight_sum > 1e-6 {
+            let scale = (2.0 / (vs * vs).max(1e-8)) * (delta_v / weight_sum);
+            for (ix, iy, iz, w) in weights {
+                let old = grid.get(ix, iy, iz);
+                let mut new = old - scale * w;
+                if let Some(wb_y) = paddle.workbench_y {
+                    let p = grid.position(ix, iy, iz);
+                    let below = wb_y - p.y;
+                    if below > new {
+                        new = below;
+                    }
+                }
+                if (new - old).abs() > 1e-7 {
+                    on_pre_mutation(ix, iy, iz, old);
+                    grid.set(ix, iy, iz, new);
+                    let v = UVec3::new(ix, iy, iz);
+                    dirty_min = dirty_min.min(v);
+                    dirty_max = dirty_max.max(v + UVec3::ONE);
+                }
+            }
+        }
+    }
+
+    // --- 3) Local redistance ----------------------------------------
+    let (rmin, rmax) = expand_region(grid, edit_min, edit_max, 2);
+    redistance_local(grid, rmin, rmax, 4);
+
+    Some(DirtyRegion {
+        min: rmin.min(dirty_min),
+        max: rmax.max(dirty_max),
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn sphere_grid() -> Grid {
+        Grid::from_sphere(
+            UVec3::new(64, 64, 64),
+            1.0,
+            Vec3::ZERO,
+            Vec3::new(32.0, 32.0, 32.0),
+            20.0,
+        )
+    }
+
     #[test]
     fn paddle_flattens_a_bump() {
-        // Big spherical workpiece; press a paddle down on top of it,
-        // flat plane at y = 40 with normal +Y. Everything above the
-        // plane (up to disk radius) should be sheared off.
-        let g_res = UVec3::new(64, 64, 64);
-        let mut g = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 20.0);
-
+        let mut g = sphere_grid();
         let top_of_ball = g.sample(Vec3::new(32.0, 52.0, 32.0));
         assert!(top_of_ball.abs() < 1.0, "top of ball should be on surface");
-        // A voxel above the ball but on axis: outside.
         assert!(g.sample(Vec3::new(32.0, 48.0, 32.0)) < 0.0);
 
         let paddle = Paddle {
@@ -188,22 +245,13 @@ mod tests {
         };
         let _ = apply_paddle(&mut g, &paddle);
 
-        // Above the plane, on axis, inside the disk: carved (positive).
         assert!(g.sample(Vec3::new(32.0, 48.0, 32.0)) > 0.0);
-        // Below the plane, on axis, inside the disk: still material.
         assert!(g.sample(Vec3::new(32.0, 40.0, 32.0)) < 0.0);
-        // 'Outside disk = untouched' is covered by
-        // paddle_leaves_material_outside_the_disk below.
     }
 
     #[test]
     fn paddle_leaves_material_outside_the_disk() {
-        // Verify the disk constraint: material at (x=45, ...) is well
-        // outside the disk radius, so a paddle at (32, 45, 32) with
-        // radius 5 can't touch it.
-        let g_res = UVec3::new(64, 64, 64);
-        let mut g = Grid::from_sphere(g_res, 1.0, Vec3::ZERO, Vec3::new(32.0, 32.0, 32.0), 20.0);
-
+        let mut g = sphere_grid();
         let before = g.sample(Vec3::new(45.0, 45.0, 32.0));
         let paddle = Paddle {
             center: Vec3::new(32.0, 45.0, 32.0),
@@ -213,9 +261,49 @@ mod tests {
         };
         let _ = apply_paddle(&mut g, &paddle);
         let after = g.sample(Vec3::new(45.0, 45.0, 32.0));
+        // Far outside disk+rim — untouched.
         assert!(
             (before - after).abs() < 1e-3,
             "outside the disk should be untouched: before={before}, after={after}",
+        );
+    }
+
+    #[test]
+    fn paddle_roughly_conserves_volume() {
+        let mut g = sphere_grid();
+        let v0 = solid_volume_in_region(&g, UVec3::ZERO, g.res());
+        let paddle = Paddle {
+            center: Vec3::new(32.0, 46.0, 32.0),
+            normal: Vec3::Y,
+            radius: 10.0,
+            workbench_y: None,
+        };
+        let _ = apply_paddle(&mut g, &paddle);
+        let v1 = solid_volume_in_region(&g, UVec3::ZERO, g.res());
+        let rel = ((v1 - v0) / v0).abs();
+        assert!(
+            rel < 0.05,
+            "paddle displace should keep volume within ~5%: v0={v0}, v1={v1}, rel={rel}"
+        );
+    }
+
+    #[test]
+    fn paddle_builds_a_rim_outside_the_disk() {
+        let mut g = sphere_grid();
+        // Probe just outside a moderate disk, near the plane height.
+        let paddle = Paddle {
+            center: Vec3::new(32.0, 46.0, 32.0),
+            normal: Vec3::Y,
+            radius: 8.0,
+            workbench_y: None,
+        };
+        let probe = Vec3::new(32.0 + 9.5, 45.5, 32.0);
+        let before = g.sample(probe);
+        let _ = apply_paddle(&mut g, &paddle);
+        let after = g.sample(probe);
+        assert!(
+            after < before - 0.05,
+            "rim outside disk should gain material (φ↓): before={before}, after={after}"
         );
     }
 }

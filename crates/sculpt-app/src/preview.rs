@@ -77,7 +77,9 @@ struct PreviewMaterials {
 impl PreviewMaterials {
     fn pair_for(&self, kind: ToolKind) -> &GhostPair {
         match kind {
-            ToolKind::Press => &self.press,
+            // Paddle is also volume-conserving displace — same amber
+            // family as Press so "squash" tools read together.
+            ToolKind::Press | ToolKind::Paddle => &self.press,
             ToolKind::Pull => &self.pull,
             ToolKind::Knife => &self.knife,
             _ => &self.default,

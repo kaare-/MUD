@@ -1263,8 +1263,9 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
              Shift+scroll or [ / ] resize."
         }
         ToolKind::Paddle => {
-            "Hold LMB to press a flat.\n\
-             Shift+scroll or [ / ] resize."
+            "Hold LMB to press a flat — clay squeezes to a rim.\n\
+             Volume is conserved (displace, not carve).\n\
+             Shift+scroll or [ / ] resize · Advance sets depth."
         }
         ToolKind::Select => {
             "LMB picks the piece under the cursor.\n\
