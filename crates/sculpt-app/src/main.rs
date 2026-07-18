@@ -13,6 +13,7 @@
 //!   1 ................ tool: Add/Remove (default)
 //!   P ................ tool: Press (volume-conserving displace)
 //!   L ................ tool: Pull (grow + draw from rim)
+//!   K ................ tool: Knife (shallow hard remove)
 //!   2 ................ tool: cookie cutter (circle)
 //!   3 ................ tool: cookie cutter (square)
 //!   4 ................ tool: cookie cutter (hexagon)

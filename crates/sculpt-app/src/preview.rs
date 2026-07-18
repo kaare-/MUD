@@ -6,6 +6,9 @@
 //! along the surface normal at the hit point. The orientation is the
 //! implicit "which way the cut goes" indicator you asked for.
 //!
+//! Press / Pull / Knife use distinct tint families so displace and
+//! remove tools don't look identical to Add/Remove at a glance.
+//!
 //! The preview hides when the cursor isn't over the workpiece (no
 //! ray-march hit). While the user is actively sculpting (LMB held)
 //! the ghost stays on screen but switches to a dimmer, less-saturated
@@ -32,7 +35,9 @@ use glam::{Vec2 as GVec2, Vec3 as GVec3};
 use sculpt_core::Profile;
 
 use crate::pen::PenState;
-use crate::sculpt::{clay_brush_center, press_brush_center, CutterParams, SculptTool, ToolKind};
+use crate::sculpt::{
+    clay_brush_center, knife_profile, press_brush_center, CutterParams, SculptTool, ToolKind,
+};
 use crate::settings::AppSettings;
 use crate::workpiece::{LayersState, WorkpieceRoot};
 
@@ -49,13 +54,35 @@ struct PreviewMeshState {
     last: Option<(ToolKind, i32, i32, i32, i32)>,
 }
 
-/// Pair of preview materials: the bright hover ghost + the dimmer
-/// "you're sculpting through me" variant. Swapping the handle on the
-/// entity is cheaper than mutating the material's alpha every frame.
-#[derive(Resource)]
-struct PreviewMaterials {
+/// Ghost material pairs by tool family. Idle = hover bright; active =
+/// dim while LMB is held.
+#[derive(Clone)]
+struct GhostPair {
     idle: Handle<StandardMaterial>,
     active: Handle<StandardMaterial>,
+}
+
+#[derive(Resource)]
+struct PreviewMaterials {
+    /// Default blue — Clay, Smooth, cutters, paddle, select, move.
+    default: GhostPair,
+    /// Amber — Press (displace in).
+    press: GhostPair,
+    /// Teal — Pull (displace out).
+    pull: GhostPair,
+    /// Steel — Knife (remove).
+    knife: GhostPair,
+}
+
+impl PreviewMaterials {
+    fn pair_for(&self, kind: ToolKind) -> &GhostPair {
+        match kind {
+            ToolKind::Press => &self.press,
+            ToolKind::Pull => &self.pull,
+            ToolKind::Knife => &self.knife,
+            _ => &self.default,
+        }
+    }
 }
 
 /// Vertical thickness of the cutter preview prism in mm, distributed
@@ -63,6 +90,8 @@ struct PreviewMaterials {
 /// visualises orientation without hiding the workpiece behind a long
 /// tube.
 const CUTTER_PREVIEW_LENGTH: f32 = 24.0;
+/// Knife ghost is shorter — a shallow bite, not a through-cut.
+const KNIFE_PREVIEW_LENGTH: f32 = 14.0;
 
 /// How many segments to use when discretising a circle profile.
 /// Higher = smoother circle at the cost of a few more triangles.
@@ -81,33 +110,23 @@ pub fn plugin(app: &mut App) {
     );
 }
 
-fn spawn_preview(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
-    // Empty mesh — the update system fills it in on the first frame
-    // once the tool state is available.
-    let handle = meshes.add(Mesh::new(
-        PrimitiveTopology::TriangleList,
-        RenderAssetUsages::default(),
-    ));
-    // Bright hover ghost (used when LMB is up): cool blue tint with
-    // emissive so the shape reads on any workpiece colour.
+fn make_ghost_pair(
+    materials: &mut Assets<StandardMaterial>,
+    idle_rgba: [f32; 4],
+    idle_emissive: [f32; 3],
+    active_rgba: [f32; 4],
+) -> GhostPair {
     let idle = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.35, 0.65, 1.0, 0.32),
-        emissive: LinearRgba::new(0.10, 0.22, 0.38, 1.0),
+        base_color: Color::srgba(idle_rgba[0], idle_rgba[1], idle_rgba[2], idle_rgba[3]),
+        emissive: LinearRgba::new(idle_emissive[0], idle_emissive[1], idle_emissive[2], 1.0),
         alpha_mode: AlphaMode::Blend,
         double_sided: true,
         cull_mode: None,
         unlit: false,
         ..default()
     });
-    // In-use dim ghost: much fainter alpha and no emissive, so it
-    // reads as "cursor footprint, not primary feedback" while the
-    // user is dragging.
     let active = materials.add(StandardMaterial {
-        base_color: Color::srgba(0.75, 0.85, 1.0, 0.12),
+        base_color: Color::srgba(active_rgba[0], active_rgba[1], active_rgba[2], active_rgba[3]),
         emissive: LinearRgba::new(0.0, 0.0, 0.0, 1.0),
         alpha_mode: AlphaMode::Blend,
         double_sided: true,
@@ -115,14 +134,55 @@ fn spawn_preview(
         unlit: false,
         ..default()
     });
+    GhostPair { idle, active }
+}
+
+fn spawn_preview(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    let handle = meshes.add(Mesh::new(
+        PrimitiveTopology::TriangleList,
+        RenderAssetUsages::default(),
+    ));
+    let default = make_ghost_pair(
+        &mut materials,
+        [0.35, 0.65, 1.0, 0.32],
+        [0.10, 0.22, 0.38],
+        [0.75, 0.85, 1.0, 0.12],
+    );
+    let press = make_ghost_pair(
+        &mut materials,
+        [0.95, 0.55, 0.18, 0.34],
+        [0.35, 0.16, 0.04],
+        [0.95, 0.75, 0.45, 0.12],
+    );
+    let pull = make_ghost_pair(
+        &mut materials,
+        [0.25, 0.85, 0.55, 0.34],
+        [0.06, 0.28, 0.16],
+        [0.55, 0.90, 0.70, 0.12],
+    );
+    let knife = make_ghost_pair(
+        &mut materials,
+        [0.70, 0.76, 0.82, 0.40],
+        [0.18, 0.20, 0.24],
+        [0.85, 0.88, 0.92, 0.14],
+    );
     commands.spawn((
         Mesh3d(handle),
-        MeshMaterial3d(idle.clone()),
+        MeshMaterial3d(default.idle.clone()),
         Transform::default(),
         Visibility::Hidden,
         ToolPreview,
     ));
-    commands.insert_resource(PreviewMaterials { idle, active });
+    commands.insert_resource(PreviewMaterials {
+        default,
+        press,
+        pull,
+        knife,
+    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -164,35 +224,39 @@ fn update_preview(
         state.last = Some(signature);
     }
 
-    // (2) Swap between idle-bright and active-dim materials so the
-    // ghost dims while sculpting (readable footprint, not primary
-    // feedback) instead of vanishing entirely.
+    // (2) Swap between idle-bright and active-dim materials for the
+    // current tool family so Press / Pull / Knife read differently
+    // from Add/Remove at a glance.
     let sculpting = buttons.pressed(MouseButton::Left);
     if let Ok(mut mat) = q_materials.get_mut(preview_entity) {
+        let pair = preview_mats.pair_for(tool.kind);
         let want = if sculpting {
-            preview_mats.active.clone()
+            pair.active.clone()
         } else {
-            preview_mats.idle.clone()
+            pair.idle.clone()
         };
         if mat.0.id() != want.id() {
             *mat = MeshMaterial3d(want);
         }
     }
 
-    // (3) Cursor ray → piece-local → SDF hit (nearest surface along
-    // the camera ray = front / "top" face from the view).
     let Ok(window) = q_window.get_single() else {
+        hide(preview_entity, &mut q_visibility);
         return;
     };
     let Some(cursor) = window.cursor_position() else {
+        hide(preview_entity, &mut q_visibility);
         return;
     };
     let Ok((camera, cam_tf)) = q_camera.get_single() else {
+        hide(preview_entity, &mut q_visibility);
         return;
     };
     let Ok(piece_tf) = q_piece.get_single() else {
+        hide(preview_entity, &mut q_visibility);
         return;
     };
+
     let ray_world = match camera.viewport_to_world(cam_tf, cursor) {
         Ok(r) => r,
         Err(_) => {
@@ -200,6 +264,7 @@ fn update_preview(
             return;
         }
     };
+
     let piece_inv = piece_tf.affine().inverse();
     let origin_local = piece_inv.transform_point3(ray_world.origin);
     let dir_local = piece_inv
@@ -216,8 +281,6 @@ fn update_preview(
             return;
         }
     };
-    // Surface normal from the SDF gradient. Preview placement for Clay
-    // matches the stamp centre; Smooth / cutters use the outward normal.
     let grad = workpiece.grid().gradient_at(hit);
     let normal = if grad.length_squared() > 1e-4 {
         grad.normalize()
@@ -226,8 +289,6 @@ fn update_preview(
     };
     let into = -normal;
 
-    // (4) World-space placement — no parent under WorkpieceRoot.
-    // piece_tf already includes the turntable rotation (propagated).
     if let Ok(mut tf) = q_transforms.get_mut(preview_entity) {
         let hit_g = hit;
         let into_g = into;
@@ -235,8 +296,6 @@ fn update_preview(
         let normal_local = Vec3::new(normal.x, normal.y, normal.z);
 
         let local_pos = match tool.kind {
-            // Same centre math as the clay stamp so the ghost shows
-            // the bite, not a view-ray ball floating off the surface.
             ToolKind::Clay => {
                 let adding =
                     keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -258,16 +317,10 @@ fn update_preview(
                 let c = press_brush_center(hit_g, into_g, tool.size, advance);
                 Vec3::new(c.x, c.y, c.z)
             }
-            // Smooth stamps at the contact; tiny lift avoids z-fight.
-            ToolKind::Smooth => {
+            ToolKind::Smooth => Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15,
+            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter | ToolKind::Knife => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
-            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter => {
-                Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
-            }
-            // Select and Move show the same small pip as the wire
-            // cutter ("cursor is on material"); the real feedback
-            // for each is the HUD (selection details, Move widget).
             ToolKind::Select | ToolKind::Move => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
@@ -282,7 +335,7 @@ fn update_preview(
             | ToolKind::WireCutter
             | ToolKind::Select
             | ToolKind::Move => Quat::IDENTITY,
-            ToolKind::Cutter(_) | ToolKind::Paddle => {
+            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::Knife => {
                 let normal_world = piece_tf.rotation() * normal_local;
                 let n = if normal_world.length_squared() > 1e-8 {
                     normal_world.normalize()
@@ -293,6 +346,7 @@ fn update_preview(
             }
         };
     }
+
     if let Ok(mut vis) = q_visibility.get_mut(preview_entity) {
         *vis = Visibility::Visible;
     }
@@ -307,50 +361,36 @@ fn hide(entity: Entity, q_visibility: &mut Query<&mut Visibility>) {
 /// Build the preview mesh for the given tool state.
 fn build_preview_mesh(kind: ToolKind, size: f32, params: CutterParams) -> Mesh {
     match kind {
-        // Both clay and smooth are radially-symmetric sphere
-        // brushes at their `size` radius — the preview mesh is
-        // identical. The material tint distinguishes them if we
-        // want to later (currently the same emissive blue).
         ToolKind::Clay | ToolKind::Press | ToolKind::Pull | ToolKind::Smooth => {
             Sphere::new(size).mesh().uv(24, 16)
         }
-        // Select and Move: same "cursor is on material" pip as the
-        // wire cutter marker, in the same emissive tint so users
-        // don't confuse it with a live brush.
         ToolKind::Select | ToolKind::Move => Sphere::new(2.5).mesh().uv(16, 12),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size, params);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)
         }
-        // Wire cutter's cut direction is determined by the drag, so a
-        // static hover mesh can't encode it. Show a small marker so
-        // the user still gets 'cursor is on the material' feedback;
-        // the actual cut plane appears on release.
+        ToolKind::Knife => {
+            let profile = knife_profile(size);
+            build_prism_mesh(&profile, KNIFE_PREVIEW_LENGTH * 0.5)
+        }
         ToolKind::WireCutter => Sphere::new(2.5).mesh().uv(16, 12),
-        // Paddle: a thin disk oriented so its flat face sits on the
-        // surface. Cylinder along Y with a tiny height so it reads
-        // as a plate rather than a rod. Alignment to the surface
-        // normal is handled by the transform-rotation code below.
         ToolKind::Paddle => Cylinder::new(size, 1.5).mesh().resolution(32).build(),
     }
 }
 
 /// Build a prism mesh from a profile's 2D outline, extruded ±half_length
 /// along the local Y axis. Fan-triangulated caps from the centroid
-/// (safe for all four Stage-2 profiles including the star, which is
+/// (safe for all Stage-2 profiles including the star, which is
 /// star-shaped in the polygon sense — every point on the boundary is
 /// visible from the centre).
 fn build_prism_mesh(profile: &Profile, half_length: f32) -> Mesh {
     let outline = profile.outline(CIRCLE_SEGMENTS);
     let n = outline.len();
 
-    // Positions: bottom ring, top ring, plus two centroid vertices for
-    // the fan caps. Bottom is at y = -half_length, top at +half_length.
     let mut positions: Vec<[f32; 3]> = Vec::with_capacity(n * 2 + 2);
     let mut normals: Vec<[f32; 3]> = Vec::with_capacity(n * 2 + 2);
     let mut indices: Vec<u32> = Vec::new();
 
-    // Bottom ring, then top ring.
     for GVec2 { x, y } in &outline {
         positions.push([*x, -half_length, *y]);
         normals.push(direction_normal(*x, *y));
@@ -360,7 +400,6 @@ fn build_prism_mesh(profile: &Profile, half_length: f32) -> Mesh {
         normals.push(direction_normal(*x, *y));
     }
 
-    // Centroid vertices for the caps.
     let bottom_centre = positions.len() as u32;
     positions.push([0.0, -half_length, 0.0]);
     normals.push([0.0, -1.0, 0.0]);
@@ -369,24 +408,18 @@ fn build_prism_mesh(profile: &Profile, half_length: f32) -> Mesh {
     normals.push([0.0, 1.0, 0.0]);
 
     let n32 = n as u32;
-
-    // Side quads (each edge = two triangles).
     for i in 0..n32 {
         let i_next = (i + 1) % n32;
         let b0 = i;
         let b1 = i_next;
         let t0 = i + n32;
         let t1 = i_next + n32;
-        // b0 - b1 - t1 and b0 - t1 - t0 (CCW viewed from outside).
         indices.extend_from_slice(&[b0, b1, t1, b0, t1, t0]);
     }
-
-    // Bottom cap (fan from centre, wound so the normal points -Y).
     for i in 0..n32 {
         let i_next = (i + 1) % n32;
         indices.extend_from_slice(&[bottom_centre, i_next, i]);
     }
-    // Top cap (fan from centre, wound so the normal points +Y).
     for i in 0..n32 {
         let i_next = (i + 1) % n32;
         indices.extend_from_slice(&[top_centre, i + n32, i_next + n32]);
@@ -402,10 +435,6 @@ fn build_prism_mesh(profile: &Profile, half_length: f32) -> Mesh {
     mesh
 }
 
-/// A cheap outward-facing normal for a side-wall vertex. Uses the
-/// vertex's radial direction (from the local axis) since our profiles
-/// are all convex or star-convex — good enough for lighting a
-/// translucent preview.
 fn direction_normal(x: f32, y: f32) -> [f32; 3] {
     let len = (x * x + y * y).sqrt().max(1e-6);
     [x / len, 0.0, y / len]
