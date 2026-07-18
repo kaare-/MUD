@@ -12,6 +12,7 @@
 //!   Shift+Left ....... Add/Remove only: add material
 //!   1 ................ tool: Add/Remove (default)
 //!   P ................ tool: Press (volume-conserving displace)
+//!   L ................ tool: Pull (grow + draw from rim)
 //!   2 ................ tool: cookie cutter (circle)
 //!   3 ................ tool: cookie cutter (square)
 //!   4 ................ tool: cookie cutter (hexagon)

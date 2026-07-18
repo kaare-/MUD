@@ -26,8 +26,8 @@ like deposit / eraser — that’s fine; it’s a different job.
 | P | Item | Why first | Exit criterion |
 |---|------|-----------|----------------|
 | **P0** `[x]` | **New Press tool** — `∆V⁻` → recruit → redistance; LMB depresses | Core clay thesis; Add/Remove unchanged | Pressing a face leaves a conserved rim; volume roughly held |
-| **P1** | **New Pull tool** — inverse: grow outward, thin the neighbourhood | Completes the finger pair | Pull raises a bump and draws from surroundings |
-| **P2** | **Palette / UX** — slots, shortcuts, ghosts, HUD hints for Press/Pull | Discoverable without touching Add/Remove | `1` still Add/Remove; Press/Pull have clear labels + ghosts |
+| **P1** `[x]` | **New Pull tool** — inverse: grow outward, thin the neighbourhood | Completes the finger pair | Pull raises a bump and draws from surroundings |
+| **P2** `[~]` | **Palette / UX** — slots, shortcuts, ghosts, HUD hints for Press/Pull | Discoverable without touching Add/Remove | `1` still Add/Remove; Press `P` / Pull `L` shipped; tint polish open |
 | **P3** | **Paddle → displace** (optional follow-on) | DESIGN paddle displaces; today it carves | Flat press squeezes a rim (or leave paddle as carve if Press covers flats) |
 | **P4** | **One sharp remove tool** (knife *or* scraper) | Hand-tool remove beside Press | Cut/shave removes volume; no recruitment |
 | **P5** | **Feel amplifiers** — tilt→orientation, pressure→Press depth, tool-SDF ghosts | Amplifies P0–P1 | Stylus lean / depth feel right on Press/Pull |
