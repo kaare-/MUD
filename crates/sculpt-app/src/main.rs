@@ -42,7 +42,7 @@
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+N ........... clear the worktable (empty grid)
-//!   Shift+N .......... insert a primitive shape via dialog
+//!   Ctrl+Shift+N ..... insert a primitive shape via dialog
 //!   Ctrl+E ........... export STL (opens the Export-As dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
 //!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)

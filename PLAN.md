@@ -74,7 +74,7 @@ Ordered roughly easiest → hardest. Each item includes what it needs.
    *(Domain still 288 mm — worktable-scale Add is Track A in
    `SPARSE_THEN_LAYERS.md`.)*
 
-4. `[x]` **Primitives menu.** — `Shift+N` / `File → Insert Primitive…`.
+4. `[x]` **Primitives menu.** — `Ctrl+Shift+N` / `File → Insert Primitive…`.
    Sphere / Cube / Cylinder / Torus with a size slider; unioned into
    the current grid, journaled as one undo stroke.
    *(Silent fuse → fixed by Track B: Insert creates a new layer.)*

@@ -88,7 +88,7 @@ fn draw_ui(
                     actions.send(AppAction::NewWorkpiece);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
+                if menu_item(ui, "Insert Primitive\u{2026}", "Ctrl+Shift+N") {
                     actions.send(AppAction::ShowInsertPrimitiveDialog);
                     ui.close_menu();
                 }
@@ -169,7 +169,7 @@ fn draw_ui(
                 }
             });
             ui.menu_button("Sculpt", |ui| {
-                if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
+                if menu_item(ui, "Insert Primitive\u{2026}", "Ctrl+Shift+N") {
                     actions.send(AppAction::ShowInsertPrimitiveDialog);
                     ui.close_menu();
                 }
@@ -817,25 +817,51 @@ fn draw_dialogs(
 
     // Insert Primitive dialog. Combo box for shape + a slider for
     // size (mm). Insert emits `InsertPrimitive`; Cancel closes.
+    // Keyboard: ↑/↓ cycle shape, Enter inserts, Escape cancels — so the
+    // dialog stays usable when pointer hits on egui are flaky (remote /
+    // software-rendered environments).
     if prim_state.open.is_some() {
         let mut result: Option<Option<(PrimitiveShape, f32)>> = None;
         if let Some(dialog) = prim_state.open.as_mut() {
+            const SHAPES: [PrimitiveShape; 4] = [
+                PrimitiveShape::Sphere,
+                PrimitiveShape::Cube,
+                PrimitiveShape::Cylinder,
+                PrimitiveShape::Torus,
+            ];
             egui::Window::new("Insert Primitive")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
+                    // Prefer keyboard while the modal is up — avoids fighting
+                    // the combo popup and works without precise mouse hits.
+                    let cycle = |shape: PrimitiveShape, dir: i32| -> PrimitiveShape {
+                        let i = SHAPES.iter().position(|&s| s == shape).unwrap_or(0) as i32;
+                        let n = SHAPES.len() as i32;
+                        SHAPES[(((i + dir) % n) + n) as usize % SHAPES.len()]
+                    };
+                    ui.input(|i| {
+                        if i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowRight)
+                        {
+                            dialog.shape = cycle(dialog.shape, 1);
+                        }
+                        if i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowLeft) {
+                            dialog.shape = cycle(dialog.shape, -1);
+                        }
+                        if i.key_pressed(egui::Key::Enter) {
+                            result = Some(Some((dialog.shape, dialog.size_mm)));
+                        }
+                        if i.key_pressed(egui::Key::Escape) {
+                            result = Some(None);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Shape:");
                         egui::ComboBox::from_id_salt("mud_primitive_shape")
                             .selected_text(dialog.shape.label())
                             .show_ui(ui, |ui| {
-                                for s in [
-                                    PrimitiveShape::Sphere,
-                                    PrimitiveShape::Cube,
-                                    PrimitiveShape::Cylinder,
-                                    PrimitiveShape::Torus,
-                                ] {
+                                for s in SHAPES {
                                     ui.selectable_value(&mut dialog.shape, s, s.label());
                                 }
                             });
@@ -847,7 +873,8 @@ fn draw_dialogs(
                     );
                     ui.small(
                         "Placed centred on the workbench.\n\
-                         Torus size is the ring radius; tube is 0.35× size.",
+                         Torus size is the ring radius; tube is 0.35× size.\n\
+                         ↑/↓ change shape · Enter inserts · Esc cancels.",
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Insert").clicked() {

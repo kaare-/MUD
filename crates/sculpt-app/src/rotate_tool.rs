@@ -1027,6 +1027,14 @@ fn apply_rotate(
         |x, y, z, pre| recorder.record_pre_value(x, y, z, pre),
     );
     if !changed {
+        // Symmetric solids (perfect sphere / cube about their centre) can
+        // map every voxel onto an identical neighbour under a 90° turn, so
+        // the lattice rewrite is a no-op. Insert a Cylinder/Torus/brick if
+        // you need a visible reorientation.
+        info!(
+            "rotate: quarters {:?} left the lattice unchanged (symmetric piece?)",
+            quarters
+        );
         return false;
     }
     let grid_res = workpiece.grid().res();
@@ -1069,6 +1077,37 @@ mod tests {
     use super::*;
     use glam::UVec3;
     use sculpt_core::{apply_primitive, Primitive, PrimitiveKind};
+
+    #[test]
+    fn apply_rotate_sphere_is_lattice_noop() {
+        // A centred sphere maps onto itself under 90° principal-axis
+        // turns, so apply_rotate correctly reports false (nothing to undo).
+        use sculpt_core::label_components;
+        for q in [
+            IVec3::new(0, 1, 0),
+            IVec3::new(1, 0, 0),
+            IVec3::new(0, 0, 1),
+        ] {
+            let mut wp = LayersState::new_for_test(Grid::from_sphere(
+                glam::UVec3::new(64, 64, 64),
+                1.5,
+                glam::Vec3::ZERO,
+                glam::Vec3::new(48.0, 48.0, 48.0),
+                20.0,
+            ));
+            let labels = label_components(wp.grid());
+            let (mn, mx) = labels.bounds_of(1).unwrap();
+            let mut selection = Selection::default();
+            selection.picked_voxel = Some(((mn.x + mx.x) / 2, (mn.y + mx.y) / 2, (mn.z + mx.z) / 2));
+            let mut history = UndoHistory::default();
+            let mut stroke = SculptStroke::default();
+            assert!(
+                !apply_rotate(q, &mut wp, &mut selection, &mut history, &mut stroke),
+                "sphere quarters {q:?} should be a lattice no-op"
+            );
+            assert_eq!(history.undo_len_for_test(), 0);
+        }
+    }
 
     #[test]
     fn apply_rotate_turns_box_about_y() {

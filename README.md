@@ -55,7 +55,7 @@ iterations are fast because dev profile compiles deps at `opt-level = 3`
 | `M` | Toggle magic-clay (Add/Remove only) |
 | `S` | Toggle mirror symmetry (piece-local X = 0) |
 | `Ctrl+N` | Clear the worktable (empty grid, clears undo) |
-| `Shift+N` | Insert Primitive… (sphere / cube / cylinder / torus) |
+| `Ctrl+Shift+N` | Insert Primitive… (sphere / cube / cylinder / torus; ↑/↓ + Enter in the dialog) |
 | `Ctrl+Z` | Undo last stroke |
 | `Ctrl+Y` or `Ctrl+Shift+Z` | Redo |
 
