@@ -206,11 +206,25 @@ Priority stack:
 4. `[x]` **P3** — Paddle → displace (flatten + rim recruit + redistance).
 5. `[x]` **P4** — Knife remove tool (`K`) — thin rect, shallow cut,
    no recruitment.
-6. `[ ]` **P5** — Feel amplifiers (tilt, tool-SDF ghost, pressure
-   retune on Press/Pull). Only after P0–P1.
+6. `[x]` **P5** — Feel amplifiers: softer engagement curve on Press /
+   Pull / Paddle / Knife; stylus altitude leans Knife / Paddle; ghosts
+   match stamp depth / lean. Clay / Smooth keep raw pressure→depth.
 
 Falsifiable bar: with Press selected, clay “pushes back.” Add/Remove
 may still feel like deposit/carve — that’s intentional.
+
+---
+
+## Next — selection transforms
+
+After Move (translate), rigid **rotate** of the selected component:
+
+1. `[ ]` **Rotate object / selection.** Pair with Move: rigid rotate of
+   the labelled component about its centre (or gizmo pivot), voxel-
+   snapped, one undo stroke. Needs `sculpt_core::rotate_component` (or
+   equivalent resample) plus a Rotate tool / gizmo (axis rings or
+   yaw/pitch/roll widget). Orientation-preserving rest poses for
+   gravity can reuse the same core later.
 
 ---
 
@@ -254,9 +268,10 @@ From `DESIGN.md`'s staged roadmap:
   / wave modulation shipped (`Edit → Tool parameters…` when circle or
   square cutter is active). Scraper blade profile and loop shape stay
   open until those tools exist.
-- `[~]` **Pen tablet support** — pressure → depth shipped for Clay /
-  Paddle / Smooth (`PenState` from `TouchInput` force; mouse = 1.0).
-  Toggle in Preferences. Tilt → orientation still open.
+- `[~]` **Pen tablet support** — pressure → depth for Clay / Smooth;
+  softer engagement for Press / Pull / Paddle / Knife; altitude → lean
+  for Knife / Paddle. Toggle in Preferences. Azimuth / full 3D tilt
+  still open (OS / Bevy expose altitude only today).
 
 ---
 

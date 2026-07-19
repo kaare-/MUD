@@ -407,6 +407,7 @@ fn sculpt_input(
         && (keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight));
 
     let depth_scale = pen.depth_scale(settings.pressure_to_depth);
+    let engage_scale = pen.engagement_scale(settings.pressure_to_depth);
 
     // Bench-coil lock: once this stroke has deposited on an empty
     // workbench, keep stamping at bench height for the rest of the
@@ -522,6 +523,9 @@ fn sculpt_input(
         }
     }
 
+    // Stylus altitude leans Knife / Paddle off the surface normal.
+    let lean_into = pen.leaned_into(into_surface, dir_g);
+
     // Apply once at the primary contact, then again mirrored if
     // symmetry is on. The mirror flips both the position and the
     // press direction across piece-local X = 0.
@@ -532,13 +536,16 @@ fn sculpt_input(
         &tool,
         keys.as_ref(),
         depth_scale,
+        engage_scale,
         hit,
         into_surface,
+        lean_into,
         dir_g,
     );
     if symmetry.enabled {
         let mirrored_hit = GVec3::new(-hit.x, hit.y, hit.z);
         let mirrored_dir = GVec3::new(-into_surface.x, into_surface.y, into_surface.z);
+        let mirrored_lean = GVec3::new(-lean_into.x, lean_into.y, lean_into.z);
         let mirrored_view = GVec3::new(-dir_g.x, dir_g.y, dir_g.z);
         apply_at(
             &mut workpiece,
@@ -547,8 +554,10 @@ fn sculpt_input(
             &tool,
             keys.as_ref(),
             depth_scale,
+            engage_scale,
             mirrored_hit,
             mirrored_dir,
+            mirrored_lean,
             mirrored_view,
         );
     }
@@ -672,8 +681,10 @@ fn apply_at(
     tool: &SculptTool,
     keys: &ButtonInput<KeyCode>,
     depth_scale: f32,
+    engage_scale: f32,
     hit: GVec3,
     into_surface: GVec3,
+    lean_into: GVec3,
     view_dir: GVec3,
 ) {
     let grid_res = workpiece.grid().res();
@@ -718,7 +729,7 @@ fn apply_at(
             }
         }
         ToolKind::Press => {
-            let advance = tool.advance_per_step * depth_scale;
+            let advance = tool.advance_per_step * engage_scale;
             let center = press_brush_center(hit, into_surface, tool.size, advance);
             let brush = PressDisplace {
                 center,
@@ -735,7 +746,7 @@ fn apply_at(
             }
         }
         ToolKind::Pull => {
-            let advance = tool.advance_per_step * depth_scale;
+            let advance = tool.advance_per_step * engage_scale;
             // Same seating as Press — soft-min grows the sphere instead
             // of soft-max carving it. Empty-bench Pull is a no-op (no
             // hit); coils stay on Add/Remove.
@@ -755,14 +766,19 @@ fn apply_at(
             }
         }
         ToolKind::Knife => {
-            // Hard remove — thin rect extruded a shallow depth into
-            // the surface. No recruitment (DESIGN: knife removes).
-            let advance = tool.advance_per_step * depth_scale;
+            // Hard remove — thin rect extruded a shallow depth along
+            // the (possibly tilt-leaned) axis. No recruitment.
+            let advance = tool.advance_per_step * engage_scale;
             let half_length = (tool.size * 0.35 + advance * 2.0).clamp(2.0, tool.size);
+            let axis = if lean_into.length_squared() > 1e-8 {
+                lean_into
+            } else {
+                into_surface
+            };
             let cutter = CookieCutter {
                 profile: knife_profile(tool.size),
                 origin: hit,
-                axis: into_surface,
+                axis,
                 half_length,
                 workbench_y: Some(0.0),
             };
@@ -811,14 +827,17 @@ fn apply_at(
             }
         }
         ToolKind::Paddle => {
-            // Paddle plane advances into the surface each frame, so
-            // holding the button gradually flattens the piece. Lost
-            // volume is recruited into a rim (displace, not carve).
-            // `normal` points *outward* from the workpiece.
-            let advance = tool.advance_per_step * depth_scale;
+            // Paddle plane advances into the surface each frame.
+            // Tilt leans the paddle normal; engagement scales depth.
+            let advance = tool.advance_per_step * engage_scale;
+            let into = if lean_into.length_squared() > 1e-8 {
+                lean_into
+            } else {
+                into_surface
+            };
             let paddle = Paddle {
-                center: hit + into_surface * advance,
-                normal: -into_surface,
+                center: hit + into * advance,
+                normal: -into,
                 radius: tool.size,
                 workbench_y: Some(0.0),
             };

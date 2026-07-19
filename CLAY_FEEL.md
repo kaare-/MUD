@@ -30,7 +30,7 @@ like deposit / eraser — that’s fine; it’s a different job.
 | **P2** `[x]` | **Palette / UX** — slots, shortcuts, ghosts, HUD hints for Press/Pull | Discoverable without touching Add/Remove | Distinct ghost tints; `1` Add/Remove, `P` Press, `L` Pull, `K` Knife |
 | **P3** `[x]` | **Paddle → displace** | DESIGN paddle displaces | Flat press squeezes a rim |
 | **P4** `[x]` | **One sharp remove tool** (knife) | Hand-tool remove beside Press | Cut/shave removes volume; no recruitment |
-| **P5** | **Feel amplifiers** — tilt→orientation, pressure→Press depth, tool-SDF ghosts | Amplifies P0–P1 | Stylus lean / depth feel right on Press/Pull |
+| **P5** `[x]` | **Feel amplifiers** — tilt→orientation, pressure→Press depth, tool-SDF ghosts | Amplifies P0–P1 | Stylus lean / depth feel right on Press/Pull |
 
 Anything below P5 stays in `PLAN.md` / deferred unless it unblocks P0–P1.
 
@@ -45,7 +45,7 @@ Anything below P5 stays in `PLAN.md` / deferred unless it unblocks P0–P1.
 | **Pull** (new) | Finger pull — displace outward | Conserved via neighbourhood draw |
 | Cookie / wire (/ knife) | Remove | Gone — no recruit |
 | Smooth | Mollify φ | N/A |
-| Paddle | Flat press — prefer displace later (P3) | Today: remove disk |
+| Paddle | Flat press — displace (P3) | Conserved via rim recruit |
 
 Add/Remove keeps `M` magic-clay and Shift polarity. Press/Pull do **not**
 reuse that toggle; displace is their nature.
@@ -166,13 +166,15 @@ to Press.
 
 ---
 
-## P5 — Feel amplifiers (after P0–P1)
+## P5 — Feel amplifiers `[x]`
 
-1. Pen tilt → orientation for knife/scraper/paddle.
-2. Ghost = tool SDF footprint.
-3. Pressure → Press/Pull engagement depth (retune; Add/Remove can keep
-   current pressure→advance mapping).
-4. Reference images — useful, not clay.
+1. `[x]` Pen altitude → lean for Knife / Paddle (view-tangent blend;
+   azimuth not available from Bevy `ForceTouch::Calibrated`).
+2. `[x]` Ghosts follow engagement depth (Press/Pull) and lean axis
+   (Knife/Paddle); family tints already from P2.
+3. `[x]` Softer engagement curve on Press / Pull / Paddle / Knife;
+   Clay / Smooth keep raw `depth_scale`.
+4. Reference images — useful, not clay; stays in `PLAN.md`.
 
 ---
 
