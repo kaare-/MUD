@@ -738,6 +738,7 @@ fn draw_dialogs(
     // Crash-recovery prompt — shown once when an autosave file was
     // left behind from a previous session.
     if autosave.recovery_pending {
+        let mut recovery: Option<bool> = None; // Some(true)=restore, Some(false)=discard
         egui::Window::new("Recover unsaved work?")
             .collapsible(false)
             .resizable(false)
@@ -748,15 +749,33 @@ fn draw_dialogs(
                      Restore it onto the worktable, or discard it?",
                 );
                 ui.small(format!("{}", crate::project::autosave_path().display()));
+                ui.small("Enter = Restore · Esc = Discard");
+                ui.input(|i| {
+                    if i.key_pressed(egui::Key::Enter) {
+                        recovery = Some(true);
+                    }
+                    if i.key_pressed(egui::Key::Escape) {
+                        recovery = Some(false);
+                    }
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Restore").clicked() {
-                        actions.send(AppAction::RestoreAutosave);
+                        recovery = Some(true);
                     }
                     if ui.button("Discard").clicked() {
-                        actions.send(AppAction::DiscardAutosave);
+                        recovery = Some(false);
                     }
                 });
             });
+        match recovery {
+            Some(true) => {
+                actions.send(AppAction::RestoreAutosave);
+            }
+            Some(false) => {
+                actions.send(AppAction::DiscardAutosave);
+            }
+            None => {}
+        }
     }
 
     // Save-As dialog. Egui doesn't have a first-class modal concept,
