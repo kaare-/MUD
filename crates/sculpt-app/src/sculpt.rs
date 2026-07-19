@@ -62,6 +62,10 @@ pub enum ToolKind {
     /// with LMB (like Select) is also accepted so users can jump
     /// straight into "pick + move".
     Move,
+    /// Rotate: rigidly rotate the selected component by 90° steps
+    /// about X / Y / Z (AABB centre). Rings + degree widget; LMB
+    /// pick like Select / Move.
+    Rotate,
 }
 
 /// The set of cookie-cutter shapes the Stage-2 palette exposes. Each
@@ -275,6 +279,7 @@ pub fn tool_label(kind: ToolKind) -> &'static str {
         ToolKind::Paddle => "paddle",
         ToolKind::Select => "select",
         ToolKind::Move => "move",
+        ToolKind::Rotate => "rotate",
     }
 }
 
@@ -317,7 +322,7 @@ fn sculpt_input(
     // respectively) — bail here.
     if matches!(
         tool.kind,
-        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move | ToolKind::Rotate
     ) {
         return;
     }
@@ -366,7 +371,7 @@ fn sculpt_input(
         ToolKind::Cutter(_) => buttons.just_pressed(MouseButton::Left),
         // Wire cutter, Select, and Move live in their own systems
         // and must not fire the general-purpose sculpt pipeline.
-        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move => return,
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move | ToolKind::Rotate => return,
     };
     if !should_engage {
         return;
@@ -692,7 +697,7 @@ fn apply_at(
     let region = match kind {
         // These live in their own systems (wire_cutter_input,
         // selection_input, move_input) and must never run through here.
-        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move => return,
+        ToolKind::WireCutter | ToolKind::Select | ToolKind::Move | ToolKind::Rotate => return,
         ToolKind::Clay => {
             let adding =
                 keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -1226,6 +1231,9 @@ fn adjust_tool(
     }
     if keys.just_pressed(KeyCode::Digit0) {
         send_tool(ToolKind::Move);
+    }
+    if keys.just_pressed(KeyCode::KeyR) {
+        send_tool(ToolKind::Rotate);
     }
 
     // Size: continuous adjustment, stays inline (no menu path needs

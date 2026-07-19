@@ -1,9 +1,11 @@
-//! Rigid "rest on bench" and free translation for labelled SDF grids.
+//! Rigid "rest on bench", free translation, and 90° rotation for
+//! labelled SDF grids.
 //!
 //! Every connected component is treated as an infinitely rigid lump of
 //! clay: no plastic deformation, no simulation, just a **rigid**
-//! translation along one or more axes. Two things get moved together
-//! for each component:
+//! translation along one or more axes, or a lattice-preserving 90°
+//! rotation about the component's AABB centre. Two things get moved
+//! together for each component:
 //!
 //! - the interior voxels (`φ < 0`), and
 //! - the narrow-band voxels around them (`0 ≤ φ < band`).
@@ -216,6 +218,287 @@ where
     }
     let deltas = [(id, delta)];
     translate_components(grid, labels, &deltas, on_pre_mutation)
+}
+
+/// Integer voxel pivot used for rigid 90° rotates: centre of the
+/// component's half-open AABB (`(mn + mx) / 2` per axis).
+pub fn component_pivot(labels: &ComponentField, id: ComponentId) -> Option<IVec3> {
+    let (mn, mx) = labels.bounds_of(id)?;
+    Some(IVec3::new(
+        ((mn.x + mx.x) / 2) as i32,
+        ((mn.y + mx.y) / 2) as i32,
+        ((mn.z + mx.z) / 2) as i32,
+    ))
+}
+
+/// Normalize quarter-turns to `0..4` (0 = identity).
+fn norm_quarters(q: i32) -> i32 {
+    ((q % 4) + 4) % 4
+}
+
+/// Right-hand rotate `p` about the origin by `quarters * 90°` on one
+/// axis. `quarters` is already normalized to `0..4`.
+fn rot_axis_origin(p: IVec3, axis: usize, quarters: i32) -> IVec3 {
+    let q = norm_quarters(quarters);
+    if q == 0 {
+        return p;
+    }
+    match axis {
+        0 => match q {
+            1 => IVec3::new(p.x, -p.z, p.y),  // +90° about X
+            2 => IVec3::new(p.x, -p.y, -p.z), // 180°
+            3 => IVec3::new(p.x, p.z, -p.y),  // -90° / +270°
+            _ => p,
+        },
+        1 => match q {
+            1 => IVec3::new(p.z, p.y, -p.x), // +90° about Y
+            2 => IVec3::new(-p.x, p.y, -p.z),
+            3 => IVec3::new(-p.z, p.y, p.x),
+            _ => p,
+        },
+        _ => match q {
+            1 => IVec3::new(-p.y, p.x, p.z), // +90° about Z
+            2 => IVec3::new(-p.x, -p.y, p.z),
+            3 => IVec3::new(p.y, -p.x, p.z),
+            _ => p,
+        },
+    }
+}
+
+/// Apply `quarters.x` about X, then `quarters.y` about Y, then
+/// `quarters.z` about Z, about `pivot`. Lattice-preserving for any
+/// integer `quarters` (mod 4).
+pub fn rotate_voxel(p: IVec3, pivot: IVec3, quarters: IVec3) -> IVec3 {
+    let mut r = p - pivot;
+    r = rot_axis_origin(r, 0, quarters.x);
+    r = rot_axis_origin(r, 1, quarters.y);
+    r = rot_axis_origin(r, 2, quarters.z);
+    r + pivot
+}
+
+/// Inverse of [`rotate_voxel`] (undo X→Y→Z with negated quarters).
+pub fn rotate_voxel_inverse(p: IVec3, pivot: IVec3, quarters: IVec3) -> IVec3 {
+    let mut r = p - pivot;
+    r = rot_axis_origin(r, 2, -quarters.z);
+    r = rot_axis_origin(r, 1, -quarters.y);
+    r = rot_axis_origin(r, 0, -quarters.x);
+    r + pivot
+}
+
+fn quarters_normalized(quarters: IVec3) -> IVec3 {
+    IVec3::new(
+        norm_quarters(quarters.x),
+        norm_quarters(quarters.y),
+        norm_quarters(quarters.z),
+    )
+}
+
+fn quarters_is_identity(quarters: IVec3) -> bool {
+    let q = quarters_normalized(quarters);
+    q == IVec3::ZERO
+}
+
+/// Region a single-component 90°-step rotate could read from or write
+/// to: widened AABB union the AABB of its eight corners after the
+/// rotation. `None` if the component has no bounds or the rotation is
+/// identity (mod 4).
+pub fn touched_region_for_rotate(
+    labels: &ComponentField,
+    id: ComponentId,
+    quarters: IVec3,
+    res: UVec3,
+) -> Option<(UVec3, UVec3)> {
+    if quarters_is_identity(quarters) {
+        // Still useful for drag-start snapshots at identity — cover
+        // the widened box alone so preview can grow from a baseline.
+        let (mn, mx) = labels.bounds_of(id)?;
+        let wmin = UVec3::new(
+            mn.x.saturating_sub(BAND),
+            mn.y.saturating_sub(BAND),
+            mn.z.saturating_sub(BAND),
+        );
+        let wmax = UVec3::new(
+            (mx.x + BAND).min(res.x),
+            (mx.y + BAND).min(res.y),
+            (mx.z + BAND).min(res.z),
+        );
+        if wmin.x >= wmax.x || wmin.y >= wmax.y || wmin.z >= wmax.z {
+            return None;
+        }
+        return Some((wmin, wmax));
+    }
+    let (mn, mx) = labels.bounds_of(id)?;
+    let pivot = component_pivot(labels, id)?;
+    let wmin = IVec3::new(
+        mn.x.saturating_sub(BAND) as i32,
+        mn.y.saturating_sub(BAND) as i32,
+        mn.z.saturating_sub(BAND) as i32,
+    );
+    let wmax = IVec3::new(
+        (mx.x + BAND).min(res.x) as i32,
+        (mx.y + BAND).min(res.y) as i32,
+        (mx.z + BAND).min(res.z) as i32,
+    );
+    // Half-open corners: max is exclusive, so use max-1 when span > 0.
+    let cx = [
+        wmin.x,
+        if wmax.x > wmin.x { wmax.x - 1 } else { wmin.x },
+    ];
+    let cy = [
+        wmin.y,
+        if wmax.y > wmin.y { wmax.y - 1 } else { wmin.y },
+    ];
+    let cz = [
+        wmin.z,
+        if wmax.z > wmin.z { wmax.z - 1 } else { wmin.z },
+    ];
+    let mut union_min = wmin;
+    let mut union_max = wmax;
+    for &x in &cx {
+        for &y in &cy {
+            for &z in &cz {
+                let r = rotate_voxel(IVec3::new(x, y, z), pivot, quarters);
+                union_min = union_min.min(r);
+                // Inclusive corner → exclusive max.
+                union_max = union_max.max(r + IVec3::ONE);
+            }
+        }
+    }
+    union_min = union_min.max(IVec3::ZERO);
+    union_max = union_max.min(res.as_ivec3());
+    if union_min.x >= union_max.x || union_min.y >= union_max.y || union_min.z >= union_max.z {
+        return None;
+    }
+    Some((union_min.as_uvec3(), union_max.as_uvec3()))
+}
+
+/// Rigidly rotate one component by `quarters * 90°` about X, then Y,
+/// then Z, around its AABB centre. Lattice-preserving — same lossless
+/// bar as [`translate_component`]. Workbench (`iy < 0`) clips.
+///
+/// Returns the dirty region, or `None` when the rotation is identity
+/// (mod 4) / the component doesn't exist.
+pub fn rotate_component<F>(
+    grid: &mut Grid,
+    labels: &ComponentField,
+    id: ComponentId,
+    quarters: IVec3,
+    mut on_pre_mutation: F,
+) -> Option<DirtyRegion>
+where
+    F: FnMut(u32, u32, u32, f32),
+{
+    if quarters_is_identity(quarters) {
+        return None;
+    }
+    let Some(pivot) = component_pivot(labels, id) else {
+        return None;
+    };
+    let res = grid.res();
+    if labels.component_count() == 0 || (id as usize) > labels.component_count() {
+        return None;
+    }
+    let Some((mn, mx)) = labels.bounds_of(id) else {
+        return None;
+    };
+    let wmin = UVec3::new(
+        mn.x.saturating_sub(BAND),
+        mn.y.saturating_sub(BAND),
+        mn.z.saturating_sub(BAND),
+    );
+    let wmax = UVec3::new(
+        (mx.x + BAND).min(res.x),
+        (mx.y + BAND).min(res.y),
+        (mx.z + BAND).min(res.z),
+    );
+
+    let (union_min_u, union_max_u) = touched_region_for_rotate(labels, id, quarters, res)?;
+    let union_min = union_min_u.as_ivec3();
+    let union_max = union_max_u.as_ivec3();
+
+    let empty_sdf = grid.voxel_size() * 32.0;
+    let old_region = grid.snapshot_region(union_min_u, union_max_u);
+
+    let mut min = UVec3::new(u32::MAX, u32::MAX, u32::MAX);
+    let mut max = UVec3::ZERO;
+
+    for dst_iz in union_min.z..union_max.z {
+        for dst_iy in union_min.y..union_max.y {
+            for dst_ix in union_min.x..union_max.x {
+                let (dx, dy, dz) = (dst_ix as u32, dst_iy as u32, dst_iz as u32);
+                let old_val_here = old_region.get(dx, dy, dz);
+                let label_here = labels.id_at(dx, dy, dz);
+
+                // Never rewrite a voxel owned by another component.
+                if label_here != EMPTY && label_here != id {
+                    continue;
+                }
+
+                let mut new_val = f32::INFINITY;
+                let src = rotate_voxel_inverse(
+                    IVec3::new(dst_ix, dst_iy, dst_iz),
+                    pivot,
+                    quarters,
+                );
+                if src.x >= 0
+                    && src.y >= 0
+                    && src.z >= 0
+                    && src.x < res.x as i32
+                    && src.y < res.y as i32
+                    && src.z < res.z as i32
+                {
+                    let (sx, sy, sz) = (src.x as u32, src.y as u32, src.z as u32);
+                    if sx >= wmin.x
+                        && sx < wmax.x
+                        && sy >= wmin.y
+                        && sy < wmax.y
+                        && sz >= wmin.z
+                        && sz < wmax.z
+                        && sx >= union_min_u.x
+                        && sx < union_max_u.x
+                        && sy >= union_min_u.y
+                        && sy < union_max_u.y
+                        && sz >= union_min_u.z
+                        && sz < union_max_u.z
+                    {
+                        let label_src = labels.id_at(sx, sy, sz);
+                        if label_src == id || label_src == EMPTY {
+                            new_val = old_region.get(sx, sy, sz);
+                        }
+                    }
+                }
+
+                let in_old_mover = dx >= wmin.x
+                    && dx < wmax.x
+                    && dy >= wmin.y
+                    && dy < wmax.y
+                    && dz >= wmin.z
+                    && dz < wmax.z;
+                let final_val = if new_val.is_finite() {
+                    new_val
+                } else if label_here == id || in_old_mover {
+                    // Vacated mover interior / band cell.
+                    empty_sdf
+                } else {
+                    // Unrelated empty space inside the rotated hull
+                    // AABB — leave it alone.
+                    continue;
+                };
+
+                if (final_val - old_val_here).abs() > 1e-6 {
+                    on_pre_mutation(dx, dy, dz, old_val_here);
+                    grid.set(dx, dy, dz, final_val);
+                    expand(&mut min, &mut max, dx, dy, dz);
+                }
+            }
+        }
+    }
+
+    if min.x == u32::MAX {
+        None
+    } else {
+        Some(DirtyRegion { min, max })
+    }
 }
 
 /// Bulk rigid translation. Applies each `(id, delta)` in a single
@@ -727,5 +1010,109 @@ mod tests {
         );
         assert!(dirty.is_none());
         assert_eq!(g.to_dense(), before);
+    }
+
+    #[test]
+    fn rotate_voxel_y_90_is_lattice_permutation() {
+        let pivot = IVec3::new(10, 10, 10);
+        let p = IVec3::new(12, 10, 10);
+        // +90° about Y: (x,z) → (z, -x) relative → (10, 10, 8)
+        let r = rotate_voxel(p, pivot, IVec3::new(0, 1, 0));
+        assert_eq!(r, IVec3::new(10, 10, 8));
+        assert_eq!(
+            rotate_voxel_inverse(r, pivot, IVec3::new(0, 1, 0)),
+            p
+        );
+    }
+
+    #[test]
+    fn rotate_component_90_about_y_preserves_probe_phi() {
+        use crate::primitives::{apply_primitive, Primitive, PrimitiveKind};
+
+        let mut g = Grid::empty(UVec3::new(64, 64, 64), 1.0, Vec3::ZERO);
+        // Elongated box along +X — not rotationally symmetric about Y.
+        let _ = apply_primitive(
+            &mut g,
+            &Primitive {
+                kind: PrimitiveKind::Box {
+                    half_extents: Vec3::new(12.0, 4.0, 4.0),
+                },
+                center: Vec3::new(32.0, 32.0, 32.0),
+                workbench_y: None,
+            },
+        );
+        let labels = label_components(&g);
+        let id = labels.ids_by_size_desc()[0];
+        let pivot = component_pivot(&labels, id).unwrap();
+        let probe = IVec3::new(pivot.x + 8, pivot.y, pivot.z);
+        let phi_before = g.get(probe.x as u32, probe.y as u32, probe.z as u32);
+        assert!(phi_before < 0.0, "probe should be solid, got {phi_before}");
+        let mapped = rotate_voxel(probe, pivot, IVec3::new(0, 1, 0));
+        assert_ne!(mapped, probe, "probe must move under a Y rotate");
+
+        let dirty = rotate_component(
+            &mut g,
+            &labels,
+            id,
+            IVec3::new(0, 1, 0),
+            |_, _, _, _| {},
+        );
+        assert!(dirty.is_some());
+        let phi_after = g.get(mapped.x as u32, mapped.y as u32, mapped.z as u32);
+        assert!(
+            (phi_after - phi_before).abs() < 1e-4,
+            "φ should copy losslessly: before={phi_before} after={phi_after} at {mapped}"
+        );
+        assert!(
+            g.get(probe.x as u32, probe.y as u32, probe.z as u32) > 0.0,
+            "original +X tip should be vacated after Y rotate"
+        );
+    }
+
+    #[test]
+    fn rotate_identity_is_a_noop() {
+        let mut g = Grid::empty(UVec3::new(32, 32, 32), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(16.0, 16.0, 16.0), 4.0);
+        let labels = label_components(&g);
+        let id = labels.ids_by_size_desc()[0];
+        let before = g.to_dense();
+        let dirty = rotate_component(
+            &mut g,
+            &labels,
+            id,
+            IVec3::new(0, 4, 0),
+            |_, _, _, _| {},
+        );
+        assert!(dirty.is_none());
+        assert_eq!(g.to_dense(), before);
+    }
+
+    #[test]
+    fn rotating_one_component_leaves_a_distant_component_untouched() {
+        let mut g = Grid::empty(UVec3::new(160, 160, 160), 1.0, Vec3::ZERO);
+        add_sphere(&mut g, Vec3::new(20.0, 40.0, 20.0), 4.0);
+        add_sphere(&mut g, Vec3::new(140.0, 40.0, 140.0), 4.0);
+        let labels = label_components(&g);
+        let near_id = labels.id_at(20, 40, 20);
+        let far_id_before = labels.id_at(140, 40, 140);
+        let far_bounds_before = labels.bounds_of(far_id_before).unwrap();
+        let far_centre_before = g.get(140, 40, 140);
+
+        let _ = rotate_component(
+            &mut g,
+            &labels,
+            near_id,
+            IVec3::new(0, 1, 0),
+            |_, _, _, _| {},
+        );
+
+        assert_eq!(g.get(140, 40, 140), far_centre_before);
+        let labels_after = label_components(&g);
+        let far_id_after = labels_after.id_at(140, 40, 140);
+        assert_ne!(far_id_after, EMPTY);
+        assert_eq!(
+            labels_after.bounds_of(far_id_after).unwrap(),
+            far_bounds_before
+        );
     }
 }

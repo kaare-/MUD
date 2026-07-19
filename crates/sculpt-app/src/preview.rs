@@ -325,7 +325,7 @@ fn update_preview(
             ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter | ToolKind::Knife => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
-            ToolKind::Select | ToolKind::Move => {
+            ToolKind::Select | ToolKind::Move | ToolKind::Rotate => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
         };
@@ -338,7 +338,8 @@ fn update_preview(
             | ToolKind::Smooth
             | ToolKind::WireCutter
             | ToolKind::Select
-            | ToolKind::Move => Quat::IDENTITY,
+            | ToolKind::Move
+            | ToolKind::Rotate => Quat::IDENTITY,
             ToolKind::Cutter(_) => {
                 let normal_world = piece_tf.rotation() * normal_local;
                 let n = if normal_world.length_squared() > 1e-8 {
@@ -381,7 +382,7 @@ fn build_preview_mesh(kind: ToolKind, size: f32, params: CutterParams) -> Mesh {
         ToolKind::Clay | ToolKind::Press | ToolKind::Pull | ToolKind::Smooth => {
             Sphere::new(size).mesh().uv(24, 16)
         }
-        ToolKind::Select | ToolKind::Move => Sphere::new(2.5).mesh().uv(16, 12),
+        ToolKind::Select | ToolKind::Move | ToolKind::Rotate => Sphere::new(2.5).mesh().uv(16, 12),
         ToolKind::Cutter(family) => {
             let profile = family.profile(size, params);
             build_prism_mesh(&profile, CUTTER_PREVIEW_LENGTH * 0.5)

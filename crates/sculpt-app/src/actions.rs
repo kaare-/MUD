@@ -106,6 +106,9 @@ pub enum AppAction {
     /// Rigidly translate the selected component by `(dx, dy, dz)`
     /// millimetres. No-op when nothing is selected.
     MoveSelection(Vec3),
+    /// Rigidly rotate the selected component by `(rx, ry, rz)`
+    /// degrees (snapped to 90° steps). No-op when nothing is selected.
+    RotateSelection(Vec3),
     /// Make layer `index` active (tools read/write that layer).
     SetActiveLayer(usize),
     /// Show / hide layer `index` (remesh, pick, and export skip hidden).

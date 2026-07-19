@@ -23,6 +23,7 @@
 //!   8 ................ tool: paddle (hold LMB to press a flat)
 //!   9 ................ tool: select (LMB picks a connected piece)
 //!   0 ................ tool: move (nudge the selected piece via XYZ mm widget)
+//!   R ................ tool: rotate (90° steps about X/Y/Z; rings + widget)
 //!   Delete / Backspace  remove the selected piece
 //!   A ................ toggle active-only sculpt gating
 //!   Ctrl+G ........... rest every floating piece on the workbench
@@ -60,6 +61,7 @@ mod input_gate;
 mod matcap;
 mod move_tool;
 mod pen;
+mod rotate_tool;
 mod preview;
 mod primitives;
 mod project;
@@ -119,7 +121,13 @@ fn main() {
         ))
         // Bevy caps `Plugins` tuples at 15 entries; the rest of
         // the plugins live in a second call.
-        .add_plugins((view::plugin, move_tool::plugin, pen::plugin, ui::plugin))
+        .add_plugins((
+            view::plugin,
+            move_tool::plugin,
+            rotate_tool::plugin,
+            pen::plugin,
+            ui::plugin,
+        ))
         .add_systems(Startup, setup_scene)
         .add_systems(Update, esc_quit)
         .run();
