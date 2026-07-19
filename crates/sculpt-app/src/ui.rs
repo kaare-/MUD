@@ -31,6 +31,7 @@ use crate::export::{timestamped_filename, ExportNotice};
 use crate::gravity::SettleDialogState;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::MoveState;
+use crate::rotate_tool::RotateState;
 use crate::primitives::{PrimitiveDialogState, PrimitiveShape};
 use crate::project::{AutosaveState, FileDialogState, RecentFiles};
 use sculpt_core::MesherKind;
@@ -68,6 +69,7 @@ fn draw_ui(
     mut workpiece: ResMut<LayersState>,
     grid_state: Res<WorkbenchGridState>,
     mut move_state: ResMut<MoveState>,
+    mut rotate_state: ResMut<RotateState>,
     recent: Res<RecentFiles>,
     bookmarks: Res<CameraBookmarks>,
     app_settings: Res<AppSettings>,
@@ -387,6 +389,9 @@ fn draw_ui(
     if matches!(tool.kind, ToolKind::Move) {
         draw_move_widget(ctx, &selection, &mut move_state, &mut actions);
     }
+    if matches!(tool.kind, ToolKind::Rotate) {
+        draw_rotate_widget(ctx, &selection, &mut rotate_state, &mut actions);
+    }
 }
 
 /// Right-side Layers panel (Track B3). Newest layer at the top
@@ -554,6 +559,67 @@ fn draw_move_widget(
                     actions.send(AppAction::MoveSelection(state.pending_mm));
                 }
             });
+        });
+}
+
+/// Compact rotate widget — degrees about X / Y / Z (snap to 90° on
+/// Apply) plus ±90 nudges per axis.
+fn draw_rotate_widget(
+    ctx: &egui::Context,
+    selection: &Selection,
+    state: &mut RotateState,
+    actions: &mut EventWriter<AppAction>,
+) {
+    let has_selection = selection.picked_voxel.is_some();
+    egui::Window::new("Rotate")
+        .anchor(egui::Align2::RIGHT_TOP, [-232.0, 44.0])
+        .collapsible(false)
+        .resizable(false)
+        .show(ctx, |ui| {
+            if has_selection {
+                ui.label("Rotate selection (90° steps):");
+            } else {
+                ui.small("Pick a piece first (LMB).");
+            }
+            for (label, axis) in [("X", 0usize), ("Y", 1), ("Z", 2)] {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    let v = match axis {
+                        0 => &mut state.pending_deg.x,
+                        1 => &mut state.pending_deg.y,
+                        _ => &mut state.pending_deg.z,
+                    };
+                    ui.add(egui::DragValue::new(v).speed(15.0).suffix("°"));
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("−90"))
+                        .clicked()
+                    {
+                        let mut deg = Vec3::ZERO;
+                        deg[axis] = -90.0;
+                        actions.send(AppAction::RotateSelection(deg));
+                    }
+                    if ui
+                        .add_enabled(has_selection, egui::Button::new("+90"))
+                        .clicked()
+                    {
+                        let mut deg = Vec3::ZERO;
+                        deg[axis] = 90.0;
+                        actions.send(AppAction::RotateSelection(deg));
+                    }
+                });
+            }
+            ui.horizontal(|ui| {
+                let apply = ui
+                    .add_enabled(has_selection, egui::Button::new("Apply"))
+                    .clicked();
+                if ui.button("Reset").clicked() {
+                    state.pending_deg = Vec3::ZERO;
+                }
+                if apply {
+                    actions.send(AppAction::RotateSelection(state.pending_deg));
+                }
+            });
+            ui.small("Drag a coloured ring for a live preview.");
         });
 }
 
@@ -1193,7 +1259,7 @@ fn menu_item(ui: &mut egui::Ui, label: &str, shortcut: &str) -> bool {
 /// keyboard mapping in `sculpt::adjust_tool`. `0` is the Move tool
 /// so the digit row reads "1..9" for stamps and "0" for the rigid
 /// transform — same convention as most DCC tool palettes.
-fn tool_palette_order() -> [(&'static str, ToolKind); 13] {
+fn tool_palette_order() -> [(&'static str, ToolKind); 14] {
     [
         ("1", ToolKind::Clay),
         ("P", ToolKind::Press),
@@ -1208,6 +1274,7 @@ fn tool_palette_order() -> [(&'static str, ToolKind); 13] {
         ("8", ToolKind::Paddle),
         ("9", ToolKind::Select),
         ("0", ToolKind::Move),
+        ("R", ToolKind::Rotate),
     ]
 }
 
@@ -1229,6 +1296,7 @@ fn short_label(kind: ToolKind) -> &'static str {
         ToolKind::Paddle => "Paddle",
         ToolKind::Select => "Select",
         ToolKind::Move => "Move",
+        ToolKind::Rotate => "Rotate",
     }
 }
 
@@ -1289,6 +1357,13 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
              for a live preview; release to commit.\n\
              Or type X / Y / Z nudges (mm) and Apply.\n\
              All moves snap to whole voxels."
+        }
+        ToolKind::Rotate => {
+            "Pick a piece (LMB) or use the current selection.\n\
+             Drag a red / green / blue ring to preview a turn;\n\
+             release to commit (snaps to 90°).\n\
+             Or use ±90 / degrees + Apply in the Rotate widget.\n\
+             Lattice-preserving — no SDF blur."
         }
     }
 }

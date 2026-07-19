@@ -219,12 +219,11 @@ may still feel like deposit/carve — that’s intentional.
 
 After Move (translate), rigid **rotate** of the selected component:
 
-1. `[ ]` **Rotate object / selection.** Pair with Move: rigid rotate of
-   the labelled component about its centre (or gizmo pivot), voxel-
-   snapped, one undo stroke. Needs `sculpt_core::rotate_component` (or
-   equivalent resample) plus a Rotate tool / gizmo (axis rings or
-   yaw/pitch/roll widget). Orientation-preserving rest poses for
-   gravity can reuse the same core later.
+1. `[x]` **Rotate object / selection.** `ToolKind::Rotate` (`R`):
+   lattice-preserving 90° steps about the component AABB centre via
+   `sculpt_core::rotate_component`. Axis rings + degrees widget
+   (±90 / Apply); live preview + one undo stroke. Free-angle rotate
+   and orientation-aware gravity rest poses stay open.
 
 ---
 

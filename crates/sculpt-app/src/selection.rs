@@ -27,6 +27,7 @@ use sculpt_core::{label_components, ChunkCoord, ComponentField, ComponentId, EMP
 use crate::actions::AppAction;
 use crate::input_gate::UiCapturesInput;
 use crate::move_tool::{MoveGizmoDrag, MoveGizmoInputSet};
+use crate::rotate_tool::{RotateGizmoDrag, RotateGizmoInputSet};
 use crate::sculpt::{SculptTool, ToolKind};
 use crate::turntable::TurntableSet;
 use crate::undo::{SculptStroke, StrokeRecorder, UndoHistory};
@@ -47,9 +48,10 @@ pub fn plugin(app: &mut App) {
             update_selection_highlight,
         )
             .after(TurntableSet)
-            // Gizmo runs first: if it consumed the click, selection
-            // yields via its `move_drag.started_this_frame` check.
-            .after(MoveGizmoInputSet),
+            // Gizmos run first: if either consumed the click, selection
+            // yields via `started_this_frame` / `is_active` checks.
+            .after(MoveGizmoInputSet)
+            .after(RotateGizmoInputSet),
     );
 }
 
@@ -147,21 +149,29 @@ fn selection_input(
     ui_gate: Res<UiCapturesInput>,
     mut workpiece: ResMut<LayersState>,
     move_drag: Res<MoveGizmoDrag>,
+    rotate_drag: Res<RotateGizmoDrag>,
     mut selection: ResMut<Selection>,
 ) {
-    // Both Select and Move accept LMB-picks so the user can jump
-    // straight into "pick and move" without swapping tools.
-    if !matches!(tool.kind, ToolKind::Select | ToolKind::Move) {
+    // Select / Move / Rotate accept LMB-picks so the user can jump
+    // straight into "pick and transform" without swapping tools.
+    if !matches!(
+        tool.kind,
+        ToolKind::Select | ToolKind::Move | ToolKind::Rotate
+    ) {
         return;
     }
     if ui_gate.pointer {
         return;
     }
-    // The Move gizmo runs before us in the same frame; if it
+    // Move / Rotate gizmos run before us in the same frame; if one
     // already grabbed the click (drag starting) or is holding an
     // in-flight drag, the click belongs to the gizmo, not to
     // "pick a different piece".
-    if move_drag.started_this_frame || move_drag.is_active() {
+    if move_drag.started_this_frame
+        || move_drag.is_active()
+        || rotate_drag.started_this_frame
+        || rotate_drag.is_active()
+    {
         return;
     }
     if !buttons.just_pressed(MouseButton::Left) {
@@ -447,6 +457,8 @@ fn update_selection_highlight(
     workpiece: Res<LayersState>,
     move_drag: Res<crate::move_tool::MoveGizmoDrag>,
     move_state: Res<crate::move_tool::MoveState>,
+    rotate_drag: Res<crate::rotate_tool::RotateGizmoDrag>,
+    rotate_state: Res<crate::rotate_tool::RotateState>,
     mut q_highlight: Query<
         (&mut Transform, &mut Visibility),
         With<SelectionHighlight>,
@@ -462,27 +474,90 @@ fn update_selection_highlight(
         return;
     }
 
-    let bounds = if let Some(active) = move_drag.active_drag_bounds_and_delta(&move_state) {
-        Some(active)
-    } else {
-        // Only run the labeller when it's stale; keep the reference
-        // shape short so we don't fight the borrow checker with the
-        // grid probe below. Same "temporarily own the labels" trick
-        // as `delete_selected_component`.
-        ensure_labels_fresh(&mut selection, &workpiece);
-        let labels = selection
-            .labels
-            .take()
-            .expect("labels populated just above");
-        let bounds = selection
-            .selected_id(&labels)
-            .and_then(|id| labels.bounds_of(id))
-            .map(|(mn, mx)| (mn, mx, IVec3::ZERO));
-        selection.labels = Some(labels);
-        bounds
-    };
+    if let Some((min, max, delta_vox)) =
+        move_drag.active_drag_bounds_and_delta(&move_state)
+    {
+        let vs = workpiece.grid().voxel_size();
+        let origin = workpiece.grid().origin();
+        let pad = vs * 0.35;
+        let d = delta_vox.as_vec3() * vs;
+        let local_min = glam::Vec3::new(
+            origin.x + min.x as f32 * vs - pad + d.x,
+            origin.y + min.y as f32 * vs - pad + d.y,
+            origin.z + min.z as f32 * vs - pad + d.z,
+        );
+        let local_max = glam::Vec3::new(
+            origin.x + max.x as f32 * vs + pad + d.x,
+            origin.y + max.y as f32 * vs + pad + d.y,
+            origin.z + max.z as f32 * vs + pad + d.z,
+        );
+        let centre = (local_min + local_max) * 0.5;
+        let size = local_max - local_min;
+        tf.translation = Vec3::new(centre.x, centre.y, centre.z);
+        tf.scale = Vec3::new(size.x, size.y, size.z);
+        tf.rotation = Quat::IDENTITY;
+        *vis = Visibility::Visible;
+        return;
+    }
 
-    let Some((min, max, delta_vox)) = bounds else {
+    if let Some((min, max, quarters, pivot)) =
+        rotate_drag.active_drag_bounds_and_quarters(&rotate_state)
+    {
+        let vs = workpiece.grid().voxel_size();
+        let origin = workpiece.grid().origin();
+        let pad = vs * 0.35;
+        // Axis-aligned hull of the eight AABB corners after rotate.
+        let corners = [
+            IVec3::new(min.x as i32, min.y as i32, min.z as i32),
+            IVec3::new(max.x as i32 - 1, min.y as i32, min.z as i32),
+            IVec3::new(min.x as i32, max.y as i32 - 1, min.z as i32),
+            IVec3::new(min.x as i32, min.y as i32, max.z as i32 - 1),
+            IVec3::new(max.x as i32 - 1, max.y as i32 - 1, min.z as i32),
+            IVec3::new(max.x as i32 - 1, min.y as i32, max.z as i32 - 1),
+            IVec3::new(min.x as i32, max.y as i32 - 1, max.z as i32 - 1),
+            IVec3::new(max.x as i32 - 1, max.y as i32 - 1, max.z as i32 - 1),
+        ];
+        let mut rmin = IVec3::splat(i32::MAX);
+        let mut rmax = IVec3::splat(i32::MIN);
+        for c in corners {
+            let r = sculpt_core::rotate_voxel(c, pivot, quarters);
+            rmin = rmin.min(r);
+            rmax = rmax.max(r);
+        }
+        let local_min = glam::Vec3::new(
+            origin.x + rmin.x as f32 * vs - pad,
+            origin.y + rmin.y as f32 * vs - pad,
+            origin.z + rmin.z as f32 * vs - pad,
+        );
+        let local_max = glam::Vec3::new(
+            origin.x + (rmax.x + 1) as f32 * vs + pad,
+            origin.y + (rmax.y + 1) as f32 * vs + pad,
+            origin.z + (rmax.z + 1) as f32 * vs + pad,
+        );
+        let centre = (local_min + local_max) * 0.5;
+        let size = local_max - local_min;
+        tf.translation = Vec3::new(centre.x, centre.y, centre.z);
+        tf.scale = Vec3::new(size.x, size.y, size.z);
+        tf.rotation = Quat::IDENTITY;
+        *vis = Visibility::Visible;
+        return;
+    }
+
+    // Only run the labeller when it's stale; keep the reference
+    // shape short so we don't fight the borrow checker with the
+    // grid probe below. Same "temporarily own the labels" trick
+    // as `delete_selected_component`.
+    ensure_labels_fresh(&mut selection, &workpiece);
+    let labels = selection
+        .labels
+        .take()
+        .expect("labels populated just above");
+    let bounds = selection
+        .selected_id(&labels)
+        .and_then(|id| labels.bounds_of(id));
+    selection.labels = Some(labels);
+
+    let Some((min, max)) = bounds else {
         *vis = Visibility::Hidden;
         return;
     };
@@ -490,16 +565,15 @@ fn update_selection_highlight(
     let vs = workpiece.grid().voxel_size();
     let origin = workpiece.grid().origin();
     let pad = vs * 0.35;
-    let d = delta_vox.as_vec3() * vs;
     let local_min = glam::Vec3::new(
-        origin.x + min.x as f32 * vs - pad + d.x,
-        origin.y + min.y as f32 * vs - pad + d.y,
-        origin.z + min.z as f32 * vs - pad + d.z,
+        origin.x + min.x as f32 * vs - pad,
+        origin.y + min.y as f32 * vs - pad,
+        origin.z + min.z as f32 * vs - pad,
     );
     let local_max = glam::Vec3::new(
-        origin.x + max.x as f32 * vs + pad + d.x,
-        origin.y + max.y as f32 * vs + pad + d.y,
-        origin.z + max.z as f32 * vs + pad + d.z,
+        origin.x + max.x as f32 * vs + pad,
+        origin.y + max.y as f32 * vs + pad,
+        origin.z + max.z as f32 * vs + pad,
     );
     let centre = (local_min + local_max) * 0.5;
     let size = local_max - local_min;
