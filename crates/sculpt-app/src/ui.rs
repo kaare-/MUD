@@ -88,7 +88,7 @@ fn draw_ui(
                     actions.send(AppAction::NewWorkpiece);
                     ui.close_menu();
                 }
-                if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
+                if menu_item(ui, "Insert Primitive\u{2026}", "Ctrl+Shift+N") {
                     actions.send(AppAction::ShowInsertPrimitiveDialog);
                     ui.close_menu();
                 }
@@ -169,7 +169,7 @@ fn draw_ui(
                 }
             });
             ui.menu_button("Sculpt", |ui| {
-                if menu_item(ui, "Insert Primitive\u{2026}", "Shift+N") {
+                if menu_item(ui, "Insert Primitive\u{2026}", "Ctrl+Shift+N") {
                     actions.send(AppAction::ShowInsertPrimitiveDialog);
                     ui.close_menu();
                 }
@@ -562,8 +562,8 @@ fn draw_move_widget(
         });
 }
 
-/// Compact rotate widget — degrees about X / Y / Z (snap to 90° on
-/// Apply) plus ±90 nudges per axis.
+/// Compact rotate widget — quarter-turns about X / Y / Z plus ±90
+/// nudges. Degrees are always multiples of 90 (no lying spinner).
 fn draw_rotate_widget(
     ctx: &egui::Context,
     selection: &Selection,
@@ -584,42 +584,62 @@ fn draw_rotate_widget(
             for (label, axis) in [("X", 0usize), ("Y", 1), ("Z", 2)] {
                 ui.horizontal(|ui| {
                     ui.label(label);
-                    let v = match axis {
-                        0 => &mut state.pending_deg.x,
-                        1 => &mut state.pending_deg.y,
-                        _ => &mut state.pending_deg.z,
+                    let q = match axis {
+                        0 => &mut state.pending_quarters.x,
+                        1 => &mut state.pending_quarters.y,
+                        _ => &mut state.pending_quarters.z,
                     };
-                    ui.add(egui::DragValue::new(v).speed(15.0).suffix("°"));
+                    let mut deg = *q * 90;
+                    let response = ui.add(
+                        egui::DragValue::new(&mut deg)
+                            .speed(90.0)
+                            .suffix("°")
+                            .range(-360..=360),
+                    );
+                    if response.changed() {
+                        *q = (deg as f32 / 90.0).round() as i32;
+                    }
+                    ui.label(format!("→ {}°", *q * 90));
                     if ui
                         .add_enabled(has_selection, egui::Button::new("−90"))
                         .clicked()
                     {
-                        let mut deg = Vec3::ZERO;
-                        deg[axis] = -90.0;
-                        actions.send(AppAction::RotateSelection(deg));
+                        let mut d = Vec3::ZERO;
+                        d[axis] = -90.0;
+                        actions.send(AppAction::RotateSelection(d));
                     }
                     if ui
                         .add_enabled(has_selection, egui::Button::new("+90"))
                         .clicked()
                     {
-                        let mut deg = Vec3::ZERO;
-                        deg[axis] = 90.0;
-                        actions.send(AppAction::RotateSelection(deg));
+                        let mut d = Vec3::ZERO;
+                        d[axis] = 90.0;
+                        actions.send(AppAction::RotateSelection(d));
                     }
                 });
             }
             ui.horizontal(|ui| {
+                let pending = state.pending_deg();
+                let has_pending = pending.length_squared() > 0.0;
                 let apply = ui
-                    .add_enabled(has_selection, egui::Button::new("Apply"))
+                    .add_enabled(has_selection && has_pending, egui::Button::new("Apply"))
                     .clicked();
                 if ui.button("Reset").clicked() {
-                    state.pending_deg = Vec3::ZERO;
+                    state.pending_quarters = glam::IVec3::ZERO;
+                    state.warn_below_bench = false;
                 }
                 if apply {
-                    actions.send(AppAction::RotateSelection(state.pending_deg));
+                    actions.send(AppAction::RotateSelection(pending));
                 }
             });
-            ui.small("Drag a coloured ring for a live preview.");
+            if state.warn_below_bench {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 140, 40),
+                    "Will lift above bench so nothing clips.",
+                );
+            }
+            ui.small("Piece-local axes (not the view). Q/E still turns the turntable.");
+            ui.small("Drag a ring (45° → one step) · X/Y/Z (±Shift) = ±90°.");
         });
 }
 
@@ -718,6 +738,7 @@ fn draw_dialogs(
     // Crash-recovery prompt — shown once when an autosave file was
     // left behind from a previous session.
     if autosave.recovery_pending {
+        let mut recovery: Option<bool> = None; // Some(true)=restore, Some(false)=discard
         egui::Window::new("Recover unsaved work?")
             .collapsible(false)
             .resizable(false)
@@ -728,15 +749,33 @@ fn draw_dialogs(
                      Restore it onto the worktable, or discard it?",
                 );
                 ui.small(format!("{}", crate::project::autosave_path().display()));
+                ui.small("Enter = Restore · Esc = Discard");
+                ui.input(|i| {
+                    if i.key_pressed(egui::Key::Enter) {
+                        recovery = Some(true);
+                    }
+                    if i.key_pressed(egui::Key::Escape) {
+                        recovery = Some(false);
+                    }
+                });
                 ui.horizontal(|ui| {
                     if ui.button("Restore").clicked() {
-                        actions.send(AppAction::RestoreAutosave);
+                        recovery = Some(true);
                     }
                     if ui.button("Discard").clicked() {
-                        actions.send(AppAction::DiscardAutosave);
+                        recovery = Some(false);
                     }
                 });
             });
+        match recovery {
+            Some(true) => {
+                actions.send(AppAction::RestoreAutosave);
+            }
+            Some(false) => {
+                actions.send(AppAction::DiscardAutosave);
+            }
+            None => {}
+        }
     }
 
     // Save-As dialog. Egui doesn't have a first-class modal concept,
@@ -797,25 +836,51 @@ fn draw_dialogs(
 
     // Insert Primitive dialog. Combo box for shape + a slider for
     // size (mm). Insert emits `InsertPrimitive`; Cancel closes.
+    // Keyboard: ↑/↓ cycle shape, Enter inserts, Escape cancels — so the
+    // dialog stays usable when pointer hits on egui are flaky (remote /
+    // software-rendered environments).
     if prim_state.open.is_some() {
         let mut result: Option<Option<(PrimitiveShape, f32)>> = None;
         if let Some(dialog) = prim_state.open.as_mut() {
+            const SHAPES: [PrimitiveShape; 4] = [
+                PrimitiveShape::Sphere,
+                PrimitiveShape::Cube,
+                PrimitiveShape::Cylinder,
+                PrimitiveShape::Torus,
+            ];
             egui::Window::new("Insert Primitive")
                 .collapsible(false)
                 .resizable(false)
                 .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
                 .show(ctx, |ui| {
+                    // Prefer keyboard while the modal is up — avoids fighting
+                    // the combo popup and works without precise mouse hits.
+                    let cycle = |shape: PrimitiveShape, dir: i32| -> PrimitiveShape {
+                        let i = SHAPES.iter().position(|&s| s == shape).unwrap_or(0) as i32;
+                        let n = SHAPES.len() as i32;
+                        SHAPES[(((i + dir) % n) + n) as usize % SHAPES.len()]
+                    };
+                    ui.input(|i| {
+                        if i.key_pressed(egui::Key::ArrowDown) || i.key_pressed(egui::Key::ArrowRight)
+                        {
+                            dialog.shape = cycle(dialog.shape, 1);
+                        }
+                        if i.key_pressed(egui::Key::ArrowUp) || i.key_pressed(egui::Key::ArrowLeft) {
+                            dialog.shape = cycle(dialog.shape, -1);
+                        }
+                        if i.key_pressed(egui::Key::Enter) {
+                            result = Some(Some((dialog.shape, dialog.size_mm)));
+                        }
+                        if i.key_pressed(egui::Key::Escape) {
+                            result = Some(None);
+                        }
+                    });
                     ui.horizontal(|ui| {
                         ui.label("Shape:");
                         egui::ComboBox::from_id_salt("mud_primitive_shape")
                             .selected_text(dialog.shape.label())
                             .show_ui(ui, |ui| {
-                                for s in [
-                                    PrimitiveShape::Sphere,
-                                    PrimitiveShape::Cube,
-                                    PrimitiveShape::Cylinder,
-                                    PrimitiveShape::Torus,
-                                ] {
+                                for s in SHAPES {
                                     ui.selectable_value(&mut dialog.shape, s, s.label());
                                 }
                             });
@@ -827,7 +892,8 @@ fn draw_dialogs(
                     );
                     ui.small(
                         "Placed centred on the workbench.\n\
-                         Torus size is the ring radius; tube is 0.35× size.",
+                         Torus size is the ring radius; tube is 0.35× size.\n\
+                         ↑/↓ change shape · Enter inserts · Esc cancels.",
                     );
                     ui.horizontal(|ui| {
                         if ui.button("Insert").clicked() {
@@ -1360,10 +1426,10 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
         }
         ToolKind::Rotate => {
             "Pick a piece (LMB) or use the current selection.\n\
-             Drag a red / green / blue ring to preview a turn;\n\
-             release to commit (snaps to 90°).\n\
-             Or use ±90 / degrees + Apply in the Rotate widget.\n\
-             Lattice-preserving — no SDF blur."
+             Drag a ring — each 45° of drag is one 90° step.\n\
+             X / Y / Z (±Shift) = ±90°. Widget ±90 / Apply too.\n\
+             Piece-local axes; Q/E is still the turntable.\n\
+             Auto-lifts if a turn would clip below the bench."
         }
     }
 }

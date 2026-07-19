@@ -23,7 +23,7 @@
 //!   8 ................ tool: paddle (hold LMB to press a flat)
 //!   9 ................ tool: select (LMB picks a connected piece)
 //!   0 ................ tool: move (nudge the selected piece via XYZ mm widget)
-//!   R ................ tool: rotate (90° steps about X/Y/Z; rings + widget)
+//!   R ................ tool: rotate (90° steps; rings + widget; X/Y/Z nudges)
 //!   Delete / Backspace  remove the selected piece
 //!   A ................ toggle active-only sculpt gating
 //!   Ctrl+G ........... rest every floating piece on the workbench
@@ -42,7 +42,7 @@
 //!   Ctrl+Z ........... undo last stroke
 //!   Ctrl+Y ........... redo (also Ctrl+Shift+Z)
 //!   Ctrl+N ........... clear the worktable (empty grid)
-//!   Shift+N .......... insert a primitive shape via dialog
+//!   Ctrl+Shift+N ..... insert a primitive shape via dialog
 //!   Ctrl+E ........... export STL (opens the Export-As dialog)
 //!   Ctrl+S ........... save the current piece (auto-timestamped filename)
 //!   Ctrl+Shift+S ..... save the current piece with a chosen filename (dialog)
