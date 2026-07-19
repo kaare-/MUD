@@ -8,6 +8,8 @@
 //!
 //! Press / Pull / Knife use distinct tint families so displace and
 //! remove tools don't look identical to Add/Remove at a glance.
+//! Press / Pull ghosts seat at engagement depth; Knife / Paddle
+//! orient along the (possibly tilt-leaned) stamp axis.
 //!
 //! The preview hides when the cursor isn't over the workpiece (no
 //! ray-march hit). While the user is actively sculpting (LMB held)
@@ -315,7 +317,7 @@ fn update_preview(
             }
             ToolKind::Press | ToolKind::Pull => {
                 let advance =
-                    tool.advance_per_step * pen.depth_scale(settings.pressure_to_depth);
+                    tool.advance_per_step * pen.engagement_scale(settings.pressure_to_depth);
                 let c = press_brush_center(hit_g, into_g, tool.size, advance);
                 Vec3::new(c.x, c.y, c.z)
             }
@@ -337,10 +339,23 @@ fn update_preview(
             | ToolKind::WireCutter
             | ToolKind::Select
             | ToolKind::Move => Quat::IDENTITY,
-            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::Knife => {
+            ToolKind::Cutter(_) => {
                 let normal_world = piece_tf.rotation() * normal_local;
                 let n = if normal_world.length_squared() > 1e-8 {
                     normal_world.normalize()
+                } else {
+                    Vec3::Y
+                };
+                Quat::from_rotation_arc(Vec3::Y, n)
+            }
+            // Knife / Paddle follow stylus lean (altitude → view-tangent
+            // blend) so the ghost matches the stamp axis.
+            ToolKind::Paddle | ToolKind::Knife => {
+                let lean = pen.leaned_into(into_g, view_g);
+                let out_local = Vec3::new(-lean.x, -lean.y, -lean.z);
+                let out_world = piece_tf.rotation() * out_local;
+                let n = if out_world.length_squared() > 1e-8 {
+                    out_world.normalize()
                 } else {
                     Vec3::Y
                 };

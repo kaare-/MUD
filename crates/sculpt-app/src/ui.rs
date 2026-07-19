@@ -352,7 +352,15 @@ fn draw_ui(
             if app_settings.pressure_to_depth {
                 ui.separator();
                 if pen.from_stylus {
-                    ui.label(format!("Pen: {:.0}%", pen.pressure * 100.0));
+                    let lean_pct = (pen.lean_amount() * 100.0).round() as i32;
+                    if lean_pct > 0 {
+                        ui.label(format!(
+                            "Pen: {:.0}% · lean {lean_pct}%",
+                            pen.pressure * 100.0
+                        ));
+                    } else {
+                        ui.label(format!("Pen: {:.0}%", pen.pressure * 100.0));
+                    }
                 } else {
                     ui.small("Pen: mouse (full depth)");
                 }
@@ -966,9 +974,10 @@ fn draw_dialogs(
                     "Pressure controls depth",
                 );
                 ui.small(
-                    "Stylus / touch force scales Clay bite, Paddle advance,\n\
-                     and Smooth strength. Mouse always uses full depth.\n\
-                     (Tilt → orientation is not wired yet.)",
+                    "Stylus force: Clay / Smooth use raw pressure; Press /\n\
+                     Pull / Paddle / Knife use a softer engagement curve.\n\
+                     Altitude leans Knife / Paddle off the surface normal.\n\
+                     Mouse always uses full depth and upright tilt.",
                 );
                 ui.add_space(6.0);
                 if ui.button("Close").clicked() {
