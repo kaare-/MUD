@@ -221,9 +221,27 @@ After Move (translate), rigid **rotate** of the selected component:
 
 1. `[x]` **Rotate object / selection.** `ToolKind::Rotate` (`R`):
    lattice-preserving 90° steps about the component AABB centre via
-   `sculpt_core::rotate_component`. Axis rings + degrees widget
-   (±90 / Apply); live preview + one undo stroke. Free-angle rotate
-   and orientation-aware gravity rest poses stay open.
+   `sculpt_core::rotate_component`. Axis rings + quarter-step widget
+   (±90 / Apply); live preview + one undo stroke.
+
+2. `[x]` **Rotate polish** (review pass):
+   - Honest 90°-only widget (`pending_quarters`, `→ N°` readout)
+   - Discrete ring drag (45° → one quarter) + 90° tick marks on rings
+   - Rings scale to selection AABB (18–80 mm)
+   - Auto-lift above bench when a turn would clip (`y < 0`), same undo
+   - Keyboard `X`/`Y`/`Z` (+Shift = −90°) while Rotate is active
+   - Piece-local vs turntable hint in widget / palette
+
+### Advanced-user gaps (deferred)
+
+| Item | Notes |
+|------|-------|
+| Free-angle rotate | Needs resample + redistance |
+| Custom / COM pivot | AABB centre only today |
+| View- or world-aligned axes | Piece-local only |
+| Min-face / orient-to-bench rest | Gravity rest-pose follow-up |
+| Absolute pose readout | No yaw/pitch/roll HUD |
+| Merge Move+Rotate tool | Separate tools by design for now |
 
 ---
 

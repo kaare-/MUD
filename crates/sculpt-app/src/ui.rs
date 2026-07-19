@@ -562,8 +562,8 @@ fn draw_move_widget(
         });
 }
 
-/// Compact rotate widget — degrees about X / Y / Z (snap to 90° on
-/// Apply) plus ±90 nudges per axis.
+/// Compact rotate widget — quarter-turns about X / Y / Z plus ±90
+/// nudges. Degrees are always multiples of 90 (no lying spinner).
 fn draw_rotate_widget(
     ctx: &egui::Context,
     selection: &Selection,
@@ -584,42 +584,62 @@ fn draw_rotate_widget(
             for (label, axis) in [("X", 0usize), ("Y", 1), ("Z", 2)] {
                 ui.horizontal(|ui| {
                     ui.label(label);
-                    let v = match axis {
-                        0 => &mut state.pending_deg.x,
-                        1 => &mut state.pending_deg.y,
-                        _ => &mut state.pending_deg.z,
+                    let q = match axis {
+                        0 => &mut state.pending_quarters.x,
+                        1 => &mut state.pending_quarters.y,
+                        _ => &mut state.pending_quarters.z,
                     };
-                    ui.add(egui::DragValue::new(v).speed(15.0).suffix("°"));
+                    let mut deg = *q * 90;
+                    let response = ui.add(
+                        egui::DragValue::new(&mut deg)
+                            .speed(90.0)
+                            .suffix("°")
+                            .range(-360..=360),
+                    );
+                    if response.changed() {
+                        *q = (deg as f32 / 90.0).round() as i32;
+                    }
+                    ui.label(format!("→ {}°", *q * 90));
                     if ui
                         .add_enabled(has_selection, egui::Button::new("−90"))
                         .clicked()
                     {
-                        let mut deg = Vec3::ZERO;
-                        deg[axis] = -90.0;
-                        actions.send(AppAction::RotateSelection(deg));
+                        let mut d = Vec3::ZERO;
+                        d[axis] = -90.0;
+                        actions.send(AppAction::RotateSelection(d));
                     }
                     if ui
                         .add_enabled(has_selection, egui::Button::new("+90"))
                         .clicked()
                     {
-                        let mut deg = Vec3::ZERO;
-                        deg[axis] = 90.0;
-                        actions.send(AppAction::RotateSelection(deg));
+                        let mut d = Vec3::ZERO;
+                        d[axis] = 90.0;
+                        actions.send(AppAction::RotateSelection(d));
                     }
                 });
             }
             ui.horizontal(|ui| {
+                let pending = state.pending_deg();
+                let has_pending = pending.length_squared() > 0.0;
                 let apply = ui
-                    .add_enabled(has_selection, egui::Button::new("Apply"))
+                    .add_enabled(has_selection && has_pending, egui::Button::new("Apply"))
                     .clicked();
                 if ui.button("Reset").clicked() {
-                    state.pending_deg = Vec3::ZERO;
+                    state.pending_quarters = glam::IVec3::ZERO;
+                    state.warn_below_bench = false;
                 }
                 if apply {
-                    actions.send(AppAction::RotateSelection(state.pending_deg));
+                    actions.send(AppAction::RotateSelection(pending));
                 }
             });
-            ui.small("Drag a coloured ring for a live preview.");
+            if state.warn_below_bench {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 140, 40),
+                    "Will lift above bench so nothing clips.",
+                );
+            }
+            ui.small("Piece-local axes (not the view). Q/E still turns the turntable.");
+            ui.small("Drag a ring (45° → one step) · X/Y/Z (±Shift) = ±90°.");
         });
 }
 
@@ -1360,10 +1380,10 @@ fn tool_palette_hint(kind: ToolKind) -> &'static str {
         }
         ToolKind::Rotate => {
             "Pick a piece (LMB) or use the current selection.\n\
-             Drag a red / green / blue ring to preview a turn;\n\
-             release to commit (snaps to 90°).\n\
-             Or use ±90 / degrees + Apply in the Rotate widget.\n\
-             Lattice-preserving — no SDF blur."
+             Drag a ring — each 45° of drag is one 90° step.\n\
+             X / Y / Z (±Shift) = ±90°. Widget ±90 / Apply too.\n\
+             Piece-local axes; Q/E is still the turntable.\n\
+             Auto-lifts if a turn would clip below the bench."
         }
     }
 }

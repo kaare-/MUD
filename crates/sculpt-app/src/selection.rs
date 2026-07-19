@@ -506,7 +506,32 @@ fn update_selection_highlight(
         let vs = workpiece.grid().voxel_size();
         let origin = workpiece.grid().origin();
         let pad = vs * 0.35;
-        // Axis-aligned hull of the eight AABB corners after rotate.
+        // Match commit: lift then rotate about the lifted pivot.
+        let lift = {
+            if max.x <= min.x || max.y <= min.y || max.z <= min.z {
+                0
+            } else {
+                let cx = [min.x as i32, max.x as i32 - 1];
+                let cy = [min.y as i32, max.y as i32 - 1];
+                let cz = [min.z as i32, max.z as i32 - 1];
+                let mut min_y = i32::MAX;
+                for &x in &cx {
+                    for &y in &cy {
+                        for &z in &cz {
+                            let r = sculpt_core::rotate_voxel(IVec3::new(x, y, z), pivot, quarters);
+                            min_y = min_y.min(r.y);
+                        }
+                    }
+                }
+                if min_y < 0 {
+                    -min_y
+                } else {
+                    0
+                }
+            }
+        };
+        let pivot_lifted = pivot + IVec3::new(0, lift, 0);
+        // Axis-aligned hull of the eight AABB corners after lift+rotate.
         let corners = [
             IVec3::new(min.x as i32, min.y as i32, min.z as i32),
             IVec3::new(max.x as i32 - 1, min.y as i32, min.z as i32),
@@ -520,7 +545,8 @@ fn update_selection_highlight(
         let mut rmin = IVec3::splat(i32::MAX);
         let mut rmax = IVec3::splat(i32::MIN);
         for c in corners {
-            let r = sculpt_core::rotate_voxel(c, pivot, quarters);
+            let lifted = c + IVec3::new(0, lift, 0);
+            let r = sculpt_core::rotate_voxel(lifted, pivot_lifted, quarters);
             rmin = rmin.min(r);
             rmax = rmax.max(r);
         }
