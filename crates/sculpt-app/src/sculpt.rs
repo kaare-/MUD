@@ -537,7 +537,9 @@ fn sculpt_input(
     let is_knife = matches!(tool.kind, ToolKind::Knife);
     let now = time.elapsed_secs();
     if is_press_or_pull || is_paddle {
-        let min_dt = if is_paddle { 0.11 } else { 0.07 };
+        // Slow enough that a 1–2s hold deepens in clear steps without
+        // shredding the band (each stamp runs recruit + redistance).
+        let min_dt = if is_paddle { 0.16 } else { 0.13 };
         if let Some(last_t) = stroke.last_displace_secs {
             if now - last_t < min_dt {
                 return;

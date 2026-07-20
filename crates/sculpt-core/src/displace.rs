@@ -123,15 +123,16 @@ where
     let soft_k = r * 0.40;
     let surface_band = rim * 1.15 + grid.voxel_size();
 
-    // Soft blend reaches ~`soft_k` past the hard radius — volume and
-    // the stamp walk must cover that halo or ∆V is undercounted and
-    // the rim never fully "pushes back".
-    let stamp_reach = r + soft_k + grid.voxel_size();
+    // Soft blend reaches ~`soft_k` past the hard radius. Walk a modest
+    // halo (half soft_k) so ∆V isn't undercounted, but don't explode
+    // the write region — a full `r+soft_k` stamp was shredding the
+    // band under multi-stamp holds.
+    let stamp_reach = r + soft_k * 0.5 + grid.voxel_size();
     let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, stamp_reach) else {
         return None;
     };
     let Some((edit_min, edit_max)) =
-        clamp_aabb(grid, brush.center, r + rim + soft_k + grid.voxel_size() * 2.0)
+        clamp_aabb(grid, brush.center, r + rim + grid.voxel_size() * 2.0)
     else {
         return None;
     };
@@ -172,7 +173,11 @@ where
     }
 
     let vol_after_stamp = solid_volume_in_region(grid, stamp_min, stamp_max);
-    let delta_v = (vol_before - vol_after_stamp).max(0.0);
+    let mut delta_v = (vol_before - vol_after_stamp).max(0.0);
+    // Cap recruit so a bad stamp (or multi-stamp pile-up) can't inject
+    // more rim than ~12% of the tool sphere volume.
+    let max_recruit = std::f32::consts::PI * r * r * r * 0.16;
+    delta_v = delta_v.min(max_recruit);
     // Tiny bites aren't worth recruiting — avoids noise amplify.
     let min_v = vs * vs * vs * 0.25;
     if delta_v < min_v {
@@ -270,12 +275,12 @@ where
     let soft_k = r * 0.40;
     let surface_band = rim * 1.15 + grid.voxel_size();
 
-    let stamp_reach = r + soft_k + grid.voxel_size();
+    let stamp_reach = r + soft_k * 0.5 + grid.voxel_size();
     let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, stamp_reach) else {
         return None;
     };
     let Some((edit_min, edit_max)) =
-        clamp_aabb(grid, brush.center, r + rim + soft_k + grid.voxel_size() * 2.0)
+        clamp_aabb(grid, brush.center, r + rim + grid.voxel_size() * 2.0)
     else {
         return None;
     };
@@ -319,7 +324,9 @@ where
     }
 
     let vol_after_stamp = solid_volume_in_region(grid, edit_min, edit_max);
-    let delta_v = (vol_after_stamp - vol_before).max(0.0);
+    let mut delta_v = (vol_after_stamp - vol_before).max(0.0);
+    let max_draw = std::f32::consts::PI * r * r * r * 0.16;
+    delta_v = delta_v.min(max_draw);
     let min_v = vs * vs * vs * 0.25;
     if delta_v < min_v {
         let (rmin, rmax) = expand_region(grid, stamp_min, stamp_max, 1);
