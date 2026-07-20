@@ -211,8 +211,13 @@ pub struct SculptStroke {
     pub recorder: Option<StrokeRecorder>,
     /// Piece-local hit of the last clay (add/remove) stamp in the
     /// current stroke. Used to space stamps so hold-still can't race
-    /// along the view axis.
+    /// along the view axis. Also reused by Press/Pull/Paddle for
+    /// modest drag spacing (time-rate is the primary deepen latch).
     pub last_clay_hit: Option<glam::Vec3>,
+    /// `Time::elapsed_secs()` of the last Press / Pull / Paddle stamp.
+    /// Hold-still deepen is rate-limited by this so clay's spatial
+    /// spacing latch cannot freeze those tools after one bite.
+    pub last_displace_secs: Option<f32>,
     /// Face-on paint lock: `(point, into_surface)` at stroke start.
     /// Stamps project onto this plane so screen strokes don't
     /// tip-chase toward the camera. Cleared for side-column / ring.
@@ -232,6 +237,7 @@ impl SculptStroke {
     pub fn discard_live(&mut self) {
         self.recorder = None;
         self.last_clay_hit = None;
+        self.last_displace_secs = None;
         self.paint_plane = None;
         self.bench_paint = false;
     }

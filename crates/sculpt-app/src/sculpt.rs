@@ -303,6 +303,7 @@ pub fn knife_profile(size: f32) -> Profile {
 fn sculpt_input(
     buttons: Res<ButtonInput<MouseButton>>,
     keys: Res<ButtonInput<KeyCode>>,
+    time: Res<Time>,
     q_window: Query<&Window, With<PrimaryWindow>>,
     q_camera: Query<(&Camera, &GlobalTransform)>,
     q_piece: Query<&Transform, With<WorkpieceRoot>>,
@@ -341,6 +342,7 @@ fn sculpt_input(
             }
         }
         stroke.last_clay_hit = None;
+        stroke.last_displace_secs = None;
         stroke.paint_plane = None;
         stroke.bench_paint = false;
     }
@@ -353,6 +355,7 @@ fn sculpt_input(
     if buttons.just_pressed(MouseButton::Left) {
         stroke.recorder = Some(StrokeRecorder::default());
         stroke.last_clay_hit = None;
+        stroke.last_displace_secs = None;
         stroke.paint_plane = None;
         stroke.bench_paint = false;
     }
@@ -435,25 +438,43 @@ fn sculpt_input(
         return;
     }
 
-    let hit = match workpiece.grid().ray_march(hit_g, dir_g, 4000.0) {
-        Some(p) => p,
-        None => {
-            // Empty worktable Add: no surface, but a click on the bench
-            // still deposits a blob so the user can build up from
-            // nothing. Every other tool needs a hit and bails.
-            if is_add_early {
-                empty_bench_add(
-                    &mut workpiece,
-                    &mut stroke,
-                    &tool,
-                    turntable.angular_vel,
-                    symmetry.enabled,
-                    depth_scale,
-                    hit_g,
-                    dir_g,
-                );
+    // Hit the closest *visible* layer (same rule as Select), and make
+    // it active so Press/Pull/Paddle/Clay edit what the user clicked —
+    // not a buried layer that happens to be active. Once a stroke has
+    // already stamped (`last_clay_hit`), stick to the active layer so
+    // mid-stroke layer hops don't split the undo journal.
+    let hit = if stroke.last_clay_hit.is_some() {
+        match workpiece.grid().ray_march(hit_g, dir_g, 4000.0) {
+            Some(p) => p,
+            None => return,
+        }
+    } else {
+        match workpiece.ray_march_visible(hit_g, dir_g, 4000.0) {
+            Some((layer_idx, p)) => {
+                if layer_idx != workpiece.active_index() {
+                    workpiece.set_active_index(layer_idx);
+                    selection.invalidate_labels();
+                }
+                p
             }
-            return;
+            None => {
+                // Empty worktable Add: no surface, but a click on the bench
+                // still deposits a blob so the user can build up from
+                // nothing. Every other tool needs a hit and bails.
+                if is_add_early {
+                    empty_bench_add(
+                        &mut workpiece,
+                        &mut stroke,
+                        &tool,
+                        turntable.angular_vel,
+                        symmetry.enabled,
+                        depth_scale,
+                        hit_g,
+                        dir_g,
+                    );
+                }
+                return;
+            }
         }
     };
 
@@ -504,14 +525,25 @@ fn sculpt_input(
         stroke.paint_plane = None;
     }
 
-    // Stamp spacing. Face-on needs a generous gap so hold-still doesn't
-    // race along the view. Turning or unlocked side-column uses denser
-    // spacing so small brushes leave a continuous ring bead.
-    // Press uses the same latch so a held click deepens in steps rather
-    // than melting the surface every frame.
+    // Stamp spacing / rate.
+    // - Clay / Knife: spatial latch (face-on needs a generous gap so
+    //   hold-still doesn't race along the view).
+    // - Press / Pull / Paddle: time-based deepen. The old clay spatial
+    //   latch (≈0.4×size) froze Press/Pull after one shallow bite
+    //   because each stamp only advances ~0.6 mm. Paddle had the
+    //   opposite bug — no latch at all → every-frame melt (~36 mm/s).
     let is_press_or_pull = matches!(tool.kind, ToolKind::Press | ToolKind::Pull);
+    let is_paddle = matches!(tool.kind, ToolKind::Paddle);
     let is_knife = matches!(tool.kind, ToolKind::Knife);
-    if is_clay || is_press_or_pull || is_knife {
+    let now = time.elapsed_secs();
+    if is_press_or_pull || is_paddle {
+        let min_dt = if is_paddle { 0.11 } else { 0.07 };
+        if let Some(last_t) = stroke.last_displace_secs {
+            if now - last_t < min_dt {
+                return;
+            }
+        }
+    } else if is_clay || is_knife {
         let turning = turntable.angular_vel.abs() > 1e-4;
         let min_spacing = if is_clay && is_add && (turning || column >= CLAY_COLUMN_UNLOCK) {
             (tool.size * 0.18).clamp(0.35, 2.5)
@@ -566,8 +598,11 @@ fn sculpt_input(
             mirrored_view,
         );
     }
-    if is_clay || is_press_or_pull || is_knife {
+    if is_clay || is_press_or_pull || is_knife || is_paddle {
         stroke.last_clay_hit = Some(hit);
+    }
+    if is_press_or_pull || is_paddle {
+        stroke.last_displace_secs = Some(now);
     }
 }
 

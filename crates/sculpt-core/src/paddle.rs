@@ -208,7 +208,7 @@ where
 
     // --- 3) Local redistance ----------------------------------------
     let (rmin, rmax) = expand_region(grid, edit_min, edit_max, 2);
-    redistance_local(grid, rmin, rmax, 4);
+    redistance_local(grid, rmin, rmax, 4, &mut on_pre_mutation);
 
     Some(DirtyRegion {
         min: rmin.min(dirty_min),

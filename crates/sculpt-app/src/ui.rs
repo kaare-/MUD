@@ -627,6 +627,7 @@ fn draw_rotate_widget(
                 if ui.button("Reset").clicked() {
                     state.pending_quarters = glam::IVec3::ZERO;
                     state.warn_below_bench = false;
+                    state.warn_symmetric_noop = false;
                 }
                 if apply {
                     actions.send(AppAction::RotateSelection(pending));
@@ -636,6 +637,12 @@ fn draw_rotate_widget(
                 ui.colored_label(
                     egui::Color32::from_rgb(200, 140, 40),
                     "Will lift above bench so nothing clips.",
+                );
+            }
+            if state.warn_symmetric_noop {
+                ui.colored_label(
+                    egui::Color32::from_rgb(200, 140, 40),
+                    "No change — this piece is lattice-symmetric. Try a Cylinder/Torus.",
                 );
             }
             ui.small("Piece-local axes (not the view). Q/E still turns the turntable.");
