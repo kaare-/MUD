@@ -200,6 +200,24 @@ to Press.
 
 ---
 
+## Repair notes (2026-07-20)
+
+Feel-track bugs found in GUI review and fixed on `cursor/feel-tools-repair-f18c`:
+
+1. **Press / Pull hold-still frozen** — clay’s spatial stamp latch (~0.4×size)
+   blocked deepen because each bite only advances ~0.6 mm. Now time-rated
+   (~70 ms / stamp) so hold-still progresses.
+2. **Paddle melted the surface** — stamped every frame (~36 mm/s). Now
+   time-rated (~110 ms / stamp).
+3. **Undo scars after Press / Pull / Paddle** — `redistance_local` writes
+   are journaled into the stroke undo callback.
+4. **Soft stamp under-recruited** — stamp / volume AABB covers `r + soft_k`.
+5. **Multi-layer miss** — sculpt hits use `ray_march_visible` (like Select).
+6. **Rotate Ctrl+Z/Y clash** — X/Y/Z nudges ignore Ctrl/Super; symmetric
+   lattice no-ops show a widget warning (sphere/cube).
+
+---
+
 ## Success snapshot
 
 > **Add/Remove** builds and carves quickly (coils, soft CSG).

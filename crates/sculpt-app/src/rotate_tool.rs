@@ -40,6 +40,10 @@ pub struct RotateState {
     /// True when the current pending rotate would need a bench lift
     /// (or would have clipped without one). Shown in the widget.
     pub warn_below_bench: bool,
+    /// Set when the last apply mapped onto an identical lattice
+    /// (sphere / cube about centre). Cleared on the next successful
+    /// rotate or Reset.
+    pub warn_symmetric_noop: bool,
 }
 
 impl RotateState {
@@ -930,8 +934,9 @@ fn handle_rotate_action(
             if drag.is_active() {
                 continue;
             }
+            let q = deg_to_quarters(*deg);
             if apply_rotate(
-                deg_to_quarters(*deg),
+                q,
                 &mut workpiece,
                 &mut selection,
                 &mut history,
@@ -939,6 +944,9 @@ fn handle_rotate_action(
             ) {
                 state.pending_quarters = IVec3::ZERO;
                 state.warn_below_bench = false;
+                state.warn_symmetric_noop = false;
+            } else if !quarters_is_identity(q) && selection.picked_voxel.is_some() {
+                state.warn_symmetric_noop = true;
             }
         }
     }
@@ -959,6 +967,12 @@ fn handle_rotate_keyboard(
         return;
     }
     if selection.picked_voxel.is_none() {
+        return;
+    }
+    // Never steal Ctrl+Z / Ctrl+Y (undo/redo) or Super chords.
+    let ctrl = keys.pressed(KeyCode::ControlLeft) || keys.pressed(KeyCode::ControlRight);
+    let super_key = keys.pressed(KeyCode::SuperLeft) || keys.pressed(KeyCode::SuperRight);
+    if ctrl || super_key {
         return;
     }
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
@@ -982,6 +996,9 @@ fn handle_rotate_keyboard(
     ) {
         state.pending_quarters = IVec3::ZERO;
         state.warn_below_bench = false;
+        state.warn_symmetric_noop = false;
+    } else if !quarters_is_identity(q) && selection.picked_voxel.is_some() {
+        state.warn_symmetric_noop = true;
     }
 }
 

@@ -123,7 +123,12 @@ where
     let soft_k = r * 0.40;
     let surface_band = rim * 1.15 + grid.voxel_size();
 
-    let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, r + grid.voxel_size()) else {
+    // Soft blend reaches ~`soft_k` past the hard radius. Walk a modest
+    // halo (half soft_k) so ∆V isn't undercounted, but don't explode
+    // the write region — a full `r+soft_k` stamp was shredding the
+    // band under multi-stamp holds.
+    let stamp_reach = r + soft_k * 0.5 + grid.voxel_size();
+    let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, stamp_reach) else {
         return None;
     };
     let Some((edit_min, edit_max)) =
@@ -168,12 +173,16 @@ where
     }
 
     let vol_after_stamp = solid_volume_in_region(grid, stamp_min, stamp_max);
-    let delta_v = (vol_before - vol_after_stamp).max(0.0);
+    let mut delta_v = (vol_before - vol_after_stamp).max(0.0);
+    // Cap recruit so a bad stamp (or multi-stamp pile-up) can't inject
+    // more rim than ~12% of the tool sphere volume.
+    let max_recruit = std::f32::consts::PI * r * r * r * 0.16;
+    delta_v = delta_v.min(max_recruit);
     // Tiny bites aren't worth recruiting — avoids noise amplify.
     let min_v = vs * vs * vs * 0.25;
     if delta_v < min_v {
         let (rmin, rmax) = expand_region(grid, stamp_min, stamp_max, 1);
-        redistance_local(grid, rmin, rmax, 2);
+        redistance_local(grid, rmin, rmax, 2, &mut on_pre_mutation);
         return Some(DirtyRegion {
             min: rmin,
             max: rmax,
@@ -238,7 +247,7 @@ where
 
     // --- 3) Local redistance ----------------------------------------
     let (rmin, rmax) = expand_region(grid, edit_min, edit_max, 2);
-    redistance_local(grid, rmin, rmax, 4);
+    redistance_local(grid, rmin, rmax, 4, &mut on_pre_mutation);
 
     Some(DirtyRegion {
         min: rmin,
@@ -266,7 +275,8 @@ where
     let soft_k = r * 0.40;
     let surface_band = rim * 1.15 + grid.voxel_size();
 
-    let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, r + grid.voxel_size()) else {
+    let stamp_reach = r + soft_k * 0.5 + grid.voxel_size();
+    let Some((stamp_min, stamp_max)) = clamp_aabb(grid, brush.center, stamp_reach) else {
         return None;
     };
     let Some((edit_min, edit_max)) =
@@ -314,11 +324,13 @@ where
     }
 
     let vol_after_stamp = solid_volume_in_region(grid, edit_min, edit_max);
-    let delta_v = (vol_after_stamp - vol_before).max(0.0);
+    let mut delta_v = (vol_after_stamp - vol_before).max(0.0);
+    let max_draw = std::f32::consts::PI * r * r * r * 0.16;
+    delta_v = delta_v.min(max_draw);
     let min_v = vs * vs * vs * 0.25;
     if delta_v < min_v {
         let (rmin, rmax) = expand_region(grid, stamp_min, stamp_max, 1);
-        redistance_local(grid, rmin, rmax, 2);
+        redistance_local(grid, rmin, rmax, 2, &mut on_pre_mutation);
         return Some(DirtyRegion {
             min: rmin,
             max: rmax,
@@ -383,7 +395,7 @@ where
     }
 
     let (rmin, rmax) = expand_region(grid, edit_min, edit_max, 2);
-    redistance_local(grid, rmin, rmax, 4);
+    redistance_local(grid, rmin, rmax, 4, &mut on_pre_mutation);
 
     Some(DirtyRegion {
         min: rmin,
@@ -394,7 +406,18 @@ where
 /// A few Jacobi-style redistance iterations inside `[min, max)`.
 /// Keeps sign of φ; relaxes `|∇φ| → 1` so the next stamp / mesher see
 /// a usable band. Not a full fast-sweep — good enough for local edits.
-pub(crate) fn redistance_local(grid: &mut Grid, min: UVec3, max: UVec3, iterations: u32) {
+///
+/// `on_pre_mutation` is fired before each voxel write so undo journals
+/// cover the redistance halo (not just the stamp / rim edits).
+pub(crate) fn redistance_local<F>(
+    grid: &mut Grid,
+    min: UVec3,
+    max: UVec3,
+    iterations: u32,
+    mut on_pre_mutation: F,
+) where
+    F: FnMut(u32, u32, u32, f32),
+{
     if iterations == 0 || min.x >= max.x {
         return;
     }
@@ -466,7 +489,12 @@ pub(crate) fn redistance_local(grid: &mut Grid, min: UVec3, max: UVec3, iteratio
                 {
                     continue;
                 }
-                grid.set(ix, iy, iz, phi[idx(ix, iy, iz)]);
+                let new = phi[idx(ix, iy, iz)];
+                let old = grid.get(ix, iy, iz);
+                if (new - old).abs() > 1e-7 {
+                    on_pre_mutation(ix, iy, iz, old);
+                    grid.set(ix, iy, iz, new);
+                }
             }
         }
     }
@@ -665,6 +693,83 @@ mod tests {
         assert!(
             after > before + 0.05,
             "rim should thin (φ↑): before={before}, after={after}"
+        );
+    }
+
+    #[test]
+    fn press_undo_callback_covers_redistance_halo() {
+        // Redistance used to write neighbours without journaling, so
+        // Ctrl+Z left scars. Ensure the callback fires on voxels that
+        // only the redistance pass touches (outside the hard stamp).
+        let mut g = sphere_grid();
+        let hit = Vec3::new(50.0, 32.0, 32.0);
+        let into = Vec3::NEG_X;
+        let radius = 6.0;
+        let center = hit - into * (radius - 1.5);
+        let mut journaled = 0u32;
+        let _ = apply_press_displace_with_callback(
+            &mut g,
+            &PressDisplace {
+                center,
+                radius,
+                direction: into,
+                workbench_y: None,
+            },
+            |_, _, _, _| journaled += 1,
+        );
+        assert!(
+            journaled > 200,
+            "press+redistance should journal a wide halo, got {journaled}"
+        );
+    }
+
+    #[test]
+    fn press_journal_restores_written_voxels() {
+        use std::collections::HashSet;
+        let mut g = sphere_grid();
+        let hit = Vec3::new(50.0, 32.0, 32.0);
+        let into = Vec3::NEG_X;
+        let radius = 6.0;
+        let center = hit - into * (radius - 1.5);
+        // Solid voxel just inside the surface along −X from the hit.
+        let vx = 48u32;
+        let vy = 32u32;
+        let vz = 32u32;
+        let before = g.get(vx, vy, vz);
+        // Mirror StrokeRecorder: keep the *first* pre-value per voxel.
+        let mut seen = HashSet::new();
+        let mut pre: Vec<(u32, u32, u32, f32)> = Vec::new();
+        let _ = apply_press_displace_with_callback(
+            &mut g,
+            &PressDisplace {
+                center,
+                radius,
+                direction: into,
+                workbench_y: None,
+            },
+            |x, y, z, v| {
+                let key = (x, y, z);
+                if seen.insert(key) {
+                    pre.push((x, y, z, v));
+                }
+            },
+        );
+        assert!(
+            pre.iter().any(|&(x, y, z, _)| x == vx && y == vy && z == vz),
+            "contact voxel should be in the undo journal"
+        );
+        let mid = g.get(vx, vy, vz);
+        assert!(
+            (mid - before).abs() > 1e-4,
+            "press should have changed the contact voxel"
+        );
+        for &(x, y, z, v) in &pre {
+            g.set(x, y, z, v);
+        }
+        let restored = g.get(vx, vy, vz);
+        assert!(
+            (restored - before).abs() < 1e-5,
+            "undo journal should restore contact voxel: before={before}, restored={restored}"
         );
     }
 }

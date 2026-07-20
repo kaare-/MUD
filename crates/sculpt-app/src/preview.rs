@@ -322,7 +322,24 @@ fn update_preview(
                 Vec3::new(c.x, c.y, c.z)
             }
             ToolKind::Smooth => Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15,
-            ToolKind::Cutter(_) | ToolKind::Paddle | ToolKind::WireCutter | ToolKind::Knife => {
+            ToolKind::Paddle => {
+                // Match stamp seating: plane advances into the surface
+                // by `advance` along the (possibly leaned) into-axis.
+                let advance =
+                    tool.advance_per_step * pen.engagement_scale(settings.pressure_to_depth);
+                let lean = pen.leaned_into(into_g, view_g);
+                let into = if lean.length_squared() > 1e-8 {
+                    lean
+                } else {
+                    into_g
+                };
+                Vec3::new(
+                    hit.x + into.x * advance,
+                    hit.y + into.y * advance,
+                    hit.z + into.z * advance,
+                )
+            }
+            ToolKind::Cutter(_) | ToolKind::WireCutter | ToolKind::Knife => {
                 Vec3::new(hit.x, hit.y, hit.z) + normal_local * 0.15
             }
             ToolKind::Select | ToolKind::Move | ToolKind::Rotate => {
